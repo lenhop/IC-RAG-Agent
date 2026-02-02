@@ -1,0 +1,3 @@
+[submodule "libs/ai-toolkit"]
+	path = libs/ai-toolkit
+	url = ../ai-toolkit.git
