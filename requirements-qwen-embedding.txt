@@ -1,0 +1,12 @@
+# Qwen3-VL-Embedding-8B environment (model card: torch==2.8.0, transformers>=4.57, qwen-vl-utils>=0.0.14)
+# With torch 2.2.x, apply the is_autocast_enabled patch in code before loading the model.
+# Use: pip install -r requirements-qwen-embedding.txt
+torch>=2.2.0
+transformers>=4.57.0
+qwen-vl-utils>=0.0.14
+# RAG pipeline (load/split/vector store)
+pypdf>=4.0.0
+python-dotenv>=1.0.0
+langchain>=0.1.0
+langchain-core>=0.1.0
+langchain-community>=0.0.20

@@ -1,6 +1,6 @@
 [submodule "libs/ai-toolkit"]
 	path = libs/ai-toolkit
 	url = ../ai-toolkit.git
-[submodule "third_party/llama.cpp"]
-	path = third_party/llama.cpp
-	url = https://github.com/ggml-org/llama.cpp.git
+[submodule "libs/llama.cpp"]
+	path = libs/llama.cpp
+	url = https://github.com/ggerganov/llama.cpp

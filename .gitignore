@@ -218,3 +218,4 @@ htmlcov/
 docs/_build/
 docs/.doctrees/
 site/
+models/
