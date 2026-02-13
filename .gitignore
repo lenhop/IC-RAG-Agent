@@ -218,4 +218,6 @@ htmlcov/
 docs/_build/
 docs/.doctrees/
 site/
-models/
+
+# Embedded/submodule: avoid adding libs/ai-toolkit as nested repo (use sibling ai-toolkit)
+libs/ai-toolkit/
