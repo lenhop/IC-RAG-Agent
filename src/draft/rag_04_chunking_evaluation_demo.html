@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chunking Evaluation Dashboard | RAG Quality Metrics</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --accent: #38bdf8;
+      --accent-dim: #0ea5e9;
+      --text: #e2e8f0;
+      --text-muted: #94a3b8;
+      --success: #34d399;
+      --warning: #fbbf24;
+      --danger: #f87171;
+      --border: #334155;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+    .container { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
+    header {
+      text-align: center;
+      padding: 2rem 0;
+      border-bottom: 1px solid var(--border);
+    }
+    header h1 { font-size: 1.75rem; color: var(--accent); margin-bottom: 0.5rem; }
+    header p { color: var(--text-muted); font-size: 0.95rem; }
+    .summary-box {
+      background: linear-gradient(135deg, var(--card) 0%, #0f172a 100%);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem 1.5rem;
+      margin: 1.5rem 0;
+      font-size: 0.9rem;
+    }
+    .summary-box h3 { color: var(--accent); margin-bottom: 0.5rem; font-size: 1rem; }
+    .summary-box ul { margin-left: 1.25rem; color: var(--text-muted); }
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 1rem;
+      margin: 1.5rem 0;
+    }
+    .metric-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem;
+      text-align: center;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .metric-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+    .metric-card .value { font-size: 1.5rem; font-weight: 700; color: var(--accent); }
+    .metric-card .label { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem; }
+    .metric-card.ok .value { color: var(--success); }
+    .metric-card.warn .value { color: var(--warning); }
+    .metric-card.err .value { color: var(--danger); }
+    .chart-section {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin: 1.5rem 0;
+    }
+    .chart-section h3 { color: var(--accent); margin-bottom: 1rem; font-size: 1.1rem; }
+    .chart-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; }
+    .chart-wrapper { position: relative; height: 280px; }
+    .heatmap-wrapper { overflow-x: auto; }
+    .heatmap { border-collapse: collapse; width: 100%; font-size: 0.8rem; }
+    .heatmap th, .heatmap td { padding: 0.4rem 0.6rem; border: 1px solid var(--border); text-align: center; }
+    .heatmap th { background: var(--card); color: var(--text-muted); }
+    .heatmap .cell-5 { background: rgba(52, 211, 153, 0.4); color: var(--success); }
+    .heatmap .cell-4 { background: rgba(56, 189, 248, 0.3); }
+    .heatmap .cell-3 { background: rgba(251, 191, 36, 0.3); color: var(--warning); }
+    .heatmap .cell-2, .heatmap .cell-1 { background: rgba(248, 113, 113, 0.3); color: var(--danger); }
+    .boxplot-container { display: flex; align-items: center; justify-content: center; height: 200px; padding: 1rem; }
+    .boxplot {
+      display: flex;
+      align-items: center;
+      height: 60px;
+      width: 100%;
+      max-width: 500px;
+    }
+    .boxplot .whisker { height: 4px; background: var(--accent); border-radius: 2px; }
+    .boxplot .box { height: 40px; background: linear-gradient(90deg, var(--accent-dim), var(--accent)); border-radius: 4px; margin: 0 2px; }
+    .boxplot .median { height: 40px; width: 2px; background: #fff; border-radius: 1px; }
+    .guide-section table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    .guide-section th, .guide-section td { padding: 0.6rem; border: 1px solid var(--border); text-align: left; }
+    .guide-section th { background: var(--card); color: var(--text-muted); width: 22%; }
+    .diagnosis-box {
+      background: var(--card);
+      border-left: 4px solid var(--warning);
+      padding: 1rem 1.25rem;
+      margin: 0.75rem 0;
+      border-radius: 0 8px 8px 0;
+      font-size: 0.9rem;
+    }
+    .diagnosis-box h4 { color: var(--warning); margin-bottom: 0.5rem; }
+    .diagnosis-box.success { border-left-color: var(--success); }
+    .diagnosis-box.success h4 { color: var(--success); }
+    .diagnosis-box.danger { border-left-color: var(--danger); }
+    .diagnosis-box.danger h4 { color: var(--danger); }
+    .flow-step {
+      display: flex;
+      align-items: flex-start;
+      gap: 1rem;
+      margin: 0.75rem 0;
+      padding: 0.75rem;
+      background: rgba(56, 189, 248, 0.06);
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+    .flow-step .num {
+      min-width: 28px; height: 28px;
+      background: var(--accent); color: var(--bg);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 0.85rem;
+    }
+    .flow-step .content strong { color: var(--accent); }
+    footer { text-align: center; padding: 2rem; color: var(--text-muted); font-size: 0.85rem; border-top: 1px solid var(--border); }
+    .toggle-theme {
+      position: fixed; top: 1rem; right: 1rem;
+      background: var(--card); border: 1px solid var(--border);
+      color: var(--text); padding: 0.5rem 0.75rem;
+      border-radius: 8px; cursor: pointer; font-size: 0.85rem;
+    }
+    .toggle-theme:hover { background: var(--accent); color: var(--bg); }
+    .load-data-section { margin-top: 1rem; }
+    .load-data-section textarea {
+      width: 100%; min-height: 80px;
+      background: var(--card); border: 1px solid var(--border);
+      color: var(--text); padding: 0.75rem;
+      border-radius: 8px; font-family: monospace; font-size: 0.85rem;
+      resize: vertical;
+    }
+    .load-data-section button {
+      margin-top: 0.5rem;
+      background: var(--accent); color: var(--bg);
+      border: none; padding: 0.5rem 1rem;
+      border-radius: 8px; cursor: pointer; font-weight: 600;
+    }
+  </style>
+</head>
+<body>
+  <button class="toggle-theme" onclick="toggleTheme()">Light Mode</button>
+  <div class="container">
+    <header>
+      <h1>Chunking Evaluation Dashboard</h1>
+      <p>RAG chunk quality metrics for Amazon IC technical PDFs (single-topic, tables, images)</p>
+    </header>
+
+    <section class="summary-box">
+      <h3>Summary: Evaluation Framework</h3>
+      <ul>
+        <li><strong>Core three visualizations:</strong> Histogram (distribution) + Box plot (outliers) + Heatmap (semantic coherence)</li>
+        <li><strong>Efficiency:</strong> Check length first (histogram + box plot), then semantic (heatmap), then order (line chart) if needed</li>
+        <li><strong>Goal:</strong> Find problems and optimize chunking, not to make charts. If histogram + box plot look good, skip the rest</li>
+      </ul>
+    </section>
+
+    <section class="chart-section">
+      <h3>1. Metrics Dashboard</h3>
+      <div class="dashboard-grid" id="metrics-dashboard"></div>
+    </section>
+
+    <section class="chart-section">
+      <h3>2. Core Three Visualizations</h3>
+      <div class="chart-row">
+        <div>
+          <h4 style="color: var(--text-muted); font-size: 0.95rem; margin-bottom: 0.5rem;">Histogram - Chunk Length Distribution</h4>
+          <div class="chart-wrapper"><canvas id="histogram"></canvas></div>
+        </div>
+        <div>
+          <h4 style="color: var(--text-muted); font-size: 0.95rem; margin-bottom: 0.5rem;">Box Plot - Outlier Detection</h4>
+          <div class="boxplot-container"><div class="boxplot" id="boxplot"></div></div>
+          <p id="boxplot-legend" style="text-align: center; font-size: 0.8rem; color: var(--text-muted); margin-top: 0.5rem;"></p>
+        </div>
+      </div>
+      <div style="margin-top: 1.5rem;">
+        <h4 style="color: var(--text-muted); font-size: 0.95rem; margin-bottom: 0.5rem;">Heatmap - Semantic Coherence (1-5 score per chunk)</h4>
+        <div class="heatmap-wrapper"><table class="heatmap" id="heatmap"></table></div>
+      </div>
+      <div style="margin-top: 1.5rem;">
+        <h4 style="color: var(--text-muted); font-size: 0.95rem; margin-bottom: 0.5rem;">Line Chart - Adjacent Chunk Cosine Distance (1 - cosine similarity)</h4>
+        <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.5rem;">Peak = reasonable semantic boundary; Low flat = over-split (chunks too fine)</p>
+        <div class="chart-wrapper"><canvas id="linechart"></canvas></div>
+      </div>
+    </section>
+
+    <section class="guide-section chart-section">
+      <h3>3. Metric Meanings</h3>
+      <table>
+        <tr><th>Metric</th><th>Meaning</th><th>Target</th></tr>
+        <tr><td>Mean chunk length</td><td>Average chars per chunk; balances context vs embedding limits</td><td>800-1200</td></tr>
+        <tr><td>Compliance rate</td><td>Chunks in healthy band (800-1500 chars)</td><td>≥95%</td></tr>
+        <tr><td>Oversized rate</td><td>Chunks &gt;1500 chars; risk of truncation</td><td>≤5%</td></tr>
+        <tr><td>Undersized rate</td><td>Chunks &lt;200 chars; fragments, poor context</td><td>≤3%</td></tr>
+        <tr><td>Total chunks</td><td>Overall granularity sanity check</td><td>—</td></tr>
+        <tr><td>Semantic coherence</td><td>LLM score 1-5; chunk reads as one unit</td><td>≥4.0</td></tr>
+        <tr><td>Adjacent cosine distance</td><td>1 - cosine_sim(chunk_i, chunk_i+1); peak = good boundary, low flat = over-split</td><td>Peaks at boundaries</td></tr>
+      </table>
+    </section>
+
+    <section class="guide-section chart-section">
+      <h3>4. Exception Diagnosis Guide</h3>
+      <p style="margin-bottom: 1rem; color: var(--text-muted); font-size: 0.9rem;">Follow this flow to diagnose chunking issues:</p>
+      <div class="flow-step">
+        <span class="num">1</span>
+        <div class="content"><strong>Histogram:</strong> Is the distribution centered in 800-1200? Peaks at extremes = bad. Smooth bell = good.</div>
+      </div>
+      <div class="flow-step">
+        <span class="num">2</span>
+        <div class="content"><strong>Box plot:</strong> Are there dots beyond whiskers? Many = outliers. Check oversized (&gt;1500) and undersized (&lt;200).</div>
+      </div>
+      <div class="flow-step">
+        <span class="num">3</span>
+        <div class="content"><strong>Heatmap:</strong> Red cells (1-2) = semantically broken chunks. Yellow (3) = borderline. Green (4-5) = good.</div>
+      </div>
+      <div class="flow-step">
+        <span class="num">4</span>
+        <div class="content"><strong>Line chart (cosine distance):</strong> Peaks = reasonable semantic boundaries. Low flat line = over-split (chunks too fine).</div>
+      </div>
+      <div class="diagnosis-box warn">
+        <h4>High oversized rate</h4>
+        <p>Reduce chunk_size or add stricter separators. Check if tables are being split mid-row.</p>
+      </div>
+      <div class="diagnosis-box warn">
+        <h4>High undersized rate</h4>
+        <p>Increase chunk_size or merge small chunks. Check min_chunk_size in LLM/semantic chunkers.</p>
+      </div>
+      <div class="diagnosis-box danger">
+        <h4>Low semantic coherence</h4>
+        <p>Try semantic chunker or LLM chunker. Adjust separators to respect paragraph/section boundaries.</p>
+      </div>
+      <div class="diagnosis-box warn">
+        <h4>Line chart: low flat (over-split)</h4>
+        <p>Cosine distances mostly below mean. Adjacent chunks too similar; consider larger chunk_size or fewer splits.</p>
+      </div>
+      <div class="diagnosis-box success">
+        <h4>All metrics in target</h4>
+        <p>Chunking is acceptable. No need for further visualization. Proceed to retrieval evaluation.</p>
+      </div>
+    </section>
+
+    <section class="chart-section">
+      <h3>5. Load Your Data</h3>
+      <p style="margin-bottom: 0.75rem; color: var(--text-muted); font-size: 0.9rem;">Paste JSON: <code style="background: var(--card); padding: 0.2rem 0.4rem; border-radius: 4px;">[920, 1050, 880, ...]</code> or <code style="background: var(--card); padding: 0.2rem 0.4rem; border-radius: 4px;">{"lengths": [...], "scores": [4,5,4,...], "embeddings": [[...], [...], ...]}</code> or <code style="background: var(--card); padding: 0.2rem 0.4rem; border-radius: 4px;">{"distances": [0.3, 0.5, ...]}</code> for line chart</p>
+      <div class="load-data-section">
+        <textarea id="custom-data" placeholder='[920, 1050, 880, 1120, ...]'></textarea>
+        <button onclick="loadCustomData()">Update Charts</button>
+      </div>
+    </section>
+
+    <footer>Chunking Evaluation Demo | IC-RAG-Agent | Based on Doubao AI framework + Chroma research</footer>
+  </div>
+
+  <script>
+    let CHUNK_LENGTHS = [920, 1050, 880, 1120, 750, 1340, 980, 165, 1100, 890, 1020, 720, 1180, 950, 820, 1080, 640, 1420, 910, 780];
+    let SEMANTIC_SCORES = [4, 5, 4, 5, 3, 4, 5, 2, 4, 4, 5, 3, 4, 4, 4, 5, 3, 4, 4, 4];
+    let COSINE_DISTANCES = [0.18, 0.52, 0.12, 0.45, 0.22, 0.38, 0.08, 0.58, 0.15, 0.42, 0.10, 0.48, 0.20, 0.35, 0.14, 0.40, 0.12, 0.55, 0.18];
+    let histogramChart = null;
+    let lineChartChart = null;
+
+    const TARGET_MIN = 800, TARGET_MAX = 1200, COMPLIANCE_MIN = 800, COMPLIANCE_MAX = 1500;
+    const OVERSIZED_THRESH = 1500, UNDERSIZED_THRESH = 200;
+
+    function computeMetrics() {
+      const n = CHUNK_LENGTHS.length;
+      if (n === 0) return { mean: 0, complianceRate: 0, oversizedRate: 0, undersizedRate: 0, totalChunks: 0, semanticMean: '0', oversized: 0, undersized: 0 };
+      const mean = CHUNK_LENGTHS.reduce((a, b) => a + b, 0) / n;
+      const compliant = CHUNK_LENGTHS.filter(l => l >= COMPLIANCE_MIN && l <= COMPLIANCE_MAX).length;
+      const oversized = CHUNK_LENGTHS.filter(l => l > OVERSIZED_THRESH).length;
+      const undersized = CHUNK_LENGTHS.filter(l => l < UNDERSIZED_THRESH).length;
+      const semMean = SEMANTIC_SCORES.length ? SEMANTIC_SCORES.reduce((a, b) => a + b, 0) / SEMANTIC_SCORES.length : 0;
+      return {
+        mean: Math.round(mean),
+        complianceRate: Math.round((compliant / n) * 100),
+        oversizedRate: Math.round((oversized / n) * 100),
+        undersizedRate: Math.round((undersized / n) * 100),
+        totalChunks: n,
+        semanticMean: semMean.toFixed(1),
+        oversized, undersized
+      };
+    }
+
+    function renderDashboard() {
+      const m = computeMetrics();
+      document.getElementById('metrics-dashboard').innerHTML = `
+        <div class="metric-card ${m.mean >= TARGET_MIN && m.mean <= TARGET_MAX ? 'ok' : 'warn'}"><div class="value">${m.mean}</div><div class="label">Mean length (chars)</div></div>
+        <div class="metric-card ${m.complianceRate >= 95 ? 'ok' : 'warn'}"><div class="value">${m.complianceRate}%</div><div class="label">Compliance rate</div></div>
+        <div class="metric-card ${m.oversizedRate <= 5 ? 'ok' : 'err'}"><div class="value">${m.oversizedRate}%</div><div class="label">Oversized rate</div></div>
+        <div class="metric-card ${m.undersizedRate <= 3 ? 'ok' : 'err'}"><div class="value">${m.undersizedRate}%</div><div class="label">Undersized rate</div></div>
+        <div class="metric-card"><div class="value">${m.totalChunks}</div><div class="label">Total chunks</div></div>
+        <div class="metric-card ${parseFloat(m.semanticMean) >= 4 ? 'ok' : 'warn'}"><div class="value">${m.semanticMean}</div><div class="label">Semantic coherence</div></div>`;
+    }
+
+    function renderHistogram() {
+      const bins = [0, 200, 400, 600, 800, 1000, 1200, 1400, 1600, 2000];
+      const counts = new Array(bins.length - 1).fill(0);
+      CHUNK_LENGTHS.forEach(l => {
+        for (let i = 0; i < bins.length - 1; i++)
+          if (l >= bins[i] && l < bins[i + 1]) { counts[i]++; return; }
+        if (l >= bins[bins.length - 1]) counts[bins.length - 2]++;
+      });
+      const labels = bins.slice(0, -1).map((b, i) => `${b}-${bins[i+1]}`);
+      const colors = labels.map((_, i) => {
+        const mid = (bins[i] + bins[i+1]) / 2;
+        if (mid >= COMPLIANCE_MIN && mid <= COMPLIANCE_MAX) return 'rgba(52, 211, 153, 0.6)';
+        if (mid > OVERSIZED_THRESH || mid < UNDERSIZED_THRESH) return 'rgba(248, 113, 113, 0.6)';
+        return 'rgba(56, 189, 248, 0.5)';
+      });
+      if (histogramChart) histogramChart.destroy();
+      histogramChart = new Chart(document.getElementById('histogram'), {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [{
+            label: 'Chunk count',
+            data: counts,
+            backgroundColor: colors,
+            borderColor: 'rgba(56, 189, 248, 0.8)',
+            borderWidth: 1
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            y: { beginAtZero: true, grid: { color: 'rgba(148, 163, 184, 0.2)' }, ticks: { color: '#94a3b8' } },
+            x: { grid: { display: false }, ticks: { color: '#94a3b8', maxRotation: 45 } }
+          }
+        }
+      });
+    }
+
+    function renderBoxPlot() {
+      if (CHUNK_LENGTHS.length === 0) {
+        document.getElementById('boxplot').innerHTML = '<p style="color: var(--text-muted);">No data</p>';
+        document.getElementById('boxplot-legend').textContent = '';
+        return;
+      }
+      const sorted = [...CHUNK_LENGTHS].sort((a, b) => a - b);
+      const n = sorted.length;
+      const q1 = sorted[Math.floor(n * 0.25)];
+      const q2 = sorted[Math.floor(n * 0.5)];
+      const q3 = sorted[Math.floor(n * 0.75)];
+      const min = sorted[0], max = sorted[n - 1];
+      const iqr = q3 - q1 || 1;
+      const w1 = Math.max(min, q1 - 1.5 * iqr);
+      const w2 = Math.min(max, q3 + 1.5 * iqr);
+      const total = max - min || 1;
+      const scale = (v) => Math.max(0, ((v - min) / total) * 100);
+      document.getElementById('boxplot').innerHTML = `
+        <div class="whisker" style="width: ${scale(w1 - min)}%;"></div>
+        <div class="box" style="width: ${scale(q3 - q1)}%;">
+          <div class="median" style="margin-left: ${((q2 - q1) / (q3 - q1 || 1)) * 100 - 1}%;"></div>
+        </div>
+        <div class="whisker" style="width: ${scale(max - w2)}%;"></div>
+      `;
+      document.getElementById('boxplot-legend').textContent =
+        `Min: ${min} | Q1: ${q1} | Median: ${q2} | Q3: ${q3} | Max: ${max}`;
+    }
+
+    function renderHeatmap() {
+      const cols = 10;
+      let html = '<tr><th>Chunk</th>';
+      for (let c = 0; c < cols; c++) html += `<th>${c + 1}</th>`;
+      html += '</tr><tr><td>Length</td>';
+      for (let i = 0; i < cols; i++) html += `<td>${CHUNK_LENGTHS[i] ?? '-'}</td>`;
+      html += '</tr><tr><td>Score</td>';
+      for (let i = 0; i < cols; i++) {
+        const s = SEMANTIC_SCORES[i] ?? '-';
+        html += `<td class="cell-${s}">${s}</td>`;
+      }
+      html += '</tr><tr><td>Chunk</td>';
+      for (let c = 0; c < cols; c++) html += `<th>${cols + c + 1}</th>`;
+      html += '</tr><tr><td>Length</td>';
+      for (let i = cols; i < CHUNK_LENGTHS.length; i++) html += `<td>${CHUNK_LENGTHS[i] ?? '-'}</td>`;
+      for (let i = CHUNK_LENGTHS.length; i < cols * 2; i++) html += '<td>-</td>';
+      html += '</tr><tr><td>Score</td>';
+      for (let i = cols; i < SEMANTIC_SCORES.length; i++) {
+        const s = SEMANTIC_SCORES[i] ?? '-';
+        html += `<td class="cell-${s}">${s}</td>`;
+      }
+      for (let i = SEMANTIC_SCORES.length; i < cols * 2; i++) html += '<td>-</td>';
+      html += '</tr>';
+      document.getElementById('heatmap').innerHTML = html;
+    }
+
+    function cosineDistance(a, b) {
+      let dot = 0, na = 0, nb = 0;
+      for (let i = 0; i < a.length; i++) {
+        dot += a[i] * b[i];
+        na += a[i] * a[i];
+        nb += b[i] * b[i];
+      }
+      const norm = Math.sqrt(na) * Math.sqrt(nb);
+      if (norm === 0) return 1;
+      const sim = dot / norm;
+      return 1 - Math.max(-1, Math.min(1, sim));
+    }
+
+    function computeCosineDistancesFromEmbeddings(embeddings) {
+      const dist = [];
+      for (let i = 0; i < embeddings.length - 1; i++)
+        dist.push(cosineDistance(embeddings[i], embeddings[i + 1]));
+      return dist;
+    }
+
+    function renderLineChart() {
+      const dist = COSINE_DISTANCES;
+      if (dist.length === 0) {
+        if (lineChartChart) { lineChartChart.destroy(); lineChartChart = null; }
+        const wrapper = document.getElementById('linechart').parentElement;
+        if (!wrapper.querySelector('.no-data-msg')) {
+          const msg = document.createElement('p');
+          msg.className = 'no-data-msg';
+          msg.style.cssText = 'color: var(--text-muted); font-size: 0.9rem; text-align: center; padding: 2rem;';
+          msg.textContent = 'No cosine distance data. Provide embeddings or distances in Load Your Data.';
+          wrapper.appendChild(msg);
+        }
+        return;
+      }
+      const prevMsg = document.querySelector('.no-data-msg');
+      if (prevMsg) prevMsg.remove();
+      const labels = dist.map((_, i) => (i + 1) + '-' + (i + 2));
+      const avg = dist.reduce((a, b) => a + b, 0) / dist.length;
+      const avgLine = new Array(dist.length).fill(avg);
+      if (lineChartChart) lineChartChart.destroy();
+      lineChartChart = new Chart(document.getElementById('linechart'), {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [
+            {
+              label: 'Cosine distance (1 - similarity)',
+              data: dist,
+              borderColor: 'rgba(56, 189, 248, 1)',
+              backgroundColor: 'rgba(56, 189, 248, 0.1)',
+              fill: true,
+              tension: 0.2,
+              pointRadius: 3,
+              pointHoverRadius: 5
+            },
+            {
+              label: 'Mean (' + avg.toFixed(3) + ')',
+              data: avgLine,
+              borderColor: 'rgba(251, 191, 36, 0.9)',
+              borderDash: [5, 5],
+              fill: false,
+              pointRadius: 0,
+              pointHoverRadius: 0
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { intersect: false, mode: 'index' },
+          plugins: { legend: { labels: { color: '#94a3b8' } } },
+          scales: {
+            y: { beginAtZero: true, grid: { color: 'rgba(148, 163, 184, 0.2)' }, ticks: { color: '#94a3b8' } },
+            x: { grid: { color: 'rgba(148, 163, 184, 0.2)' }, ticks: { color: '#94a3b8', maxRotation: 45 } }
+          }
+        }
+      });
+    }
+
+    function loadCustomData() {
+      const raw = document.getElementById('custom-data').value.trim();
+      if (!raw) return;
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          CHUNK_LENGTHS = parsed.filter(x => typeof x === 'number');
+          SEMANTIC_SCORES = [];
+          COSINE_DISTANCES = [];
+        } else if (parsed.lengths) {
+          CHUNK_LENGTHS = parsed.lengths.filter(x => typeof x === 'number');
+          SEMANTIC_SCORES = (parsed.scores || []).filter(x => typeof x === 'number');
+          while (SEMANTIC_SCORES.length < CHUNK_LENGTHS.length) SEMANTIC_SCORES.push(4);
+          if (parsed.embeddings && Array.isArray(parsed.embeddings)) {
+            COSINE_DISTANCES = computeCosineDistancesFromEmbeddings(parsed.embeddings);
+          } else if (parsed.distances && Array.isArray(parsed.distances)) {
+            COSINE_DISTANCES = parsed.distances.filter(x => typeof x === 'number');
+          } else {
+            COSINE_DISTANCES = [];
+          }
+        } else if (parsed.distances && Array.isArray(parsed.distances)) {
+          COSINE_DISTANCES = parsed.distances.filter(x => typeof x === 'number');
+        } else if (parsed.embeddings && Array.isArray(parsed.embeddings)) {
+          COSINE_DISTANCES = computeCosineDistancesFromEmbeddings(parsed.embeddings);
+        }
+        renderAll();
+      } catch (e) { alert('Invalid JSON: ' + e.message); }
+    }
+
+    function renderAll() {
+      renderDashboard();
+      renderHistogram();
+      renderBoxPlot();
+      renderHeatmap();
+      renderLineChart();
+    }
+
+    function toggleTheme() {
+      const root = document.documentElement;
+      const isDark = getComputedStyle(root).getPropertyValue('--bg').trim() === '#0f172a';
+      if (isDark) {
+        root.style.setProperty('--bg', '#f8fafc');
+        root.style.setProperty('--card', '#ffffff');
+        root.style.setProperty('--text', '#1e293b');
+        root.style.setProperty('--text-muted', '#64748b');
+        root.style.setProperty('--border', '#e2e8f0');
+        document.querySelector('.toggle-theme').textContent = 'Dark Mode';
+      } else {
+        root.style.setProperty('--bg', '#0f172a');
+        root.style.setProperty('--card', '#1e293b');
+        root.style.setProperty('--text', '#e2e8f0');
+        root.style.setProperty('--text-muted', '#94a3b8');
+        root.style.setProperty('--border', '#334155');
+        document.querySelector('.toggle-theme').textContent = 'Light Mode';
+      }
+    }
+
+    renderAll();
+  </script>
+</body>
+</html>
