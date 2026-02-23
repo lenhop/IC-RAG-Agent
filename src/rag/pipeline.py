@@ -8,7 +8,7 @@ Optimized for low memory: processes files in batches, avoids loading all at once
 import gc
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
+from datetime import datetime
 from langchain_core.documents import Document
 
 
@@ -102,25 +102,27 @@ def rag_ingest_pipeline(
     num_batches = (len(file_paths) + load_batch_size - 1) // load_batch_size
 
     for batch_idx, file_batch in enumerate(_batch_iter(file_paths, load_batch_size), 1):
-        print(f"[Step 3/6] Loading batch {batch_idx}/{num_batches} ({len(file_batch)} files)...")
+        start_time = datetime.now()
+        print(f"batch_idx: {batch_idx}, num_batches: {num_batches}")
+        print(f"  [Step 3/6] Loading batch {batch_idx} ({len(file_batch)} files)...")
         batch_docs = load_documents_from_files(file_batch)
         if not batch_docs:
             continue
 
-        print(f"[Step 4/6] Splitting batch {batch_idx}/{num_batches} ({len(batch_docs)} docs)...")
+        print(f"  [Step 4/6] Splitting batch {batch_idx} ({len(batch_docs)} docs)...")
         chunks = split_documents(batch_docs, **split_kwargs)
         del batch_docs  # Free memory before next step
 
         if not chunks:
             continue
 
-        print(f"[Step 5/6] Cleaning batch {batch_idx}/{num_batches} ({len(chunks)} chunks)...")
+        print(f"  [Step 5/6] Cleaning batch {batch_idx} ({len(chunks)} chunks)...")
         chunks = cleaner.clean_documents(chunks, **clean_kwargs)
         if not chunks:
             continue
 
         # Embed and store in sub-batches to limit memory
-        print(f"[Step 6/6] Embedding and storing batch {batch_idx}/{num_batches} ({len(chunks)} chunks)...")
+        print(f"  [Step 6/6] Embedding and storing batch {batch_idx} ({len(chunks)} chunks)...")
         texts = [c.page_content for c in chunks]
         metadatas = [c.metadata for c in chunks]
         del chunks  # Free chunks; keep only texts/metadatas for embedding
@@ -141,7 +143,9 @@ def rag_ingest_pipeline(
                 embeddings=vectors,
             )
             stored += len(batch_texts)
-
+        end_time = datetime.now()
+        total_time = (end_time - start_time).total_seconds()
+        print(f"  Time taken for batch {batch_idx}: {total_time} seconds")
         chunk_id_offset += len(texts)
         del texts, metadatas  # Free before next file batch
         gc.collect()  # Encourage garbage collection between batches

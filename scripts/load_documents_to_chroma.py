@@ -19,8 +19,10 @@ Embedding model: Use same model for load and RAG query.
   - qwen3: Qwen3-VL-Embedding-2B (higher quality, more RAM)
 """
 
+import time 
 import sys
 from pathlib import Path
+from datetime import datetime
 
 # [ANNOTATION] Path setup: project root and ai-toolkit
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -47,6 +49,7 @@ MIN_CHUNK_LENGTH = 20
 
 def main() -> int:
     """Run RAG ingest pipeline via src/rag toolkits."""
+    start_time = datetime.now()
     import argparse
 
     parser = argparse.ArgumentParser(
@@ -148,7 +151,9 @@ def main() -> int:
         limit_files=args.limit,
         project_root=PROJECT_ROOT,
     )
-
+    end_time = datetime.now()
+    total_time = (end_time - start_time).total_seconds()
+    print(f"[OK] Time taken: {total_time} seconds")  
     if stored == 0:
         print("[WARN] No chunks stored (empty documents or all filtered)")
         return 1
