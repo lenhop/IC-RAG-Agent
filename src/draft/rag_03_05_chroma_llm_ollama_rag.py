@@ -29,7 +29,7 @@ for _path in (
         sys.path.insert(0, str(_path))
         break
 
-# [ANNOTATION] Qwen3-VL-Embedding scripts must be on path for ai_toolkit.models
+# [ANNOTATION] Qwen3-VL-Embedding scripts on path only when using qwen3 embedder
 _model_scripts = PROJECT_ROOT / "models" / "Qwen3-VL-Embedding-2B" / "scripts"
 if _model_scripts.is_dir():
     sys.path.insert(0, str(_model_scripts))
@@ -37,6 +37,9 @@ if _model_scripts.is_dir():
 # Config (from rag_03_04_chroma_llm_ollama_langchain.py)
 CHROMA_PERSIST_PATH = str(PROJECT_ROOT / "data" / "chroma_db" / "amazon" / "fba")
 COLLECTION_NAME = "amazon_fba_features"
+# Embedding model: must match load_pdfs_to_chroma.py (default minilm for low-memory)
+EMBED_MODEL = "minilm"
+MINILM_MODEL_PATH = str(PROJECT_ROOT / "models" / "all-MiniLM-L6-v2")
 OLLAMA_MODEL = "qwen3:1.7b"
 OLLAMA_TEMPERATURE = 0.3
 OLLAMA_NUM_CTX = 4096
@@ -62,12 +65,18 @@ def _patch_torch_autocast() -> None:
 
 
 # ===================== Step 1: Load embedding model (local) -> embedder =====================
-def step1_load_embedder():
-    """Load local Qwen3-VL-Embedding-2B via ai-toolkit."""
-    _patch_torch_autocast()
-    from ai_toolkit.models import LocalQwenEmbeddings
-    model_path = str(PROJECT_ROOT / "models" / "Qwen3-VL-Embedding-2B")
-    return LocalQwenEmbeddings(model_path)
+def step1_load_embedder(embed_model: str = EMBED_MODEL):
+    """Load embedding model. Must match load_pdfs_to_chroma.py embedder."""
+    if embed_model == "qwen3":
+        _patch_torch_autocast()
+        from ai_toolkit.models import LocalQwenEmbeddings
+        return LocalQwenEmbeddings(str(PROJECT_ROOT / "models" / "Qwen3-VL-Embedding-2B"))
+    from langchain_community.embeddings import HuggingFaceEmbeddings
+    return HuggingFaceEmbeddings(
+        model_name=MINILM_MODEL_PATH,
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True},
+    )
 
 
 # ===================== Step 2: User question -> embedder.embed_query() -> question vector =====================
