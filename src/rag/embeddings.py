@@ -74,14 +74,19 @@ def create_embeddings(
         model_type = "huggingface"
 
     if model_type == "qwen3":
+        import sys
+
+        path = qwen3_path or str(root / "models" / "Qwen3-VL-Embedding-2B")
+        scripts_path = Path(path) / "scripts"
+        if scripts_path.is_dir():
+            sys.path.insert(0, str(scripts_path))
         _patch_torch_autocast()
         from ai_toolkit.models import LocalQwenEmbeddings
 
-        path = qwen3_path or str(root / "models" / "Qwen3-VL-Embedding-2B")
         return LocalQwenEmbeddings(path)
 
-    # HuggingFace (sentence-transformers)
-    from langchain_community.embeddings import HuggingFaceEmbeddings
+    # HuggingFace (sentence-transformers) - use langchain-huggingface (langchain_community deprecated)
+    from langchain_huggingface import HuggingFaceEmbeddings
 
     if model_path:
         path = str(Path(model_path).expanduser().resolve())

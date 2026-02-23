@@ -151,15 +151,8 @@ temp/
 .env.local
 .env.*.local
 
-# Data directories (may contain sensitive documents)
-data/documents/
-data/vector_store/
-data/cache/
-
-# Keep data directory structure but ignore contents
-!data/documents/.gitkeep
-!data/vector_store/.gitkeep
-!data/cache/.gitkeep
+# Data directory (documents, vector stores, chroma DB, cache - may contain sensitive content)
+data/
 
 # Database files
 *.db
@@ -221,5 +214,3 @@ site/
 
 # Embedded/submodule: avoid adding libs/ai-toolkit as nested repo (use sibling ai-toolkit)
 libs/ai-toolkit/
-
-data/documents

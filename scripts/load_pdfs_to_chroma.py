@@ -37,11 +37,6 @@ for _path in (
         sys.path.insert(0, str(_path))
         break
 
-# [ANNOTATION] Qwen3-VL-Embedding scripts on path only when using qwen3 embedder
-_model_scripts = PROJECT_ROOT / "models" / "Qwen3-VL-Embedding-2B" / "scripts"
-if _model_scripts.is_dir():
-    sys.path.insert(0, str(_model_scripts))
-
 # Config (align with rag_02, rag_03_05)
 CHROMA_PERSIST_PATH = str(PROJECT_ROOT / "data" / "chroma_db" / "ebay")
 COLLECTION_NAME = "ebay"
@@ -55,49 +50,12 @@ EMBED_BATCH_SIZE = 16
 MIN_CHUNK_LENGTH = 20
 # Embedding model: "minilm" (default) or "qwen3"
 DEFAULT_EMBED_MODEL = "minilm"
-MINILM_MODEL_PATH = str(PROJECT_ROOT / "models" / "all-MiniLM-L6-v2")
-QWEN3_MODEL_PATH = str(PROJECT_ROOT / "models" / "Qwen3-VL-Embedding-2B")
-
-
-def _patch_torch_autocast() -> None:
-    """Patch torch.is_autocast_enabled for PyTorch < 2.3 (Qwen embedding compatibility)."""
-    import torch
-
-    if getattr(torch.is_autocast_enabled, "_qwen_patched", False):
-        return
-    try:
-        torch.is_autocast_enabled("cpu")
-    except TypeError:
-        original = torch.is_autocast_enabled
-
-        def _patched(device_type=None):
-            return original()
-
-        _patched._qwen_patched = True
-        torch.is_autocast_enabled = _patched
 
 
 def load_embedder(embed_model: str = DEFAULT_EMBED_MODEL):
-    """
-    Load embedding model. Default all-MiniLM-L6-v2 for low-memory systems.
-    Use embed_model="qwen3" for Qwen3-VL-Embedding-2B (higher quality, more RAM).
-    """
-    if embed_model == "qwen3":
-        _patch_torch_autocast()
-        from ai_toolkit.models import LocalQwenEmbeddings
-        return LocalQwenEmbeddings(QWEN3_MODEL_PATH)
-    # Default: all-MiniLM-L6-v2 via HuggingFaceEmbeddings
-    from langchain_community.embeddings import HuggingFaceEmbeddings
-    if not Path(MINILM_MODEL_PATH).exists():
-        raise FileNotFoundError(
-            f"MiniLM model not found at {MINILM_MODEL_PATH}. "
-            "Download with: huggingface-cli download sentence-transformers/all-MiniLM-L6-v2 --local-dir ..."
-        )
-    return HuggingFaceEmbeddings(
-        model_name=MINILM_MODEL_PATH,
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True},
-    )
+    """Load embedding model via src.rag.create_embeddings (handles qwen3 path)."""
+    from src.rag import create_embeddings
+    return create_embeddings(embed_model, project_root=PROJECT_ROOT)
 
 
 def preprocess_text(text: str) -> str:
