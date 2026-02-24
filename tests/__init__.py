@@ -1,3 +1,1 @@
-"""
-IC-RAG-Agent 测试模块
-"""
+# Tests package for IC-RAG-Agent

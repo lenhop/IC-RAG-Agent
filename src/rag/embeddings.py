@@ -85,8 +85,11 @@ def create_embeddings(
 
         return LocalQwenEmbeddings(path)
 
-    # HuggingFace (sentence-transformers) - use langchain-huggingface (langchain_community deprecated)
-    from langchain_huggingface import HuggingFaceEmbeddings
+    # HuggingFace (sentence-transformers) - prefer langchain-huggingface, fallback to langchain_community
+    try:
+        from langchain_huggingface import HuggingFaceEmbeddings
+    except ImportError:
+        from langchain_community.embeddings import HuggingFaceEmbeddings
 
     if model_path:
         path = str(Path(model_path).expanduser().resolve())

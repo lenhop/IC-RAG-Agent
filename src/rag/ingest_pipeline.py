@@ -103,6 +103,8 @@ def rag_ingest_pipeline(
 
     for batch_idx, file_batch in enumerate(_batch_iter(file_paths, load_batch_size), 1):
         start_time = datetime.now()
+        for file in file_batch:
+            print(file)
         print(f"batch_idx: {batch_idx}, num_batches: {num_batches}")
         print(f"  [Step 3/6] Loading batch {batch_idx} ({len(file_batch)} files)...")
         batch_docs = load_documents_from_files(file_batch)

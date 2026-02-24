@@ -32,8 +32,8 @@ if _model_scripts.is_dir():
     sys.path.insert(0, str(_model_scripts))
 
 # Config (from rag_03_05)
-CHROMA_PERSIST_PATH = str(PROJECT_ROOT / "data" / "chroma_db" / "amazon" / "fba")
-COLLECTION_NAME = "amazon_fba_features"
+CHROMA_PERSIST_PATH = str(PROJECT_ROOT / "data" / "chroma_db" / "amazon")
+COLLECTION_NAME = "amazon"
 # Embedding model: must match load_pdfs_to_chroma.py (default minilm for low-memory)
 EMBED_MODEL = "minilm"
 MINILM_MODEL_PATH = str(PROJECT_ROOT / "models" / "all-MiniLM-L6-v2")

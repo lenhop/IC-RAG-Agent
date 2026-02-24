@@ -46,8 +46,8 @@ Now you can use the base environment for Qwen3-VL-Embedding-8B:
 # Activate base (default)
 conda activate base
 
-# Download model
-python3 scripts/download_qwen_model.py
+# Download models (Qwen3-1.7B-GGUF, all-MiniLM-L6-v2)
+./scripts/sh/download_models_from_hf.sh
 
 # Or use directly (auto-downloads)
 python3 -c "

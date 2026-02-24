@@ -35,13 +35,13 @@ snapshot_download(
 )
 ```
 
-### Option 2: Use Python API (Recommended for scripts)
-
-We've created a convenient script:
+### Option 2: Use Shell Script (Qwen3-1.7B-GGUF, all-MiniLM-L6-v2)
 
 ```bash
-python3 scripts/download_qwen_model.py
+./scripts/sh/download_models_from_hf.sh [all|qwen3|minilm]
 ```
+
+For Qwen3-VL-Embedding-8B, use `hf download` or Python API directly.
 
 ### Option 3: Use Python Module
 

@@ -19,7 +19,8 @@ Embedding model: Use same model for load and RAG query.
   - qwen3: Qwen3-VL-Embedding-2B (higher quality, more RAM)
 """
 
-import time 
+import os
+import time
 import sys
 from pathlib import Path
 from datetime import datetime
@@ -36,15 +37,37 @@ for _path in (
         sys.path.insert(0, str(_path))
         break
 
-# Config
-CHROMA_PERSIST_PATH = str(PROJECT_ROOT / "data" / "chroma_db" / "documents")
-COLLECTION_NAME = "documents"
-DOC_ROOT = str(PROJECT_ROOT / "data" / "documents")
-DEFAULT_EXTENSIONS = [".pdf", ".txt", ".md", ".csv", ".json"]
-CHUNK_SIZE = 1024
-CHUNK_OVERLAP = 100
-EMBED_BATCH_SIZE = 16
-MIN_CHUNK_LENGTH = 20
+# Load .env from project root
+try:
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_ROOT / ".env")
+except ImportError:
+    pass
+
+# Config: resolved from .env with fallbacks
+def _resolve_path(env_key: str, default: str) -> str:
+    """Resolve path from env; if relative, join with PROJECT_ROOT."""
+    val = os.getenv(env_key, default)
+    p = Path(val)
+    if not p.is_absolute():
+        p = PROJECT_ROOT / p
+    return str(p.resolve())
+
+
+CHROMA_PERSIST_PATH = _resolve_path(
+    "CHROMA_DOCUMENTS_PATH", str(PROJECT_ROOT / "data" / "chroma_db" / "documents")
+)
+COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "documents")
+DOC_ROOT = _resolve_path(
+    "DOC_LOAD_ROOT", str(PROJECT_ROOT / "data" / "documents")
+)
+DEFAULT_EXTENSIONS = [
+    e.strip() for e in os.getenv("DOC_LOAD_EXTENSIONS", ".pdf,.txt,.md,.csv,.json").split(",")
+]
+CHUNK_SIZE = int(os.getenv("DOC_LOAD_CHUNK_SIZE", "1024"))
+CHUNK_OVERLAP = int(os.getenv("DOC_LOAD_CHUNK_OVERLAP", "100"))
+EMBED_BATCH_SIZE = int(os.getenv("DOC_LOAD_EMBED_BATCH_SIZE", "16"))
+MIN_CHUNK_LENGTH = int(os.getenv("DOC_LOAD_MIN_CHUNK_LENGTH", "20"))
 
 
 def main() -> int:
