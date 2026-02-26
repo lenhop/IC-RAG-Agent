@@ -14,6 +14,9 @@ langchain-community>=0.0.20
 langchain-chroma>=0.1.0
 langchain-ollama>=0.1.0
 
+# Gradio chat UI (Phase 4)
+gradio>=4.0.0
+
 # Test dependencies (optional)
 pytest>=7.0.0
 requests>=2.28.0

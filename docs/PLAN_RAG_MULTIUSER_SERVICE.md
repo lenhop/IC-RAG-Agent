@@ -100,7 +100,7 @@ flowchart TB
 
 ---
 
-## Phase 4: Chat UI Client
+## Phase 4: Chat UI Client (implemented via Gradio)
 
 ### 4.1 Chat UI stack
 
@@ -145,6 +145,26 @@ frontend/                 # or web/ or client/
 
 - **Dev:** Vite/parcel dev server, or static files via FastAPI `StaticFiles`
 - **Prod:** Serve static files from FastAPI, or separate static host
+
+### 4.6 Gradio Chat UI (implemented)
+
+- **File:** [scripts/run_rag_gradio.py](scripts/run_rag_gradio.py)
+- **Launcher:** [scripts/run_rag_gradio.sh](scripts/run_rag_gradio.sh)
+- **Stack:** Gradio 4.x, calls RAG API via `requests.post()`
+- **Features:** Mode selector (documents/general/hybrid), answer + source display, error handling
+- **Env vars:** `RAG_API_URL` (default `http://127.0.0.1:8000`), `RAG_GRADIO_PORT` (default `7860`)
+
+**Usage:**
+```bash
+# Terminal 1: Start RAG API
+./scripts/run_rag_api.sh
+
+# Terminal 2: Start Gradio
+python scripts/run_rag_gradio.py
+# Or: ./scripts/run_rag_gradio.sh
+
+# Open http://127.0.0.1:7860
+```
 
 ---
 
