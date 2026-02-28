@@ -1,9 +1,9 @@
 """
 RAG REST API - FastAPI service for multi-user RAG queries.
 
-Phase 1+2 of multi-user service plan. Wraps RAGPipeline with HTTP endpoints.
+Multi-user service plan. Wraps RAGPipeline with HTTP endpoints.
 Build pipeline once at startup, reuse for all requests.
-Phase 2: Concurrency (semaphore), reliability (timeouts, 503 on overload).
+Concurrency (semaphore), reliability (timeouts, 503 on overload).
 
 Endpoints:
   POST /query - Single RAG query
@@ -50,7 +50,7 @@ except ImportError:
 RAG_API_HOST = os.getenv("RAG_API_HOST", "0.0.0.0")
 RAG_API_PORT = int(os.getenv("RAG_API_PORT", "8000"))
 RAG_QUERY_TIMEOUT = int(os.getenv("RAG_QUERY_TIMEOUT", "120"))
-# Phase 2: Concurrency and reliability
+# Concurrency and reliability
 RAG_MAX_CONCURRENT_QUERIES = int(os.getenv("RAG_MAX_CONCURRENT_QUERIES", "10"))
 RAG_QUEUE_TIMEOUT = int(os.getenv("RAG_QUEUE_TIMEOUT", "30"))
 
@@ -105,12 +105,12 @@ async def lifespan(app: Any):
         chroma_path=chroma_path,
         collection_name=os.getenv("CHROMA_COLLECTION_NAME", "documents"),
         retrieval_k=int(os.getenv("RAG_RETRIEVAL_K", os.getenv("MAX_RETRIEVAL_DOCS", "5"))),
-        llm_model=os.getenv("RAG_LLM_MODEL", "llama3.2:latest"),
+        llm_model=os.getenv("RAG_LLM_MODEL", "qwen3:1.7b"),
         verbose=False,
     )
     # app.state: shared storage for all route handlers (request-scoped data goes in request.state)
     app.state.pipeline = _pipeline
-    # Phase 2: Semaphore limits concurrent LLM calls to avoid OOM; excess requests wait or get 503
+    # Semaphore limits concurrent LLM calls to avoid OOM; excess requests wait or get 503
     app.state.query_semaphore = asyncio.Semaphore(RAG_MAX_CONCURRENT_QUERIES)
     yield  # App runs here; code below runs on shutdown
     _pipeline = None
@@ -147,9 +147,9 @@ class QueryRequest(BaseModel):
     """
 
     question: str = Field(..., min_length=1, max_length=4096, description="User question")
-    mode: Literal["documents", "general", "hybrid"] = Field(
-        default="hybrid",
-        description="Answer mode: documents only, general knowledge only, or hybrid",
+    mode: Literal["documents", "general", "hybrid", "auto"] = Field(
+        default="auto",
+        description="Answer mode: documents, general, hybrid, or auto (parallel intent classifier)",
     )
 
 
@@ -162,6 +162,7 @@ class QueryResponse(BaseModel):
     answer: str = Field(..., description="Generated answer")
     source: str = Field(..., description="Source label (Document(s) or General Knowledge)")
     sources: list[dict[str, str]] = Field(default_factory=list, description="Source file and page references")
+    selected_mode: str | None = Field(default=None, description="Resolved mode when request used mode=auto")
 
 
 class HealthResponse(BaseModel):
@@ -178,7 +179,7 @@ async def query(request: QueryRequest) -> QueryResponse:
     POST /query: Run a single RAG query.
     - request: FastAPI injects parsed JSON as QueryRequest (validated).
     - response_model: FastAPI serializes return value to JSON and validates.
-    - Phase 2: Semaphore limits concurrent queries; 503 if queue wait exceeds RAG_QUEUE_TIMEOUT.
+    - Semaphore limits concurrent queries; 503 if queue wait exceeds RAG_QUEUE_TIMEOUT.
     - Runs sync pipeline.query() in thread pool to avoid blocking the event loop.
     """
     pipeline = app.state.pipeline
@@ -186,7 +187,7 @@ async def query(request: QueryRequest) -> QueryResponse:
         raise HTTPException(status_code=503, detail="Pipeline not ready")
 
     semaphore = app.state.query_semaphore
-    # Phase 2: Acquire slot; 503 if server is overloaded and wait exceeds queue timeout
+    # Acquire slot; 503 if server is overloaded and wait exceeds queue timeout
     try:
         await asyncio.wait_for(semaphore.acquire(), timeout=RAG_QUEUE_TIMEOUT)
     except asyncio.TimeoutError:
@@ -195,7 +196,7 @@ async def query(request: QueryRequest) -> QueryResponse:
             detail=f"Server busy. Try again later (queue timeout {RAG_QUEUE_TIMEOUT}s)",
         )
 
-    def _run_query() -> tuple[str, list]:
+    def _run_query() -> tuple[str, list, str]:
         return pipeline.query(
             request.question,
             mode=request.mode,
@@ -204,7 +205,7 @@ async def query(request: QueryRequest) -> QueryResponse:
 
     try:
         loop = asyncio.get_event_loop()
-        answer, docs = await asyncio.wait_for(
+        answer, docs, selected_mode = await asyncio.wait_for(
             loop.run_in_executor(None, _run_query),
             timeout=RAG_QUERY_TIMEOUT,
         )
@@ -215,13 +216,15 @@ async def query(request: QueryRequest) -> QueryResponse:
     finally:
         semaphore.release()
 
-    source_label = _get_source_label(request.mode, docs)
+    mode_for_source = selected_mode if request.mode == "auto" else request.mode
+    source_label = _get_source_label(mode_for_source, docs)
     sources = _docs_to_sources(docs)
 
     return QueryResponse(
         answer=answer,
         source=source_label,
         sources=sources,
+        selected_mode=selected_mode if request.mode == "auto" else None,
     )
 
 

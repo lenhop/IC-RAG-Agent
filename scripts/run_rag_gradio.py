@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Gradio chat UI for RAG - Phase 4.
+Gradio chat UI for RAG.
 
 Calls the RAG REST API (POST /query) and displays answers with source attribution.
 Requires the RAG API to be running: ./scripts/run_rag_api.sh
@@ -73,14 +73,17 @@ def _call_rag_api(question: str, mode: str) -> str:
     answer = data.get("answer", "")
     source = data.get("source", "")
     sources = data.get("sources", [])
+    selected_mode = data.get("selected_mode")
 
-    # Format: answer + source + optional source list
+    # Format: answer + source + optional source list + selected_mode when auto
     if not answer:
         return answer
 
     parts = [answer]
     if source:
         parts.append(f"\n\n---\nSource: {source}")
+    if selected_mode:
+        parts.append(f"\nAuto selected: {selected_mode}")
     if sources:
         lines = [f"  {i}. {s.get('file', '?')} (page {s.get('page', '?')})" for i, s in enumerate(sources, 1)]
         parts.append("\n" + "\n".join(lines))
@@ -97,15 +100,16 @@ def main() -> None:
         return _call_rag_api(message, mode)
 
     mode_radio = gr.Radio(
-        choices=["documents", "general", "hybrid"],
-        value="hybrid",
+        choices=["documents", "general", "hybrid", "auto"],
+        value="auto",
         label="Answer mode",
-        info="documents=only from ingested docs; general=LLM only; hybrid=both",
+        info="documents=only from ingested docs; general=LLM only; hybrid=both; auto=sequential classifier (keywords + distance threshold)",
     )
 
     demo = gr.ChatInterface(
         fn=chat_fn,
         additional_inputs=[mode_radio],
+        additional_inputs_accordion=gr.Accordion(label="Answer mode", open=True),
         title="RAG Chat",
         description="Ask questions. Requires RAG API running at " + RAG_API_URL,
     )

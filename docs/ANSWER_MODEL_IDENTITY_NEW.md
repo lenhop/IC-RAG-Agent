@@ -13,13 +13,15 @@
 | **3. 检索结果判断** | Chroma retrieve + 距离阈值，results>0→documents，=0→general；可选 LLM 二次判断 | 与现有 RAG 流程一致，易落地；阈值需调优 |
 | **4. 直接 LLM 判断** | 用 LLM 直接输出 documents/general/hybrid | 灵活；每次 +1~2s 延迟，资源占用高 |
 
-**结论**：方案 3 为最佳主路径（零额外依赖、复用检索）；方案 1 可作快速路径；方案 2、4 作为后续增强。
+**结论**：四方案统一为**并行四策略**架构（见第 2 节）：查询重写后，FAQ、Documents、Keywords、LLM 四路并行，每路返回 Yes/No，聚合后决定答案模式。
 
 ---
 
 ## 2. 架构与流程图
 
-### 2.1 总体架构
+### 2.1 总体架构（并行四策略）
+
+用户 Query 经查询重写后，四路并行执行，每路返回 Yes/No，聚合后决定最终答案模式。
 
 ```mermaid
 flowchart TB
@@ -27,132 +29,117 @@ flowchart TB
         Q[用户 Query]
     end
 
-    subgraph preprocess [预处理层]
-        QR[查询重写<br/>轻量版<br/>阶段1A]
+    subgraph preprocess [预处理]
+        QR[查询重写]
     end
 
-    subgraph schemes [识别方案层]
-        S1[方案1: 关键词识别]
-        S2[方案2: FAQ 相似度]
-        S3[方案3: 检索结果判断]
-        S4[方案4: LLM 直接判断]
+    subgraph parallel [四路并行]
+        M1[方法1: Documents]
+        M2[方法2: Keywords]
+        M3[方法3: FAQ]
+        M4[方法4: LLM]
     end
 
-    subgraph output [输出模式]
-        D[documents]
-        G[general]
-        H[hybrid]
+    subgraph signals [每路输出]
+        S1[Yes/No]
+        S2[Yes/No]
+        S3[Yes/No]
+        S4[Yes/No]
+    end
+
+    subgraph output [聚合与输出]
+        AGG[聚合]
+        GEN[general]
+        DOC[documents / hybrid]
     end
 
     Q --> QR
-    QR --> S1
-    QR --> S2
-    QR --> S3
-    QR --> S4
-    S1 --> D
-    S1 --> G
-    S2 --> D
-    S2 --> G
-    S3 --> D
-    S3 --> G
-    S3 --> H
-    S4 --> D
-    S4 --> G
-    S4 --> H
+    QR --> M1
+    QR --> M2
+    QR --> M3
+    QR --> M4
+    M1 --> S1
+    M2 --> S2
+    M3 --> S3
+    M4 --> S4
+    S1 --> AGG
+    S2 --> AGG
+    S3 --> AGG
+    S4 --> AGG
+    AGG --> GEN
+    AGG --> DOC
 ```
 
-### 2.2 阶段 1 工作流
+### 2.2 主流程图
 
-**方案 A：检索结果数量（含查询重写）**
+```mermaid
+flowchart TD
+    A[User Query]
+    B[Query Rewriting]
+    A --> B
+
+    B --> L1
+    B --> L2
+    B --> L3
+
+    L1[Line 1: Embed Query]
+    L2[Line 2: Match Keywords]
+    L3[Line 3: LLM Classify]
+
+    L1 --> M1[方法1: FAQ 相似度]
+    L1 --> M2[方法2: Doc 检索距离]
+    M1 --> R1[Yes/No]
+    M2 --> R2[Yes/No]
+
+    L2 --> M3[方法3: Keywords]
+    M3 --> R3[Yes/No]
+
+    L3 --> M4[方法4: LLM]
+    M4 --> ZS[Zero-shot NLI]
+    ZS --> MAP[documents=Yes, general=No]
+    MAP --> R4[Yes/No]
+
+    R1 --> AGG
+    R2 --> AGG
+    R3 --> AGG
+    R4 --> AGG
+
+    AGG[聚合]
+    AGG --> CHECK{All No?}
+    CHECK -->|Yes| GEN[general]
+    CHECK -->|No| MODE[documents or hybrid]
+```
+
+**说明**：查询重写后分三路，其中 Embed 路含两个子方法（FAQ、Docs），共四路独立方法，每路返回 Yes/No。
+
+### 2.3 四路方法及 Yes 条件
+
+| 方法 | 说明 | Yes 条件 | No 条件 |
+|------|------|----------|---------|
+| **1. Documents** | Chroma 检索文档，计算向量距离 | min_dist ≤ 阈值（有相关文档） | min_dist > 阈值 |
+| **2. Keywords** | 匹配业务关键词/短语 | query 命中关键词 | 未命中 |
+| **3. FAQ** | 与 Chroma 中 FAQ 问题算相似度 | faq_min_dist < 阈值 | faq_min_dist ≥ 阈值 |
+| **4. LLM** | Zero-shot NLI 二分类 | 输出 documents | 输出 general |
+
+**LLM 分支**：使用 zero-shot NLI 模型（如 `distilbert-base-uncased-finetuned-mnli`），仅输出 documents 或 general（无 hybrid），将 documents 映射为 Yes，general 映射为 No。
+
+### 2.4 聚合规则
+
+| 聚合结果 | 最终模式 |
+|----------|----------|
+| 四路全为 No | **general** |
+| 至少一路为 Yes | **documents** 或 **hybrid**（由配置决定） |
+
+### 2.5 简化流程图（高层）
 
 ```mermaid
 flowchart LR
-    A[用户 Query] --> B[查询重写<br/>轻量版]
-    B --> C[Embed 嵌入]
-    C --> D[Chroma Retrieve]
-    D --> E{results > 0?}
-    E -->|是| F[documents / hybrid]
-    E -->|否| G[general]
-```
-
-**方案 B：简单关键词**
-
-```mermaid
-flowchart LR
-    A[用户 Query] --> B{含业务关键词?}
-    B -->|是| C[documents]
-    B -->|否| D[general]
-```
-
-### 2.3 阶段 2 工作流
-
-**方案 A：检索 + 距离阈值**
-
-```mermaid
-flowchart TB
-    A[用户 Query] --> B[查询重写<br/>轻量版]
-    B --> C[Embed + Chroma Retrieve]
-    C --> D[获取 distances]
-    D --> E{有结果 且 min_dist ≤ 阈值?}
-    E -->|是| F[documents / hybrid]
-    E -->|否| G[general]
-```
-
-**方案 B：关键词 + 检索组合**
-
-```mermaid
-flowchart TB
-    A[用户 Query] --> B[查询重写<br/>轻量版]
-    B --> C{通用前缀 且 无业务词?}
-    C -->|是| D[general]
-    C -->|否| E[Embed + Retrieve]
-    E --> F{min_dist ≤ 阈值?}
-    F -->|是| G[documents / hybrid]
-    F -->|否| H[general]
-```
-
-### 2.4 阶段 3 工作流
-
-**方案 A：FAQ 相似度**
-
-```mermaid
-flowchart LR
-    A[用户 Query] --> B[查询重写<br/>轻量版]
-    B --> C[Embed]
-    C --> D[与 FAQ 向量算相似度]
-    D --> E{相似度 > 阈值?}
-    E -->|是| F[documents]
-    E -->|否| G[general / hybrid]
-```
-
-**方案 B：LLM 二次判断**
-
-```mermaid
-flowchart TB
-    A[检索 results > 0] --> B{距离在阈值附近?}
-    B -->|否| C[按距离直接选模式]
-    B -->|是| D[LLM 三分类]
-    D --> E[documents / general / hybrid]
-    
-    style A fill:#e1f5ff
-    note1[注: 检索前已做查询重写]
-```
-
-### 2.5 阶段 4 工作流：多策略级联
-
-```mermaid
-flowchart TB
-    A[用户 Query] --> B[查询重写<br/>轻量版]
-    B --> C[规则快速路径]
-    C --> D{命中 general?}
-    D -->|是| E[general]
-    D -->|否| F[Chroma 检索 + 距离]
-    F --> G{min_dist ≤ 阈值?}
-    G -->|是| H{启用 FAQ/LLM?}
-    G -->|否| E
-    H -->|否| I[documents / hybrid]
-    H -->|是| J[FAQ 或 LLM 二次判断]
-    J --> K[最终模式]
+    A[User Query] --> B[Query Rewrite]
+    B --> C[4 Parallel Methods]
+    C --> D[Aggregate Yes/No]
+    D --> E{All No?}
+    E -->|Yes| F[general]
+    E -->|No| G[documents or hybrid]
 ```
 
 ---
@@ -208,18 +195,18 @@ flowchart TB
 | 方案 | 实现 | 适用 |
 |------|------|------|
 | **A. FAQ 相似度** | 收集 Amazon SellerCentral FAQ，embed 后与 query 算相似度；高相似→documents | 有稳定 FAQ 来源时 |
-| **B. LLM 二次判断** | 当检索 results>0 且距离在阈值附近时，用 qwen3:1.7b 做三分类 | 边界 case 多时 |
+| **B. LLM 二次判断** | 当检索 results>0 且距离在阈值附近时，用 zero-shot NLI 做二分类（documents/general） | 边界 case 多时 |
 
 **注意**：方案 B 增加 ~1s 延迟，建议默认关闭，按需开启。
 
 ---
 
-### 阶段 4：多策略融合（可选）
+### 阶段 4：并行四策略融合
 
-**目标**：级联多信号，提升鲁棒性。
+**目标**：采用并行四策略架构（见 2.1），四路并行、聚合 Yes/No 决定最终模式。
 
 ```
-query → 规则快速路径(general?) → 检索+距离 → [可选]FAQ/LLM 二次判断 → 最终模式
+query → 查询重写 → [FAQ | Documents | Keywords | LLM] 四路并行 → 聚合 → general / documents / hybrid
 ```
 
 ---
@@ -296,18 +283,17 @@ def rewrite_query_lightweight(question: str) -> str:
 
 ## 6. 总结
 
-| 阶段 | 方案 | 优先级 |
+| 方法 | 说明 | 优先级 |
 |------|------|--------|
-| 1 | 查询重写（轻量版） | **必做** |
-| 1 | 检索结果数量（B） | 必做 |
-| 1 | 简单关键词（C） | 可选 |
-| 2 | 检索+距离阈值（A） | 必做 |
-| 2 | 关键词+检索组合（B） | 推荐 |
-| 3 | FAQ 相似度（A） | 有 FAQ 时 |
-| 3 | LLM 二次判断（B） | 边界多时 |
-| 4 | 多策略级联 | 可选 |
+| 查询重写 | 术语补全、标准化 | **必做** |
+| Documents | Chroma 检索 + 距离阈值 | 必做 |
+| Keywords | 业务关键词/短语匹配 | 推荐 |
+| FAQ | FAQ 相似度（Chroma 中 FAQ 向量） | 有 FAQ 时 |
+| LLM | Zero-shot NLI 二分类 | 可选 |
 
-**落地顺序**：阶段 1A（查询重写）→ 1B（检索数量）→ 2A（距离阈值）→ 2B（关键词组合）→ 按需 3A/3B。
+**架构**：并行四策略（见 2.1）。四路全 No → general；至少一路 Yes → documents 或 hybrid。
+
+**落地顺序**：查询重写 → Documents + Keywords → 按需加 FAQ、LLM。
 
 **查询重写重要性**：
 - 短/模糊查询（"FBA fee"、"cost?"）直接检索召回差，必须做轻量重写

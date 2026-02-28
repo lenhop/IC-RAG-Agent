@@ -5,6 +5,11 @@ Layer 2: Composes search -> load -> clean -> split -> embed -> store.
 Optimized for low memory: processes files in batches, avoids loading all at once.
 """
 
+# [ANNOTATION] Disable Chroma telemetry before any chromadb import.
+# Prevents "Failed to send telemetry event" errors (PostHog API compatibility issue).
+import os
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "FALSE")
+
 import gc
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -54,13 +59,14 @@ def rag_ingest_pipeline(
     Returns:
         Number of chunks stored.
     """
-    from .cleaners import DocumentCleaner
+    from .document_cleaners import DocumentCleaner
     from .embeddings import create_embeddings
     from .document_loader import load_documents_from_files
     from .file_search import search_files
     from .splitters import split_documents
 
     import chromadb
+    from chromadb.config import Settings
 
     search_kwargs = search_kwargs or {}
     clean_kwargs = clean_kwargs or {}
@@ -82,7 +88,12 @@ def rag_ingest_pipeline(
         import shutil
         shutil.rmtree(chroma_path)
 
-    client = chromadb.PersistentClient(path=str(chroma_path))
+    # [ANNOTATION] Disable Chroma telemetry to avoid "Failed to send telemetry event" errors.
+    # Alternative: set env ANONYMIZED_TELEMETRY=FALSE before running.
+    client = chromadb.PersistentClient(
+        path=str(chroma_path),
+        settings=Settings(anonymized_telemetry=False),
+    )
     try:
         client.delete_collection(name=collection_name)
     except Exception:
@@ -178,7 +189,7 @@ def prepare_chunks_for_rag(
     Returns:
         List of chunk Documents.
     """
-    from .cleaners import DocumentCleaner
+    from .document_cleaners import DocumentCleaner
     from .document_loader import load_documents_from_files
     from .file_search import search_files
     from .splitters import split_documents

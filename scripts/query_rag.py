@@ -3,12 +3,12 @@
 RAG query script: retrieve from Chroma and generate answers using Ollama.
 
 Queries the Chroma vector store populated by load_documents_to_chroma.py.
-Uses Ollama llama3.2:latest for answer generation.
+Uses Ollama qwen3:1.7b for answer generation.
 
 Flow:
   1. Load embedding model (must match ingest)
   2. Load Chroma vector store
-  3. Create Ollama LLM (llama3.2:latest)
+  3. Create Ollama LLM (qwen3:1.7b)
   4. User question -> embed_query -> question vector
   5. Retrieve top-k docs from Chroma
   6. Build RAG prompt (context + question)
@@ -23,7 +23,11 @@ Usage:
 
 from __future__ import annotations
 
+# [ANNOTATION] Disable Chroma telemetry before any chromadb import.
+# Prevents "Failed to send telemetry event" errors (PostHog API compatibility issue).
 import os
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "FALSE")
+
 import sys
 from pathlib import Path
 
@@ -46,11 +50,37 @@ try:
 except ImportError:
     pass
 
+# Chroma compatibility: older persisted data used dict format; Chroma 1.4 expects PersistentData
+try:
+    from chromadb.segment.impl.vector.local_persistent_hnsw import PersistentData
+    _orig_load = PersistentData.load_from_file
+
+    @staticmethod
+    def _load_compat(filename: str) -> PersistentData:
+        import pickle
+        with open(filename, "rb") as f:
+            ret = pickle.load(f)
+        if isinstance(ret, dict):
+            return PersistentData(
+                dimensionality=ret.get("dimensionality"),
+                total_elements_added=ret.get("total_elements_added", 0),
+                max_seq_id=ret.get("max_seq_id", 0),
+                id_to_label=ret.get("id_to_label", {}),
+                label_to_id=ret.get("label_to_id", {}),
+                id_to_seq_id=ret.get("id_to_seq_id", {}),
+            )
+        return ret
+
+    PersistentData.load_from_file = _load_compat
+except Exception:
+    pass
+
 # Import from Layer 2 (src/rag/query_pipeline)
 from src.rag.query_pipeline import (
     RAGPipeline,
     AnswerMode,
     ANSWER_MODES,
+    QueryMode,
     get_collection_count,
     print_result,
 )
@@ -71,13 +101,13 @@ CHROMA_PERSIST_PATH = _resolve_path(
 )
 COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "documents")
 RETRIEVAL_K = int(os.getenv("RAG_RETRIEVAL_K", os.getenv("MAX_RETRIEVAL_DOCS", "5")))
-OLLAMA_MODEL = os.getenv("RAG_LLM_MODEL", "llama3.2:latest")
+OLLAMA_MODEL = os.getenv("RAG_LLM_MODEL", "qwen3:1.7b")
 EMBED_MODEL = os.getenv("RAG_EMBED_MODEL", "minilm")
 DEFAULT_QUERY = "What are the main topics in the documents?"
 
 
-def _parse_mode_input(raw: str) -> AnswerMode | None:
-    """Parse user input for mode: 1/doc, 2/general, 3/hybrid. Returns None if invalid."""
+def _parse_mode_input(raw: str) -> QueryMode | None:
+    """Parse user input for mode: 1/doc, 2/general, 3/hybrid, 4/auto. Returns None if invalid."""
     s = raw.strip().lower()
     if s in ("1", "doc", "documents"):
         return "documents"
@@ -85,13 +115,15 @@ def _parse_mode_input(raw: str) -> AnswerMode | None:
         return "general"
     if s in ("3", "hybrid"):
         return "hybrid"
+    if s in ("4", "auto"):
+        return "auto"
     return None
 
 
 def main(
     query: str | None = None,
     interactive: bool = False,
-    mode: AnswerMode = "hybrid",
+    mode: QueryMode = "auto",
     embed_model: str = EMBED_MODEL,
     chroma_path: str | None = None,
     collection_name: str | None = None,
@@ -125,9 +157,9 @@ def main(
         current_mode = mode
         last_answer = None
         print(
-            "\nAnswer modes: 1=documents only, 2=general knowledge only, 3=hybrid (default)"
+            "\nAnswer modes: 1=documents, 2=general, 3=hybrid, 4=auto (default)"
         )
-        print("Type 1/2/3 or doc/general/hybrid to switch mode. Type question to ask. Type `exit` to exit.\n")
+        print("Type 1/2/3/4 or doc/general/hybrid/auto to switch. Type question to ask. Type `exit` to exit.\n")
         while True:
             try:
                 q = input(f"[{current_mode}] Question: ").strip()
@@ -145,9 +177,11 @@ def main(
             if verbose:
                 print(f"\nQuery: {q}\n")
             try:
-                answer, docs = pipeline.query(q, mode=current_mode, verbose=verbose)
+                answer, docs, selected_mode = pipeline.query(q, mode=current_mode, verbose=verbose)
                 coll_count = get_collection_count(pipeline.vector_store) if not docs else None
-                print_result(answer, docs, mode=current_mode, collection_count=coll_count)
+                if current_mode == "auto" and verbose:
+                    print(f"  [Selected mode: {selected_mode}]\n")
+                print_result(answer, docs, mode=selected_mode, collection_count=coll_count)
                 last_answer = answer
             except Exception as e:
                 print(f"[ERROR] {e}")
@@ -156,16 +190,18 @@ def main(
     q = query or DEFAULT_QUERY
     if verbose:
         print(f"Query: {q}\n")
-    answer, docs = pipeline.query(q, mode=mode, verbose=verbose)
+    answer, docs, selected_mode = pipeline.query(q, mode=mode, verbose=verbose)
     coll_count = get_collection_count(pipeline.vector_store) if not docs else None
-    print_result(answer, docs, mode=mode, collection_count=coll_count)
+    if mode == "auto" and verbose:
+        print(f"  [Selected mode: {selected_mode}]\n")
+    print_result(answer, docs, mode=selected_mode, collection_count=coll_count)
     return answer
 
 
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(
-        description="RAG query: retrieve from Chroma, generate answer with Ollama llama3.2"
+        description="RAG query: retrieve from Chroma, generate answer with Ollama qwen3:1.7b"
     )
     parser.add_argument("--query", type=str, default=None, help="Question (default: built-in)")
     parser.add_argument(
@@ -186,9 +222,9 @@ if __name__ == "__main__":
     parser.add_argument("--llm-model", type=str, default=None, help=f"Ollama model (default: {OLLAMA_MODEL})")
     parser.add_argument(
         "--mode",
-        choices=ANSWER_MODES,
-        default="hybrid",
-        help="Answer mode: documents, general, or hybrid (default: hybrid)",
+        choices=[*ANSWER_MODES, "auto"],
+        default="auto",
+        help="Answer mode: documents, general, hybrid, or auto (auto classifier, default: auto)",
     )
     parser.add_argument("--quiet", "-q", action="store_true", help="Suppress timing output")
     args = parser.parse_args()

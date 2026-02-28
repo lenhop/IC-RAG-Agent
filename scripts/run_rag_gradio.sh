@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run Gradio chat UI for RAG (Phase 4).
+# Run Gradio chat UI for RAG.
 # Requires RAG API to be running: ./scripts/run_rag_api.sh
 #
 # Usage:

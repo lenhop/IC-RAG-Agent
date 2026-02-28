@@ -19,7 +19,10 @@ Embedding model: Use same model for load and RAG query.
   - qwen3: Qwen3-VL-Embedding-2B (higher quality, more RAM)
 """
 
+# [ANNOTATION] Disable Chroma telemetry before any chromadb import.
+# Prevents "Failed to send telemetry event" errors (PostHog API compatibility issue).
 import os
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "FALSE")
 import time
 import sys
 from pathlib import Path
