@@ -189,36 +189,62 @@ def classify_answer_mode_parallel(
     retrieval_k: int,
     faq_vectors: list,
     project_root: Path | None = None,
+    verbose: bool = False,
 ) -> tuple[AnswerMode, list, list]:
     """
     Parallel four-strategy intent classification.
 
-    Runs Documents, Keywords, FAQ, LLM methods; aggregates Yes/No -> final mode.
+    Runs Documents, Keywords, FAQ, LLM methods in parallel threads; aggregates Yes/No -> final mode.
     Embed and retrieve once; reuse for Documents + FAQ. Returns (effective_mode, retrieved_docs, question_vector).
     """
     from src.rag.intent_aggregator import aggregate_intent_signals
-    from src.rag.intent_methods import faq_method_yes_no, keywords_method_yes_no, llm_method_yes_no
+    from src.rag.intent_methods import run_all_intent_methods
 
     root = project_root or PROJECT_ROOT
+
+    # Step 4: embed question
+    t0 = time.perf_counter()
     question_vector = _step4_embed_question(embedder, question)
+    if verbose:
+        print(f"  [Step 4] Embed question: {time.perf_counter() - t0:.2f}s")
+
+    # Step 5: retrieve docs
+    t0 = time.perf_counter()
     retrieved_docs, distances = _step5_retrieve_docs(
         vector_store, question_vector, retrieval_k, include_distances=True
     )
-
     threshold = float(os.getenv("RAG_MODE_DISTANCE_THRESHOLD_GENERAL", "1.0"))
     min_dist = min(distances) if distances else float("inf")
-    doc_yes = min_dist <= threshold
-
-    kw_yes = keywords_method_yes_no(question, root)
+    if verbose:
+        print(f"  [Step 5] Retrieve docs: {time.perf_counter() - t0:.2f}s (k={retrieval_k}, docs={len(retrieved_docs)}, min_dist={min_dist:.4f})")
 
     faq_enabled = os.getenv("RAG_FAQ_SIMILARITY_ENABLED", "false").lower() in ("true", "1", "yes")
-    faq_yes = faq_method_yes_no(question_vector, faq_vectors) if (faq_enabled and faq_vectors) else False
-
     llm_enabled = os.getenv("RAG_LLM_GRAY_ZONE_ENABLED", "false").lower() in ("true", "1", "yes")
-    llm_yes = llm_method_yes_no(question) if llm_enabled else False
 
-    signals = [doc_yes, kw_yes, faq_yes, llm_yes]
+    # Run all four classification methods in parallel (logic in intent_methods)
+    responses = run_all_intent_methods(
+        question_vector,
+        retrieved_docs,
+        distances,
+        question,
+        faq_vectors,
+        project_root=root,
+        threshold=threshold,
+        faq_enabled=faq_enabled,
+        llm_enabled=llm_enabled,
+        verbose=verbose,
+    )
+
+    signals = [
+        responses["documents"]["yes_no"],
+        responses["keywords"]["yes_no"],
+        responses["faq"]["yes_no"],
+        responses["llm"]["yes_no"],
+    ]
     effective_mode = aggregate_intent_signals(signals)
+
+    if verbose:
+        print(f"  [Aggregation] signals={signals} -> {effective_mode}")
 
     if effective_mode == "general" and retrieved_docs:
         retrieved_docs = []
@@ -513,6 +539,7 @@ class RAGPipeline:
                         self.retrieval_k,
                         self.faq_vectors,
                         root,
+                        verbose=verbose,
                     )
                     if verbose:
                         print(f"  Step 4+5 (embed + retrieve + parallel classify): {time.perf_counter() - t0:.2f}s")

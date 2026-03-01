@@ -47,7 +47,7 @@ class TestKeywordFastPath:
         result = classify_answer_mode_sequential(
             question="what is machine learning?",
             retrieved_docs=[],
-            general_prefixes=["what is", "define", "什么是"],
+            general_prefixes=["what is", "define"],
             domain_signals=[],
         )
         assert result == "general"
@@ -57,7 +57,7 @@ class TestKeywordFastPath:
         result = classify_answer_mode_sequential(
             question="define algorithm",
             retrieved_docs=[],
-            general_prefixes=["what is", "define", "什么是"],
+            general_prefixes=["what is", "define"],
             domain_signals=[],
         )
         assert result == "general"

@@ -236,9 +236,18 @@ RAG_QUERY_REWRITE_MAX_LENGTH=10  # >10词不改写
 # 答案模式自动识别
 RAG_AUTO_MODE_ENABLED=true
 RAG_MODE_DISTANCE_THRESHOLD_GENERAL=1.0
-RAG_GENERAL_PREFIXES=what is,define,什么是
-RAG_DOMAIN_KEYWORDS=FBA,FBM,Amazon,eBay,库存,政策
+RAG_GENERAL_PREFIXES=what is,define
+RAG_DOMAIN_KEYWORDS=FBA,FBM,Amazon,eBay,inventory,policy
+RAG_TITLE_PHRASES_CSV=data/intent_classification/keywords/phrases_from_titles.csv
+# FAQ-derived keywords (optional): extract from FAQ questions when enabled
+RAG_FAQ_KEYWORDS_ENABLED=false
+RAG_FAQ_KEYWORDS_TOP_N=50
 ```
+
+关键词来源（三合一）：
+1. **RAG_DOMAIN_KEYWORDS**：环境变量，手动配置
+2. **RAG_TITLE_PHRASES_CSV**：文档标题提取的短语（phrases_from_titles.csv）
+3. **RAG_FAQ_CSV**：FAQ 问题中提取的关键词（RAG_FAQ_KEYWORDS_ENABLED=true 时启用）
 
 ### 5.3 查询重写实现示例
 
