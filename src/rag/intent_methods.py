@@ -259,6 +259,14 @@ def llm_method_yes_no(question: str, model_name: str | None = None) -> bool:
     return _llm_yes_no(question, model_name)
 
 
+def _run_with_timing(func, *args, **kwargs):
+    """Run a function and return (result, elapsed_seconds)."""
+    t0 = time.perf_counter()
+    result = func(*args, **kwargs)
+    elapsed = time.perf_counter() - t0
+    return result, elapsed
+
+
 # ---------------------------------------------------------------------------
 # Central entry point: run all methods in parallel, return unified dict
 # ---------------------------------------------------------------------------
@@ -306,28 +314,47 @@ def run_all_intent_methods(
     max_workers = int(os.getenv("RAG_PARALLEL_INTENT_WORKERS", "4"))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_doc = executor.submit(
-            documents_method_response, retrieved_docs, distances, thresh
+            _run_with_timing,
+            documents_method_response,
+            retrieved_docs,
+            distances,
+            thresh,
         )
-        future_kw = executor.submit(keywords_method_response, question, root)
+        future_kw = executor.submit(_run_with_timing, keywords_method_response, question, root)
         future_faq = executor.submit(
-            faq_method_response, question_vector, faq_vectors, faq_enabled
+            _run_with_timing,
+            faq_method_response,
+            question_vector,
+            faq_vectors,
+            faq_enabled,
         )
-        future_llm = executor.submit(llm_method_response, question, llm_enabled)
+        future_llm = executor.submit(
+            _run_with_timing, llm_method_response, question, llm_enabled
+        )
 
-        doc_resp = future_doc.result()
-        kw_resp = future_kw.result()
-        faq_resp = future_faq.result()
-        llm_resp = future_llm.result()
+        doc_resp, doc_elapsed = future_doc.result()
+        kw_resp, kw_elapsed = future_kw.result()
+        faq_resp, faq_elapsed = future_faq.result()
+        llm_resp, llm_elapsed = future_llm.result()
 
     if verbose:
         print(f"  [Step 5b] Parallel classify: {time.perf_counter() - t0:.2f}s")
         print(
             f"  [Four methods] Documents: {'Yes' if doc_resp['yes_no'] else 'No'} "
-            f"(min_dist={doc_resp['min_dist']:.4f} <= {thresh})"
+            f"(min_dist={doc_resp['min_dist']:.4f} <= {thresh}) ({doc_elapsed:.3f}s)"
         )
-        print(f"  [Four methods] Keywords:  {'Yes' if kw_resp['yes_no'] else 'No'}")
-        print(f"  [Four methods] FAQ:      {'Yes' if faq_resp['yes_no'] else 'No'}")
-        print(f"  [Four methods] LLM:      {'Yes' if llm_resp['yes_no'] else 'No'}")
+        print(
+            f"  [Four methods] Keywords:  {'Yes' if kw_resp['yes_no'] else 'No'} "
+            f"({kw_elapsed:.3f}s)"
+        )
+        print(
+            f"  [Four methods] FAQ:      {'Yes' if faq_resp['yes_no'] else 'No'} "
+            f"({faq_elapsed:.3f}s)"
+        )
+        print(
+            f"  [Four methods] LLM:      {'Yes' if llm_resp['yes_no'] else 'No'} "
+            f"({llm_elapsed:.3f}s)"
+        )
 
     return {
         "documents": doc_resp,

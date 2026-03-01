@@ -44,8 +44,22 @@ class TestIntentAggregator:
     """intent_aggregator module."""
 
     def test_all_no_returns_general(self):
-        """All No -> general."""
-        assert aggregate_intent_signals([False, False, False, False]) == "general"
+        """All No -> general (default)."""
+        assert aggregate_intent_signals(
+            [False, False, False, False], no_to_mode="general"
+        ) == "general"
+
+    def test_all_no_returns_documents_when_configured(self):
+        """All No -> documents when no_to_mode=documents."""
+        assert aggregate_intent_signals(
+            [False, False, False, False], no_to_mode="documents"
+        ) == "documents"
+
+    def test_all_no_returns_hybrid_when_configured(self):
+        """All No -> hybrid when no_to_mode=hybrid."""
+        assert aggregate_intent_signals(
+            [False, False, False, False], no_to_mode="hybrid"
+        ) == "hybrid"
 
     def test_one_yes_returns_hybrid_default(self):
         """At least one Yes -> hybrid (default)."""
@@ -59,7 +73,7 @@ class TestIntentAggregator:
 
     def test_empty_signals_returns_general(self):
         """Empty signals -> general."""
-        assert aggregate_intent_signals([]) == "general"
+        assert aggregate_intent_signals([], no_to_mode="general") == "general"
 
 
 class TestKeywordsMethod:

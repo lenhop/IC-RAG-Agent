@@ -100,7 +100,7 @@ CHROMA_PERSIST_PATH = _resolve_path(
     "CHROMA_DOCUMENTS_PATH", str(PROJECT_ROOT / "data" / "chroma_db" / "documents")
 )
 COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "documents")
-RETRIEVAL_K = int(os.getenv("RAG_RETRIEVAL_K", os.getenv("MAX_RETRIEVAL_DOCS", "5")))
+RETRIEVAL_K = int(os.getenv("RAG_RETRIEVAL_K", os.getenv("MAX_RETRIEVAL_DOCS", "3")))
 OLLAMA_MODEL = os.getenv("RAG_LLM_MODEL", "qwen3:1.7b")
 EMBED_MODEL = os.getenv("RAG_EMBED_MODEL", "minilm")
 DEFAULT_QUERY = "What are the main topics in the documents?"
@@ -129,6 +129,7 @@ def main(
     collection_name: str | None = None,
     retrieval_k: int | None = None,
     llm_model: str | None = None,
+    llm_provider: str | None = None,
     verbose: bool = True,
 ) -> str | None:
     """
@@ -149,6 +150,7 @@ def main(
         collection_name=collection_name or COLLECTION_NAME,
         retrieval_k=retrieval_k,
         llm_model=llm_model or OLLAMA_MODEL,
+        llm_provider=llm_provider,
         verbose=verbose,
         project_root=PROJECT_ROOT,
     )
@@ -219,7 +221,14 @@ if __name__ == "__main__":
     parser.add_argument("--chroma-path", type=str, default=None, help="Chroma persist directory")
     parser.add_argument("--collection", type=str, default=None, help="Chroma collection name")
     parser.add_argument("--retrieval-k", type=int, default=None, help="Number of docs to retrieve")
-    parser.add_argument("--llm-model", type=str, default=None, help=f"Ollama model (default: {OLLAMA_MODEL})")
+    parser.add_argument("--llm-model", type=str, default=None, help=f"LLM model (default: {OLLAMA_MODEL})")
+    parser.add_argument(
+        "--llm-provider",
+        type=str,
+        default=None,
+        choices=("ollama", "deepseek", "qwen", "glm"),
+        help="LLM provider: ollama (local) or deepseek, qwen, glm (remote). Default from RAG_LLM_PROVIDER.",
+    )
     parser.add_argument(
         "--mode",
         choices=[*ANSWER_MODES, "auto"],
@@ -239,6 +248,7 @@ if __name__ == "__main__":
             collection_name=args.collection,
             retrieval_k=args.retrieval_k,
             llm_model=args.llm_model,
+            llm_provider=args.llm_provider,
             verbose=not args.quiet,
         )
     except FileNotFoundError as e:

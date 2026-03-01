@@ -58,10 +58,12 @@ def _get_chroma_path(project_root: Path | None = None) -> str:
 
 
 COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "documents")
-RETRIEVAL_K = int(os.getenv("RAG_RETRIEVAL_K", os.getenv("MAX_RETRIEVAL_DOCS", "5")))
+RETRIEVAL_K = int(os.getenv("RAG_RETRIEVAL_K", os.getenv("MAX_RETRIEVAL_DOCS", "3")))
 OLLAMA_MODEL = os.getenv("RAG_LLM_MODEL", "qwen3:1.7b")
+LLM_PROVIDER = os.getenv("RAG_LLM_PROVIDER", "ollama").lower().strip()
 OLLAMA_TEMPERATURE = float(os.getenv("RAG_LLM_TEMPERATURE", "0.3"))
-OLLAMA_NUM_CTX = int(os.getenv("RAG_LLM_NUM_CTX", "4096"))
+OLLAMA_NUM_CTX = int(os.getenv("RAG_LLM_NUM_CTX", "2048"))
+OLLAMA_NUM_PREDICT = int(os.getenv("RAG_LLM_NUM_PREDICT", "512"))
 # Request timeout (seconds) for Ollama API; increase for large models (e.g. 120-300s)
 OLLAMA_REQUEST_TIMEOUT = float(os.getenv("RAG_LLM_TIMEOUT", os.getenv("OLLAMA_REQUEST_TIMEOUT", "120")))
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -219,7 +221,9 @@ def classify_answer_mode_parallel(
         print(f"  [Step 5] Retrieve docs: {time.perf_counter() - t0:.2f}s (k={retrieval_k}, docs={len(retrieved_docs)}, min_dist={min_dist:.4f})")
 
     faq_enabled = os.getenv("RAG_FAQ_SIMILARITY_ENABLED", "false").lower() in ("true", "1", "yes")
-    llm_enabled = os.getenv("RAG_LLM_GRAY_ZONE_ENABLED", "false").lower() in ("true", "1", "yes")
+    # Line 3: LLM classify - RAG_LLM_CLASSIFY_ENABLED (or legacy RAG_LLM_GRAY_ZONE_ENABLED)
+    llm_classify_env = os.getenv("RAG_LLM_CLASSIFY_ENABLED") or os.getenv("RAG_LLM_GRAY_ZONE_ENABLED", "false")
+    llm_enabled = llm_classify_env.lower() in ("true", "1", "yes")
 
     # Run all four classification methods in parallel (logic in intent_methods)
     responses = run_all_intent_methods(
@@ -277,20 +281,54 @@ def _step2_load_vector_store(
     )
 
 
-def _step3_create_llm(model: str = OLLAMA_MODEL):
-    """Step 3: Ollama + local model -> llm.
+def _step3_create_llm(
+    model: str | None = None,
+    provider: str | None = None,
+    purpose: str = "general",
+) -> object:
+    """Step 3: Create LLM - local (Ollama) or remote (Deepseek/Qwen/GLM via ModelManager).
 
-    Uses OLLAMA_REQUEST_TIMEOUT (default 120s) to avoid premature disconnects
-    when the model takes long to generate. Increase for large models (e.g. 300s).
+    Purpose-specific config (data leakage prevention):
+    - purpose="documents": Uses RAG_DOCUMENTS_LLM_* (default ollama). NEVER send to remote.
+    - purpose="general": Uses RAG_GENERAL_LLM_* (default same as RAG_LLM_PROVIDER/MODEL).
+
+    When provider=ollama: uses OllamaLLM (local).
+    When provider in (deepseek, qwen, glm): uses ai_toolkit ModelManager.
     """
-    from langchain_ollama import OllamaLLM
-    client_kwargs = {"timeout": OLLAMA_REQUEST_TIMEOUT}
-    return OllamaLLM(
-        model=model,
-        base_url=OLLAMA_BASE_URL,
+    if purpose == "documents":
+        # Security: documents LLM must be local (ollama) - never send doc data to remote
+        prov = "ollama"
+        mdl = model or os.getenv("RAG_DOCUMENTS_LLM_MODEL", OLLAMA_MODEL)
+    else:
+        prov = (
+            provider
+            or os.getenv("RAG_GENERAL_LLM_PROVIDER")
+            or os.getenv("RAG_LLM_PROVIDER", "ollama")
+        ).lower().strip()
+        mdl = model or os.getenv("RAG_GENERAL_LLM_MODEL") or os.getenv("RAG_LLM_MODEL", OLLAMA_MODEL)
+
+    if prov == "ollama":
+        from langchain_ollama import OllamaLLM
+
+        client_kwargs = {"timeout": OLLAMA_REQUEST_TIMEOUT}
+        return OllamaLLM(
+            model=mdl,
+            base_url=OLLAMA_BASE_URL,
+            temperature=OLLAMA_TEMPERATURE,
+            num_ctx=OLLAMA_NUM_CTX,
+            num_predict=OLLAMA_NUM_PREDICT,
+            client_kwargs=client_kwargs,
+        )
+    # Remote provider via ModelManager (deepseek, qwen, glm) - general only
+    from ai_toolkit.models import ModelManager
+
+    remote_model = mdl if not (":" in str(mdl)) else None
+    manager = ModelManager()
+    return manager.create_model(
+        provider=prov,
+        model=remote_model,
         temperature=OLLAMA_TEMPERATURE,
-        num_ctx=OLLAMA_NUM_CTX,
-        client_kwargs=client_kwargs,
+        max_tokens=OLLAMA_NUM_PREDICT,
     )
 
 
@@ -339,14 +377,37 @@ def _step5_retrieve_docs(
 
 
 def _step6_build_rag_prompt(
-    retrieved_docs: list, question: str, mode: AnswerMode = "hybrid"
+    retrieved_docs: list,
+    question: str,
+    mode: AnswerMode | Literal["synthesis"] = "documents",
+    for_hybrid: bool = False,
+    general_response: str = "",
 ) -> str:
-    """Step 6: retrieved docs + user question + mode -> build RAG prompt."""
+    """Step 6: retrieved docs + user question + mode -> build RAG prompt.
+
+    When for_hybrid=True, uses prompts that explicitly instruct document retrieval
+    response first and supplemental general knowledge second (for dual-response fusion).
+    """
     from langchain_core.prompts import PromptTemplate
     context = "\n\n".join(doc.page_content for doc in retrieved_docs)
 
     if mode == "documents":
-        template = """You are a helpful assistant. Answer ONLY based on the context below.
+        if for_hybrid:
+            template = """You are a helpful assistant. Your answer will be used as the PRIMARY response based on document retrieval.
+Start your response by explicitly stating it is from the retrieved documents (e.g. "Based on the retrieved documents:").
+Answer ONLY from the context below.
+If the context does not contain relevant information, or the information is missing or incomplete, respond exactly:
+"I cannot answer based on the provided documents."
+Explicitly state when information is missing or incomplete before giving that response.
+
+Context:
+{context}
+
+Question: {question}
+
+Answer (document retrieval response first):"""
+        else:
+            template = """You are a helpful assistant. Answer ONLY based on the context below.
 If the context is empty or does not contain relevant information, respond exactly:
 "I cannot answer based on the provided documents."
 
@@ -362,7 +423,18 @@ Answer:"""
         )
         return prompt.format(context=context, question=question)
     elif mode == "general":
-        template = """You are a helpful assistant. Answer the question using your general knowledge only.
+        if for_hybrid:
+            template = """You are a helpful assistant. Your answer will be combined AFTER a document-based answer.
+Provide supplemental general knowledge only. Do NOT repeat or paraphrase content from the document answer.
+Before answering, check: are you adding NEW information not already in the document response?
+If you have nothing new to add, or you would only repeat the document content, respond with exactly: ""
+If you have new, useful information to add, start with "Additional context from general knowledge:" and provide it.
+
+Question: {question}
+
+Answer (supplemental general knowledge, or empty string if nothing new):"""
+        else:
+            template = """You are a helpful assistant. Answer the question using your general knowledge only.
 Do not use any document context.
 
 Question: {question}
@@ -373,39 +445,74 @@ Answer:"""
             input_variables=["question"],
         )
         return prompt.format(question=question)
-    else:
-        template = """You are a helpful assistant. Answer based on the provided context.
-You may supplement with your general knowledge if the context is incomplete or does not fully cover the question.
+    elif mode == "synthesis":
+        # Local LLM synthesizes: documents + remote general response (documents never leave local)
+        template = """You are a helpful assistant. Combine the document information with the general knowledge provided below.
+Prioritize document facts. Integrate general knowledge only when it adds value or fills gaps.
+Do not repeat or contradict. Output a single coherent answer.
 
-Context:
+Document context:
 {context}
+
+General knowledge (from remote model, question only - no documents were sent):
+{general_response}
 
 Question: {question}
 
-Answer:"""
+Combined answer:"""
         prompt = PromptTemplate(
             template=template,
-            input_variables=["context", "question"],
+            input_variables=["context", "general_response", "question"],
         )
-        return prompt.format(context=context, question=question)
+        return prompt.format(
+            context=context,
+            general_response=general_response or "(none)",
+            question=question,
+        )
+    else:
+        raise ValueError(f"Unsupported mode: {mode}")
 
 
 def _step7_generate_answer(llm, rag_prompt: str) -> str:
     """Step 7: rag prompt + llm -> answer.
 
-    Retries on transient errors (RemoteProtocolError, ConnectError) that
-    often occur when Ollama is loading the model or under memory pressure.
+    Supports both OllamaLLM (returns str) and ChatOpenAI/GLM (returns AIMessage).
+    Retries on transient errors. Remote APIs: check API key and rate limits.
     """
     import httpx
 
     max_retries = int(os.getenv("RAG_LLM_MAX_RETRIES", "2"))
     retry_delay = float(os.getenv("RAG_LLM_RETRY_DELAY", "5.0"))
     last_exc = None
+    provider = os.getenv("RAG_LLM_PROVIDER", "ollama").lower().strip()
+
+    def _normalize(out) -> str:
+        """OllamaLLM returns str; ChatOpenAI returns AIMessage with .content."""
+        if out is None:
+            return ""
+        return (out.content if hasattr(out, "content") else out) or ""
+
+    # Retryable: connection/transport errors
+    retryable = (httpx.RemoteProtocolError, httpx.ConnectError, ConnectionError)
+    # Non-retryable: missing API key (ModelManager), auth, rate limit
+    non_retryable: tuple = (ValueError,)
+    try:
+        from openai import AuthenticationError, RateLimitError
+        non_retryable = (ValueError, AuthenticationError, RateLimitError)
+    except ImportError:
+        pass
 
     for attempt in range(max_retries + 1):
         try:
-            return llm.invoke(rag_prompt) or ""
-        except (httpx.RemoteProtocolError, httpx.ConnectError, ConnectionError) as e:
+            out = llm.invoke(rag_prompt)
+            return _normalize(out)
+        except non_retryable as e:
+            hint = (
+                "Check API key (DEEPSEEK_API_KEY, QWEN_API_KEY, GLM_API_KEY) and rate limits."
+                if provider != "ollama" else ""
+            )
+            raise RuntimeError(f"LLM failed: {e}. {hint}".strip()) from e
+        except retryable as e:
             last_exc = e
             if attempt < max_retries:
                 time.sleep(retry_delay * (attempt + 1))
@@ -413,10 +520,53 @@ def _step7_generate_answer(llm, rag_prompt: str) -> str:
             hint = (
                 "Ollama may have disconnected (OOM, model loading, or server restart). "
                 "Check: ollama list, ollama serve. Try RAG_LLM_TIMEOUT=300 or a smaller model."
+                if provider == "ollama"
+                else "Remote API connection failed. Check network and provider status."
             )
             raise RuntimeError(f"LLM failed after {max_retries + 1} attempts: {e}. {hint}") from last_exc
 
     return ""  # unreachable
+
+
+def _step7_hybrid_dual_response(
+    llm_documents: object,
+    llm_general: object,
+    retrieved_docs: list,
+    question: str,
+    verbose: bool = False,
+) -> str:
+    """Step 7 (hybrid): 2-step flow, documents NEVER sent to remote LLM.
+
+    Step 1: Remote LLM generates general knowledge (question only, no documents).
+    Step 2: Local LLM synthesizes final answer using documents + remote response + question.
+
+    Security: Documents stay local. Remote LLM receives only the question.
+    """
+    # Step 1: Remote LLM - general knowledge only (no documents)
+    general_prompt = _step6_build_rag_prompt(
+        [], question, mode="general", for_hybrid=True
+    )
+    t0 = time.perf_counter()
+    general_response = _step7_generate_answer(llm_general, general_prompt)
+    general_elapsed = time.perf_counter() - t0
+    if verbose:
+        print(f"  Step 7a (Remote LLM, general): {general_elapsed:.2f}s")
+
+    # Step 2: Local LLM - synthesize documents + general response
+    t0 = time.perf_counter()
+    synthesis_prompt = _step6_build_rag_prompt(
+        retrieved_docs,
+        question,
+        mode="synthesis",
+        general_response=general_response,
+    )
+    if verbose:
+        print(f"  Step 6 (build synthesis prompt): {time.perf_counter() - t0:.2f}s")
+    t0 = time.perf_counter()
+    answer = _step7_generate_answer(llm_documents, synthesis_prompt)
+    if verbose:
+        print(f"  Step 7b (Local LLM, synthesize): {time.perf_counter() - t0:.2f}s")
+    return answer.strip()
 
 
 class RAGPipeline:
@@ -432,10 +582,14 @@ class RAGPipeline:
         retrieval_k: int = RETRIEVAL_K,
         faq_questions: list | None = None,
         faq_vectors: list | None = None,
+        llm_documents: object | None = None,
+        llm_general: object | None = None,
     ):
         self.embedder = embedder
         self.vector_store = vector_store
-        self.llm = llm
+        self.llm = llm  # Legacy: used when llm_documents/llm_general not set
+        self.llm_documents = llm_documents or llm
+        self.llm_general = llm_general or llm
         self.retrieval_k = retrieval_k
         self.faq_questions = faq_questions or []
         self.faq_vectors = faq_vectors or []
@@ -448,6 +602,7 @@ class RAGPipeline:
         collection_name: str | None = None,
         retrieval_k: int | None = None,
         llm_model: str | None = None,
+        llm_provider: str | None = None,
         verbose: bool = True,
         project_root: Path | None = None,
     ) -> "RAGPipeline":
@@ -478,9 +633,10 @@ class RAGPipeline:
             print(f"  [Build] Step 2 (load vector store): {time.perf_counter() - t0:.2f}s")
 
         t0 = time.perf_counter()
-        llm = _step3_create_llm(llm_model)
+        llm_documents = _step3_create_llm(purpose="documents")
+        llm_general = _step3_create_llm(llm_model, provider=llm_provider, purpose="general")
         if verbose:
-            print(f"  [Build] Step 3 (create LLM): {time.perf_counter() - t0:.2f}s")
+            print(f"  [Build] Step 3 (create LLMs): {time.perf_counter() - t0:.2f}s")
 
         # Load and embed FAQ questions if enabled
         faq_questions: list = []
@@ -501,7 +657,16 @@ class RAGPipeline:
             print(f"  [Build] Total setup: {time.perf_counter() - total_start:.2f}s")
             print(f"  [Build] Chroma: {chroma_path} | collection={collection_name} | chunks={coll_count}\n")
 
-        return cls(embedder, vector_store, llm, retrieval_k, faq_questions=faq_questions, faq_vectors=faq_vectors)
+        return cls(
+            embedder,
+            vector_store,
+            llm_documents,
+            retrieval_k,
+            faq_questions=faq_questions,
+            faq_vectors=faq_vectors,
+            llm_documents=llm_documents,
+            llm_general=llm_general,
+        )
 
     def query(
         self, question: str, mode: QueryMode = "hybrid", verbose: bool = True
@@ -581,10 +746,17 @@ class RAGPipeline:
 
         # Now run the standard flow with effective_mode
         if effective_mode == "general":
+            t0 = time.perf_counter()
             rag_prompt = _step6_build_rag_prompt([], effective_question, mode="general")
+            if verbose:
+                print(f"  Step 6 (build RAG prompt): {time.perf_counter() - t0:.2f}s")
             if verbose and mode != "auto":
                 print(f"  Step 4 (embed question): skipped (general knowledge mode)")
                 print(f"  Step 5 (retrieve docs): skipped (general knowledge mode)")
+            t0 = time.perf_counter()
+            answer = _step7_generate_answer(self.llm_general, rag_prompt)
+            if verbose:
+                print(f"  Step 7 (LLM generate, general): {time.perf_counter() - t0:.2f}s")
         else:
             if mode != "auto" or len(retrieved_docs) == 0:
                 # For explicit mode or auto: need to embed/retrieve if we don't have docs yet
@@ -621,15 +793,39 @@ class RAGPipeline:
                     effective_mode,
                 )
 
-            t0 = time.perf_counter()
-            rag_prompt = _step6_build_rag_prompt(retrieved_docs, effective_question, mode=effective_mode)
-            if verbose:
-                print(f"  Step 6 (build RAG prompt): {time.perf_counter() - t0:.2f}s")
-
-        t0 = time.perf_counter()
-        answer = _step7_generate_answer(self.llm, rag_prompt)
-        if verbose:
-            print(f"  Step 7 (LLM generate): {time.perf_counter() - t0:.2f}s")
+            if effective_mode == "hybrid" and len(retrieved_docs) == 0:
+                # Hybrid with no docs: fall back to general-only (single call, no doc data)
+                t0 = time.perf_counter()
+                rag_prompt = _step6_build_rag_prompt(
+                    [], effective_question, mode="general"
+                )
+                if verbose:
+                    print(f"  Step 6 (build RAG prompt): {time.perf_counter() - t0:.2f}s")
+                t0 = time.perf_counter()
+                answer = _step7_generate_answer(self.llm_general, rag_prompt)
+                if verbose:
+                    print(f"  Step 7 (LLM generate): {time.perf_counter() - t0:.2f}s")
+            elif effective_mode == "hybrid" and len(retrieved_docs) > 0:
+                # Hybrid with docs: remote general + local synthesis (documents never leave local)
+                answer = _step7_hybrid_dual_response(
+                    self.llm_documents,
+                    self.llm_general,
+                    retrieved_docs,
+                    effective_question,
+                    verbose=verbose,
+                )
+            else:
+                # Documents mode with docs: use local LLM only (no data leakage)
+                t0 = time.perf_counter()
+                rag_prompt = _step6_build_rag_prompt(
+                    retrieved_docs, effective_question, mode=effective_mode
+                )
+                if verbose:
+                    print(f"  Step 6 (build RAG prompt): {time.perf_counter() - t0:.2f}s")
+                t0 = time.perf_counter()
+                answer = _step7_generate_answer(self.llm_documents, rag_prompt)
+                if verbose:
+                    print(f"  Step 7 (LLM generate, documents): {time.perf_counter() - t0:.2f}s")
 
         if verbose:
             print(f"  Query total: {time.perf_counter() - total_start:.2f}s\n")

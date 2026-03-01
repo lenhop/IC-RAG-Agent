@@ -74,43 +74,67 @@ flowchart TB
 
 ```mermaid
 flowchart TD
-    A[User Query]
-    B[Query Rewriting]
-    A --> B
+    subgraph intent [意图分类]
+        A[User Query]
+        B[Query Rewriting]
+        A --> B
 
-    B --> L1
-    B --> L2
-    B --> L3
+        B --> L1
+        B --> L2
+        B --> L3
 
-    L1[Line 1: Embed Query]
-    L2[Line 2: Match Keywords]
-    L3[Line 3: LLM Classify]
+        L1[Line 1: Embed Query]
+        L2[Line 2: Match Keywords]
+        L3[Line 3: LLM Classify]
 
-    L1 --> M1[方法1: FAQ 相似度]
-    L1 --> M2[方法2: Doc 检索距离]
-    M1 --> R1[Yes/No]
-    M2 --> R2[Yes/No]
+        L1 --> M1[方法1: FAQ 相似度]
+        L1 --> M2[方法2: Doc 检索距离]
+        M1 --> R1[Yes/No]
+        M2 --> R2[Yes/No]
 
-    L2 --> M3[方法3: Keywords]
-    M3 --> R3[Yes/No]
+        L2 --> M3[方法3: Keywords]
+        M3 --> R3[Yes/No]
 
-    L3 --> M4[方法4: LLM]
-    M4 --> ZS[Zero-shot NLI]
-    ZS --> MAP[documents=Yes, general=No]
-    MAP --> R4[Yes/No]
+        L3 --> M4[方法4: LLM]
+        M4 --> ZS[Zero-shot NLI]
+        ZS --> MAP[documents=Yes, general=No]
+        MAP --> R4[Yes/No]
 
-    R1 --> AGG
-    R2 --> AGG
-    R3 --> AGG
-    R4 --> AGG
+        R1 --> AGG
+        R2 --> AGG
+        R3 --> AGG
+        R4 --> AGG
 
-    AGG[聚合]
-    AGG --> CHECK{All No?}
-    CHECK -->|Yes| GEN[general]
-    CHECK -->|No| MODE[documents or hybrid]
+        AGG[聚合]
+        AGG --> CHECK{All No?}
+        CHECK -->|Yes| MODE_GEN[general]
+        CHECK -->|No| MODE_DOC[documents or hybrid]
+    end
+
+    subgraph generation [文本生成]
+        MODE_GEN --> TG_GEN[Build General Prompt]
+        MODE_DOC --> TG_DOC{Mode?}
+
+        TG_GEN --> REMOTE[Remote LLM]
+        REMOTE --> OUT[Answer]
+
+        TG_DOC -->|documents| BUILD_DOC[Build Doc Prompt]
+        BUILD_DOC --> LOCAL_DOC[Local LLM]
+        LOCAL_DOC --> OUT
+
+        TG_DOC -->|hybrid| STEP1[Remote LLM]
+        STEP1 --> GEN_RESP[General Response]
+        GEN_RESP --> STEP2[Local LLM Synthesize]
+        STEP2 --> OUT
+    end
 ```
 
-**说明**：查询重写后分三路，其中 Embed 路含两个子方法（FAQ、Docs），共四路独立方法，每路返回 Yes/No。
+**说明**：
+- **意图分类**：查询重写后分三路，其中 Embed 路含两个子方法（FAQ、Docs），共四路独立方法，每路返回 Yes/No。
+- **文本生成**（简化规则）：
+  - **general**：仅使用 **Remote LLM** 生成（无文档上下文，无数据泄露风险）。
+  - **documents**：仅使用 **Local LLM** 生成（含检索文档，数据保留本地）。
+  - **hybrid**：① **Remote LLM** 仅接收问题，生成通用知识响应（文档不发送至远程）；② **Local LLM** 将检索文档 + 远程通用响应 + 问题一并合成最终答案。**数据安全**：文档始终保留本地，不泄露至远程。
 
 ### 2.3 四路方法及 Yes 条件
 
@@ -146,11 +170,11 @@ flowchart LR
 
 ## 3. 三种答案模式
 
-| 模式 | 含义 |
-|------|------|
-| documents | 仅基于已入库文档 |
-| general | 仅 LLM 通用知识 |
-| hybrid | 文档 + 通用知识 |
+| 模式 | 含义 | 实现 |
+|------|------|------|
+| documents | 仅基于已入库文档 | Local LLM（Ollama），文档不离开本地 |
+| general | 仅 LLM 通用知识 | Remote LLM，无文档上下文 |
+| hybrid | 文档 + 通用知识 | ① Remote LLM 仅问题 → 通用响应；② Local LLM 文档 + 通用响应 + 问题 → 合成答案。文档不发送至远程 |
 
 ---
 
