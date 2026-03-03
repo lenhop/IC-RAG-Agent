@@ -13,6 +13,19 @@ from .query_pipeline import RAGPipeline, AnswerMode, QueryMode, get_collection_c
 from .query_rewriting import rewrite_query, rewrite_query_lightweight
 from .splitters import split_documents
 
+# Evaluation (Phase 1.1+)
+from .evaluation.generation_metrics import (
+    evaluate_faithfulness,
+    evaluate_relevance,
+    GenerationEvaluator,
+)
+from .evaluation.retrieval_metrics import (
+    calculate_recall_at_k,
+    calculate_precision_at_k,
+    calculate_mrr,
+    RetrievalEvaluator,
+)
+
 __all__ = [
     "DocumentCleaner",
     "create_embeddings",
@@ -25,4 +38,12 @@ __all__ = [
     "get_collection_count",
     "rewrite_query",
     "rewrite_query_lightweight",
+    # Evaluation
+    "calculate_recall_at_k",
+    "calculate_precision_at_k",
+    "calculate_mrr",
+    "RetrievalEvaluator",
+    "evaluate_faithfulness",
+    "evaluate_relevance",
+    "GenerationEvaluator",
 ]

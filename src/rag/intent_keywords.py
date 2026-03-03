@@ -133,7 +133,7 @@ def _load_faq_keywords(project_root: Path | None = None) -> List[str]:
     if os.getenv("RAG_FAQ_KEYWORDS_ENABLED", "false").lower() not in ("true", "1", "yes"):
         return []
 
-    from src.rag.faq_loader import load_faq_questions
+    from src.rag.chroma_loaders import load_faq_questions
 
     root = project_root or PROJECT_ROOT
     questions = load_faq_questions(root)

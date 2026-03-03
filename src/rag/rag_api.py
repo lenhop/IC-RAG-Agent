@@ -97,7 +97,7 @@ async def lifespan(app: Any):
     if not Path(chroma_path).exists():
         raise FileNotFoundError(
             f"Chroma path not found: {chroma_path}. "
-            "Run load_documents_to_chroma.py first."
+            "Run load_to_chroma.py documents first."
         )
 
     _pipeline = RAGPipeline.build(

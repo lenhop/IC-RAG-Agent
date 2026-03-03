@@ -1,1 +1,1 @@
-# Tests package for IC-RAG-Agent
+"""Seller operations tests."""

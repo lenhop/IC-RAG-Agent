@@ -5,6 +5,8 @@ import torch
 from pathlib import Path
 from dotenv import load_dotenv
 import chromadb 
+from chromadb.utils.embedding_functions import EmbeddingFunction
+
 
 load_dotenv()
 
@@ -73,8 +75,16 @@ class LocalQwenEmbeddings(Embeddings):
             return arr[0].tolist()
         return arr.tolist()
 
+
+class QwenEmbeddingFunction(EmbeddingFunction):
+    def __init__(self, model_path):
+        self.qwen_ef = LocalQwenEmbeddings(model_path)
+    def __call__(self, texts):
+        vectors = self.qwen_ef.embed_documents(texts)
+        return [np.array(v).astype(np.float32) for v in vectors]
     def name(self):
-        return "Qwen3-VL-Embedding-2B"
+        return "Qwen3-VL-Embedding-2B"  # 必须定义name方法
+
 
 
 model_path = str(project_root / "models/Qwen3-VL-Embedding-2B")
@@ -87,8 +97,7 @@ chroma_client = chromadb.PersistentClient(path=CHROMA_PERSIST_PATH)
 
 # 2. 获取/创建集合
 # 若不指定 embedding_function, 则默认使用Chroma的默认embedding模型，这里我们使用Qwen3-VL-Embedding-2B模型
-collection = chroma_client.get_or_create_collection(name=COLLECTION_NAME)
-# collection = chroma_client.get_or_create_collection(name=COLLECTION_NAME, embedding_function=embeddings)
+collection = chroma_client.get_or_create_collection(name=COLLECTION_NAME, embedding_function=embeddings)
 
 
 # 3.统计数据量, 或测试集合是否存在

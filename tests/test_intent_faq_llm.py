@@ -24,7 +24,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.rag.query_pipeline import _faq_similarity_score, classify_answer_mode_sequential
-from src.rag.faq_loader import load_faq_questions
+from src.rag.chroma_loaders import load_faq_questions
 
 
 # Mock doc for has_docs=True cases

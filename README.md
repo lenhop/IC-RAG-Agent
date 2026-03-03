@@ -233,7 +233,7 @@ RAG_DOMAIN_KEYWORDS=FBA,FBM,Amazon,eBay,inventory
 
 ```bash
 # Load documents into ChromaDB (prints chunk count on success)
-python scripts/load_documents_to_chroma.py
+python scripts/load_to_chroma.py documents
 ```
 
 ### Run Queries
@@ -250,6 +250,21 @@ python scripts/query_rag.py --mode documents --query "FBA fees"
 python scripts/query_rag.py --mode general --query "What is RAG?"
 python scripts/query_rag.py --mode hybrid --query "Amazon FBA"
 ```
+
+### Run Evaluation
+
+```bash
+# Full evaluation (retrieval + generation + UMAP + HTML report)
+python scripts/run_evaluation.py --limit 10
+
+# Skip UMAP for faster runs
+python scripts/run_evaluation.py --limit 5 --skip-umap
+
+# Custom output directory
+python scripts/run_evaluation.py --limit 10 --output ./eval_results
+```
+
+Prerequisites: `amazon_fqa.csv` at `RAG_FAQ_CSV` or `data/intent_classification/fqa/`, Chroma populated (`load_to_chroma documents`), and LLM API keys for generation eval.
 
 ### Start API Server
 
@@ -281,12 +296,13 @@ IC-RAG-Agent/
 │   ├── query_rewriting.py     # Query preprocessing
 │   ├── embeddings.py           # Embedding models
 │   ├── ingest_pipeline.py      # Document ingest pipeline
-│   ├── faq_loader.py           # FAQ loading
+│   ├── chroma_loaders.py       # Bootstrap, FAQ, CSV/doc -> Chroma
 │   └── rag_api.py              # FastAPI server
 ├── scripts/
-│   ├── load_documents_to_chroma.py  # Document ingestion
+│   ├── load_to_chroma.py            # documents, fqa, keywords, csv -> Chroma
 │   ├── query_rag.py                 # Query interface
-│   ├── run_rag_api.sh                # API launcher
+│   ├── run_evaluation.py            # E2E RAG evaluation (retrieval, generation, report)
+│   ├── run_rag_api.sh               # API launcher
 │   └── run_rag_gradio.sh             # Gradio UI launcher
 ├── tests/
 │   ├── test_intent_*.py        # Intent classification tests
@@ -554,7 +570,7 @@ ollama run qwen3:1.7b "Hello"
 
 ```bash
 # Re-ingest documents (prints chunk count on success)
-python scripts/load_documents_to_chroma.py
+python scripts/load_to_chroma.py documents
 
 # Ensure CHROMA_DOCUMENTS_PATH in .env points to data/chroma_db/documents
 ```
@@ -590,7 +606,7 @@ curl https://api.deepseek.com/v1/chat/completions \
 cp your_docs.pdf data/documents/
 
 # Re-ingest
-python scripts/load_documents_to_chroma.py
+python scripts/load_to_chroma.py documents
 ```
 
 ### Adding New Keywords
@@ -603,6 +619,16 @@ RAG_DOMAIN_KEYWORDS=FBA,FBM,Amazon,eBay,inventory,new_keyword
 Or add to CSV:
 ```bash
 echo "new_phrase" >> data/intent_classification/keywords/phrases_from_titles.csv
+```
+
+Then reload into Chroma:
+```bash
+python scripts/load_to_chroma.py keywords
+```
+
+For FAQ questions (when `RAG_FAQ_SIMILARITY_ENABLED=true`):
+```bash
+python scripts/load_to_chroma.py fqa
 ```
 
 ### Custom LLM Provider

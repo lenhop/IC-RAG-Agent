@@ -214,3 +214,6 @@ site/
 
 # Embedded/submodule: avoid adding libs/ai-toolkit as nested repo (use sibling ai-toolkit)
 libs/ai-toolkit/
+
+# Task management folder
+tasks/

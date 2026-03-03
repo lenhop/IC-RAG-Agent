@@ -47,7 +47,7 @@ def _resolve_path(env_key: str, default: str, project_root: Path | None = None) 
     return str(p.resolve())
 
 
-# Config from .env (must match load_documents_to_chroma.py)
+# Config from .env (must match load_to_chroma.py documents)
 def _get_chroma_path(project_root: Path | None = None) -> str:
     root = project_root or PROJECT_ROOT
     return _resolve_path(
@@ -257,7 +257,7 @@ def classify_answer_mode_parallel(
 
 
 def _step1_load_embedder(embed_model: str = EMBED_MODEL, project_root: Path | None = None):
-    """Step 1: Load embedding model. Must match load_documents_to_chroma.py."""
+    """Step 1: Load embedding model. Must match load_to_chroma.py documents."""
     from src.rag import create_embeddings
     root = project_root or PROJECT_ROOT
     model_type = embed_model if embed_model in ("ollama", "qwen3") else "minilm"
@@ -643,7 +643,7 @@ class RAGPipeline:
         faq_vectors: list = []
         faq_similarity_enabled = os.getenv("RAG_FAQ_SIMILARITY_ENABLED", "false").lower() in ("true", "1", "yes")
         if faq_similarity_enabled:
-            from src.rag.faq_loader import load_faq_questions
+            from src.rag.chroma_loaders import load_faq_questions
 
             faq_questions = load_faq_questions(root)
             if faq_questions:
@@ -779,7 +779,7 @@ class RAGPipeline:
                     print(f"  Step 7 (LLM generate): skipped (no documents)")
                     if coll_count == 0:
                         print(
-                            f"  [Hint] Collection has 0 chunks. Run: python scripts/load_documents_to_chroma.py"
+                            f"  [Hint] Collection has 0 chunks. Run: python scripts/load_to_chroma.py documents"
                         )
                     else:
                         print(
@@ -855,7 +855,7 @@ def print_result(
     print(f"\nSource: {source_label}")
     if not retrieved_docs and collection_count is not None and collection_count == 0:
         print(
-            "\n[Hint] Chroma collection is empty. Run: python scripts/load_documents_to_chroma.py"
+            "\n[Hint] Chroma collection is empty. Run: python scripts/load_to_chroma.py documents"
         )
     elif not retrieved_docs and collection_count is not None and collection_count > 0:
         print(

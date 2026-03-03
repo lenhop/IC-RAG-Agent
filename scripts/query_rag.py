@@ -2,7 +2,7 @@
 """
 RAG query script: retrieve from Chroma and generate answers using Ollama.
 
-Queries the Chroma vector store populated by load_documents_to_chroma.py.
+Queries the Chroma vector store populated by load_to_chroma.py documents.
 Uses Ollama qwen3:1.7b for answer generation.
 
 Flow:
@@ -95,7 +95,7 @@ def _resolve_path(env_key: str, default: str) -> str:
     return str(p.resolve())
 
 
-# Config from .env with fallbacks (must match load_documents_to_chroma.py)
+# Config from .env with fallbacks (must match load_to_chroma.py documents)
 CHROMA_PERSIST_PATH = _resolve_path(
     "CHROMA_DOCUMENTS_PATH", str(PROJECT_ROOT / "data" / "chroma_db" / "documents")
 )
@@ -139,7 +139,7 @@ def main(
     if not Path(chroma_path).exists():
         raise FileNotFoundError(
             f"Chroma path not found: {chroma_path}. "
-            "Run load_documents_to_chroma.py first to ingest documents."
+            "Run load_to_chroma.py documents first to ingest documents."
         )
 
     if verbose:

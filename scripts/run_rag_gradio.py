@@ -103,7 +103,7 @@ def main() -> None:
         choices=["documents", "general", "hybrid", "auto"],
         value="auto",
         label="Answer mode",
-        info="documents=only from ingested docs; general=LLM only; hybrid=both; auto=sequential classifier (keywords + distance threshold)",
+        info="documents=only from ingested docs; general=LLM only; hybrid=both; auto=classifier (parallel or sequential per config)",
     )
 
     demo = gr.ChatInterface(
@@ -114,9 +114,9 @@ def main() -> None:
         description="Ask questions. Requires RAG API running at " + RAG_API_URL,
     )
 
-    print(f"Starting Gradio at http://127.0.0.1:{RAG_GRADIO_PORT}")
+    print(f"Starting Gradio at http://localhost:{RAG_GRADIO_PORT} (bind 0.0.0.0)")
     print(f"RAG API URL: {RAG_API_URL}")
-    demo.launch(server_port=RAG_GRADIO_PORT, share=False)
+    demo.launch(server_name="0.0.0.0", server_port=RAG_GRADIO_PORT, share=False)
 
 
 if __name__ == "__main__":

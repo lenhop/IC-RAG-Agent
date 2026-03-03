@@ -23,6 +23,6 @@ RAG_GRADIO_PORT="${RAG_GRADIO_PORT:-7860}"
 
 export RAG_API_URL RAG_GRADIO_PORT
 
-echo "Starting Gradio chat UI at http://127.0.0.1:${RAG_GRADIO_PORT}"
+echo "Starting Gradio chat UI at http://localhost:${RAG_GRADIO_PORT} (bind 0.0.0.0)"
 echo "RAG API URL: ${RAG_API_URL}"
 exec python scripts/run_rag_gradio.py
