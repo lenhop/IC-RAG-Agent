@@ -2,7 +2,7 @@
 import json
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, List
+from typing import Any, List, Optional
 from uuid import uuid4
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -18,13 +18,20 @@ except ImportError:
 
 from .schemas import HealthResponse, QueryRequest, QueryResponse, SessionHistoryItem
 from .sp_api_agent import SellerOperationsAgent
-from .memory import ConversationMemory
+from .short_term_memory import ConversationMemory
 from .workflow import create_app
+
+# Optional long-term memory import
+try:
+    from .long_term_memory import LongTermMemory
+except ImportError:
+    LongTermMemory = None  # type: ignore
 
 
 # Global app state (set in lifespan)
 _agent: SellerOperationsAgent = None
 _memory: ConversationMemory = None
+_long_term_memory: Optional["LongTermMemory"] = None
 _workflow_app = None
 
 
@@ -40,11 +47,26 @@ def get_memory() -> ConversationMemory:
     return _memory
 
 
+def get_long_term_memory() -> Optional["LongTermMemory"]:
+    """Get long-term memory instance (may be None if not available)."""
+    return _long_term_memory
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Create agent, memory, SP-API client at startup."""
-    global _agent, _memory, _workflow_app
+    """Create agent, memory, SP-API client, and long-term memory at startup."""
+    global _agent, _memory, _long_term_memory, _workflow_app
     import os
+
+    # Initialize long-term memory (optional, graceful degradation)
+    if LongTermMemory is not None and os.environ.get("SP_API_LONG_TERM_MEMORY_ENABLED", "true").lower() in ("true", "1", "yes"):
+        try:
+            _long_term_memory = LongTermMemory()
+        except Exception:
+            _long_term_memory = None
+    else:
+        _long_term_memory = None
+
     if os.environ.get("SP_API_TEST_MODE") == "true":
         from unittest.mock import MagicMock
         mock_client = MagicMock()
@@ -55,7 +77,13 @@ async def lifespan(app: FastAPI):
         mock_redis.delete.return_value = 1
         _memory = ConversationMemory(mock_redis)
         mock_llm = lambda p: "Thought: I will help.\nFinal Answer: Mock response for tests."
-        _agent = SellerOperationsAgent(llm=mock_llm, sp_api_client=mock_client, memory=_memory, max_iterations=15)
+        _agent = SellerOperationsAgent(
+            llm=mock_llm,
+            sp_api_client=mock_client,
+            memory=_memory,
+            max_iterations=15,
+            long_term_memory=_long_term_memory,
+        )
         _workflow_app = create_app(_agent)
     else:
         try:
@@ -66,7 +94,13 @@ async def lifespan(app: FastAPI):
             client = SPAPIClient(creds, redis_client)
             _memory = ConversationMemory(redis_client)
             mock_llm = lambda p: "Final Answer: Data retrieved successfully."
-            _agent = SellerOperationsAgent(llm=mock_llm, sp_api_client=client, memory=_memory, max_iterations=15)
+            _agent = SellerOperationsAgent(
+                llm=mock_llm,
+                sp_api_client=client,
+                memory=_memory,
+                max_iterations=15,
+                long_term_memory=_long_term_memory,
+            )
             _workflow_app = create_app(_agent)
         except Exception:
             try:
@@ -80,6 +114,7 @@ async def lifespan(app: FastAPI):
     yield
     _agent = None
     _memory = None
+    _long_term_memory = None
     _workflow_app = None
 
 
@@ -122,7 +157,7 @@ async def global_exception_handler(request, exc):
 @app.post("/api/v1/seller/query", response_model=QueryResponse)
 async def query(req: QueryRequest):
     agent = get_agent()
-    result = agent.query(req.query, req.session_id)
+    result = agent.query(req.query, req.session_id, user_id=req.user_id)
     history = agent._memory.get_history(req.session_id, last_n=1)
     iterations = history[-1].get("iterations", 0) if history and isinstance(history, list) and history else 0
     return QueryResponse(response=result, session_id=req.session_id, iterations=iterations, tools_used=[])
@@ -161,6 +196,31 @@ async def delete_session(session_id: str):
     memory = get_memory()
     memory.clear_session(session_id)
     return {"cleared": True}
+
+
+@app.post("/api/v1/seller/session/{session_id}/save")
+async def save_session(session_id: str, user_id: Optional[str] = None):
+    """Manually trigger session summary storage to long-term memory.
+
+    Requires user_id to be provided (either in request body or from QueryRequest).
+    """
+    if not user_id:
+        raise HTTPException(status_code=400, detail="user_id is required for long-term memory storage")
+
+    agent = get_agent()
+    memory_id = agent.store_session_summary(session_id, user_id)
+
+    if memory_id is None:
+        return {
+            "saved": False,
+            "message": "Session summary could not be stored. Long-term memory may be unavailable or session has no history."
+        }
+
+    return {
+        "saved": True,
+        "memory_id": memory_id,
+        "message": "Session summary stored successfully"
+    }
 
 
 @app.get("/api/v1/seller/tools")

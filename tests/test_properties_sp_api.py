@@ -16,8 +16,8 @@ from hypothesis import given, settings, strategies as st
 from fastapi.testclient import TestClient
 
 from src.sp_api.sp_api_client import SPAPIClient, SPAPICredentials, _RateLimiter
-from src.sp_api.memory import ConversationMemory
-from src.sp_api.api import app, get_agent, get_memory
+from src.sp_api.short_term_memory import ConversationMemory
+from src.sp_api.fast_api import app, get_agent, get_memory
 from src.sp_api.tools import (
     ProductCatalogTool,
     InventoryTool,
@@ -335,8 +335,8 @@ def test_property_7_query_endpoint_returns_200_with_response(query: str, session
     mock_memory.get_history.return_value = []
     mock_agent._memory = mock_memory
 
-    with patch("src.sp_api.api._agent", mock_agent), \
-         patch("src.sp_api.api._memory", mock_memory):
+    with patch("src.sp_api.fast_api._agent", mock_agent), \
+         patch("src.sp_api.fast_api._memory", mock_memory):
 
         with TestClient(app) as client:
             response = client.post(
@@ -384,8 +384,8 @@ def test_property_8_api_returns_structured_errors(error_type: str, error_message
     mock_agent._memory = mock_memory
 
     with TestClient(app, raise_server_exceptions=False) as client:
-        with patch("src.sp_api.api._agent", mock_agent), \
-             patch("src.sp_api.api._memory", mock_memory):
+        with patch("src.sp_api.fast_api._agent", mock_agent), \
+             patch("src.sp_api.fast_api._memory", mock_memory):
             response = client.post(
                 "/api/v1/seller/query",
                 json={"query": "test query", "session_id": "test-session"},
@@ -507,8 +507,8 @@ def test_property_10_sse_chunks_equal_sync_response(
     mock_agent_stream.run_streaming.side_effect = run_streaming
 
     # Test sync endpoint (no lifespan context — patch module globals directly)
-    with patch("src.sp_api.api._agent", mock_agent_sync), \
-         patch("src.sp_api.api._memory", mock_memory):
+    with patch("src.sp_api.fast_api._agent", mock_agent_sync), \
+         patch("src.sp_api.fast_api._memory", mock_memory):
         sync_client = TestClient(app, raise_server_exceptions=True)
         sync_resp = sync_client.post(
             "/api/v1/seller/query",
@@ -518,8 +518,8 @@ def test_property_10_sse_chunks_equal_sync_response(
     sync_text = sync_resp.json()["response"]
 
     # Test streaming endpoint
-    with patch("src.sp_api.api._agent", mock_agent_stream), \
-         patch("src.sp_api.api._memory", mock_memory):
+    with patch("src.sp_api.fast_api._agent", mock_agent_stream), \
+         patch("src.sp_api.fast_api._memory", mock_memory):
         stream_client = TestClient(app, raise_server_exceptions=False)
         stream_resp = stream_client.post(
             "/api/v1/seller/query/stream",

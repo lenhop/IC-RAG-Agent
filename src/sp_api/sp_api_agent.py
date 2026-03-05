@@ -7,8 +7,14 @@ from typing import Any, List, Optional, Tuple
 from src.agent import ReActAgent
 from src.agent.models import AgentState
 
-from .memory import ConversationMemory
+from .short_term_memory import ConversationMemory
 from .sp_api_client import SPAPIClient
+
+# Optional long-term memory import
+try:
+    from .long_term_memory import LongTermMemory
+except ImportError:
+    LongTermMemory = None  # type: ignore
 from .tools import (
     ProductCatalogTool,
     InventoryTool,
@@ -40,6 +46,7 @@ class SellerOperationsAgent(ReActAgent):
         memory: ConversationMemory,
         max_iterations: int = 15,
         logger: Optional[Any] = None,
+        long_term_memory: Optional["LongTermMemory"] = None,
     ):
         tools = [
             ProductCatalogTool(sp_api_client),
@@ -56,6 +63,7 @@ class SellerOperationsAgent(ReActAgent):
         super().__init__(llm=llm, tools=tools, max_iterations=max_iterations, logger=logger)
         self._memory = memory
         self._sp_api_client = sp_api_client
+        self._long_term_memory = long_term_memory
 
     def _classify_intent(self, query: str) -> str:
         """Classify query as query, action, or report."""
@@ -98,16 +106,53 @@ Reply with only: query, action, or report'''
             state,
         )
 
-    def query(self, query: str, session_id: str) -> str:
-        """Process query with session history, save turn to memory."""
+    def query(self, query: str, session_id: str, user_id: Optional[str] = None) -> str:
+        """Process query with session history and long-term memory, save turn to memory."""
         history = self._memory.get_history(session_id, last_n=10)
         enriched = query
+
+        # Add short-term context (last 3 turns from current session)
         if history:
             ctx = "\n".join([f"Q: {h['query']}\nA: {h['response'][:200]}..." for h in history[-3:]])
             enriched = f"Previous context:\n{ctx}\n\nCurrent query: {query}"
+
+        # Add long-term context from past sessions (if available)
+        if self._long_term_memory and self._long_term_memory.is_available() and user_id:
+            try:
+                lt_context = self._long_term_memory.get_user_context(user_id, query)
+                if lt_context:
+                    enriched = f"{lt_context}\n\n{enriched}"
+            except Exception:
+                # Gracefully degrade if long-term memory fails
+                pass
+
         result, state = self._run_with_state(enriched)
         self._memory.save_turn(session_id, query, result, state)
         return result
+
+    def store_session_summary(
+        self, session_id: str, user_id: Optional[str] = None
+    ) -> Optional[str]:
+        """Store session summary to long-term memory.
+
+        Args:
+            session_id: Session identifier.
+            user_id: User identifier (required for long-term memory).
+
+        Returns:
+            Memory ID if successful, None otherwise.
+        """
+        if not self._long_term_memory or not self._long_term_memory.is_available() or not user_id:
+            return None
+
+        try:
+            turns = self._memory.get_history(session_id, last_n=100)
+            if not turns:
+                return None
+
+            return self._long_term_memory.store_session_summary(user_id, session_id, turns)
+        except Exception:
+            return None
 
     def run_streaming(self, query: str):
         """Generator yielding SSE chunks per thought/observation as they happen."""

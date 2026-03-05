@@ -3,7 +3,7 @@ import pytest
 from unittest.mock import MagicMock
 
 from sp_api.sp_api_agent import SellerOperationsAgent
-from sp_api.memory import ConversationMemory
+from sp_api.short_term_memory import ConversationMemory
 from sp_api.sp_api_client import SPAPIClient, SPAPICredentials
 
 

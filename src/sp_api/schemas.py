@@ -1,12 +1,13 @@
 """Pydantic schemas for Seller API."""
 from uuid import uuid4
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Optional
 
 
 class QueryRequest(BaseModel):
     query: str
     session_id: str = Field(default_factory=lambda: str(uuid4()))
+    user_id: Optional[str] = None  # For long-term memory lookup
 
 
 class QueryResponse(BaseModel):

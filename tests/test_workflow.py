@@ -2,7 +2,7 @@
 import pytest
 from unittest.mock import MagicMock
 
-from sp_api.memory import ConversationMemory
+from sp_api.short_term_memory import ConversationMemory
 from sp_api.workflow import create_app, SellerAgentState
 
 

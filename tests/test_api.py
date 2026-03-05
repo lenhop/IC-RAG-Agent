@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
-from src.sp_api.api import app, get_agent, get_memory, _agent, _memory
+from src.sp_api.fast_api import app, get_agent, get_memory, _agent, _memory
 
 
 @pytest.fixture
