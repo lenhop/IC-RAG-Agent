@@ -1,0 +1,84 @@
+# IC-RAG-Agent Docker Services
+# Redis, ClickHouse, ChromaDB
+# Usage: docker compose -f docker/docker-compose.yml up -d
+# From project root: docker compose -f docker/docker-compose.yml up -d
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: ic-rag-agent-redis
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "0.5"
+        reservations:
+          memory: 256M
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    container_name: ic-rag-agent-clickhouse
+    ports:
+      - "127.0.0.1:8123:8123"   # HTTP
+      - "127.0.0.1:9000:9000"   # Native
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    environment:
+      CLICKHOUSE_DB: uds
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8123/ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: "2"
+        reservations:
+          memory: 1G
+
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: ic-rag-agent-chromadb
+    ports:
+      - "127.0.0.1:8001:8000"   # Host 8001 to avoid conflict with SP-API on 8000
+    volumes:
+      - chromadb_data:/chroma/chroma
+    environment:
+      IS_PERSISTENT: "TRUE"
+      ANONYMIZED_TELEMETRY: "FALSE"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1"
+        reservations:
+          memory: 512M
+
+volumes:
+  redis_data:
+  clickhouse_data:
+  chromadb_data:

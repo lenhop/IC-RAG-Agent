@@ -19,7 +19,9 @@ class ListShipmentsTool(BaseTool):
         pass
 
     def execute(self, shipment_status_list=None, **kwargs) -> dict:
-        params = {"ShipmentStatusList": shipment_status_list} if shipment_status_list else None
+        params = {"MarketplaceId": self._client.marketplace_id}
+        if shipment_status_list:
+            params["ShipmentStatusList"] = shipment_status_list
         data = self._client.get("/fba/inbound/v0/shipments", params=params)
         items = data.get("payload", {}).get("ShipmentData", [])
         return {"shipments": items, "next_token": data.get("payload", {}).get("NextToken")}
@@ -51,10 +53,11 @@ class CreateShipmentTool(BaseTool):
 
     def execute(self, shipment_id=None, **kwargs) -> dict:
         self.validate_parameters(shipment_id=shipment_id, **kwargs)
-        data = self._client.get(
-            "/fba/inbound/v0/shipments",
-            params={"ShipmentIdList": [shipment_id.strip()]},
-        )
+        params = {
+            "MarketplaceId": self._client.marketplace_id,
+            "ShipmentIdList": [shipment_id.strip()],
+        }
+        data = self._client.get("/fba/inbound/v0/shipments", params=params)
         items = data.get("payload", {}).get("ShipmentData", [])
         s = items[0] if items else {}
         return {

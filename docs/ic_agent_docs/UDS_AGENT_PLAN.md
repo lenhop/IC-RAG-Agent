@@ -371,7 +371,7 @@ GROUP BY seller_sku ORDER BY net_profit DESC;
 
 **Goal:** Python client for ClickHouse with connection pooling, auth, streaming
 
-- [ ] Implement `UDSClient` class (`src/data_analysis/uds_client.py`)
+- [ ] Implement `UDSClient` class (`src/uds/uds_client.py`)
   - Connection pooling (clickhouse-connect or clickhouse-driver)
   - Authentication from environment variables
   - Query execution with timeout (default 30s)
@@ -445,11 +445,11 @@ IC-RAG-Agent/
 │   └── test_connection.py       ← Connection verification
 ├── config/
 │   └── cloud.env.example        ← Connection config template
-└── src/data_analysis/
+└── src/uds/
     ├── __init__.py
     ├── uds_client.py            ← ClickHouse client
     ├── task_planner.py          ← Query decomposition
-    ├── data_analysis_agent.py   ← Main agent
+    ├── uds_agent.py             ← Main agent
     ├── tools/
     │   ├── __init__.py
     │   ├── sql_query.py

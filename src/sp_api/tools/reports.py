@@ -56,12 +56,11 @@ class ReportRequestTool(BaseTool):
                 "document_url": doc_url,
             }
 
-        # Otherwise list reports, optionally filtered by type
-        params = {}
-        if report_type and str(report_type).strip():
-            params["reportTypes"] = str(report_type).strip()
+        # Otherwise list reports; reportTypes is required (min 1, max 10)
+        report_type_val = str(report_type).strip() if report_type else "GET_FBA_INVENTORY_SUMMARY_DATA"
+        params = {"reportTypes": report_type_val}
 
-        data = self._client.get("/reports/2021-06-30/reports", params=params or None)
+        data = self._client.get("/reports/2021-06-30/reports", params=params)
         reports = data.get("reports", [])
         return {
             "reports": [

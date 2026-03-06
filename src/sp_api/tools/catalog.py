@@ -43,7 +43,11 @@ class ProductCatalogTool(BaseTool):
     def execute(self, identifier: str, identifier_type: str, **kwargs) -> dict:
         self.validate_parameters(identifier=identifier, identifier_type=identifier_type, **kwargs)
         path = f"/catalog/2022-04-01/items/{identifier.strip()}"
-        data = self._client.get(path, params={"identifiersType": identifier_type.strip().lower()})
+        params = {
+            "identifiersType": identifier_type.strip().lower(),
+            "marketplaceIds": self._client.marketplace_id,
+        }
+        data = self._client.get(path, params=params)
         summaries = data.get("summaries", [])
         if not summaries:
             return {"identifier": identifier, "status": "not_found"}

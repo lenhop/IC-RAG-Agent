@@ -115,6 +115,11 @@ class SPAPIClient:
         self._rate_limiters: Dict[str, _RateLimiter] = {}
         self._http = httpx.Client(timeout=30.0)
 
+    @property
+    def marketplace_id(self) -> str:
+        """Marketplace ID from credentials (e.g. ATVPDKIKX0DER for US)."""
+        return self._creds.marketplace_id
+
     # ------------------------------------------------------------------
     # Auth
     # ------------------------------------------------------------------

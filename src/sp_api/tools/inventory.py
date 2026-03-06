@@ -21,12 +21,19 @@ class InventoryTool(BaseTool):
         pass
 
     def execute(self, sku=None, next_token=None, **kwargs) -> dict:
-        params = {}
+        # SP-API FBA inventory requires marketplaceIds, details, granularityType, granularityId
+        mid = self._client.marketplace_id
+        params = {
+            "marketplaceIds": mid,
+            "details": "true",
+            "granularityType": "Marketplace",
+            "granularityId": mid,
+        }
         if sku:
             params["QueryType"] = "INVENTORY_SKU"
             params["QueryValue"] = sku
         if next_token:
             params["nextToken"] = next_token
-        data = self._client.get("/fba/inventory/v1/summaries", params=params or None)
+        data = self._client.get("/fba/inventory/v1/summaries", params=params)
         items = data.get("payload", {}).get("inventorySummaries", [])
         return {"items": items, "next_token": data.get("payload", {}).get("nextToken")}

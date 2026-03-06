@@ -272,7 +272,7 @@ The integration enables the IC-RAG-Agent to evolve from a document retrieval sys
 4. THE System SHALL support few-shot learning by retrieving relevant examples based on vector similarity
 5. WHEN few-shot examples are retrieved, THE System SHALL include at least 3 examples in the generated prompt
 6. THE System SHALL implement Chain-of-Thought prompting for complex reasoning tasks
-7. THE System SHALL organize templates by domain (seller_operations, data_analysis, general)
+7. THE System SHALL organize templates by domain (seller_operations, uds, general)
 8. WHEN multiple template versions exist, THE System SHALL allow selection of a specific version or default to the latest
 9. THE System SHALL support A/B testing by tracking which template versions produce better results
 10. THE System SHALL provide at least 20 prompt templates covering common agent scenarios

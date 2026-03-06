@@ -301,7 +301,7 @@ This implementation plan breaks down the agent integration into discrete coding 
 ### Phase 3: Data Analysis Agent (8 weeks)
 
 - [ ] 14. Set up data analysis module and UDS client
-  - [ ] 14.1 Create `src/data_analysis/` directory structure
+  - [ ] 14.1 Create `src/uds/` directory structure
     - Create module directories: agent, planner, executor, tools, report
     - Set up __init__.py files
     - _Requirements: 8.1_
@@ -484,7 +484,7 @@ This implementation plan breaks down the agent integration into discrete coding 
 - [ ] 21. Set up prompt engineering module
   - [ ] 21.1 Create `src/prompts/` directory structure
     - Create directories: templates, examples
-    - Create subdirectories by domain: seller_operations, data_analysis, general
+    - Create subdirectories by domain: seller_operations, uds, general
     - Set up __init__.py files
     - _Requirements: 13.7_
   

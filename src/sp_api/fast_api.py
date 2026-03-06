@@ -58,6 +58,15 @@ async def lifespan(app: FastAPI):
     global _agent, _memory, _long_term_memory, _workflow_app
     import os
 
+    # Load .env file so SP-API credentials and API keys are available
+    try:
+        from dotenv import load_dotenv
+        from pathlib import Path
+        project_root = Path(__file__).resolve().parent.parent.parent
+        load_dotenv(project_root / ".env")
+    except ImportError:
+        pass
+
     # Initialize long-term memory (optional, graceful degradation)
     if LongTermMemory is not None and os.environ.get("SP_API_LONG_TERM_MEMORY_ENABLED", "true").lower() in ("true", "1", "yes"):
         try:
@@ -91,18 +100,31 @@ async def lifespan(app: FastAPI):
             import redis
             creds = SPAPICredentials.from_env()
             redis_client = redis.Redis(host="localhost", port=6379, db=0, decode_responses=True)
+            redis_client.ping()  # Verify Redis is reachable
             client = SPAPIClient(creds, redis_client)
             _memory = ConversationMemory(redis_client)
-            mock_llm = lambda p: "Final Answer: Data retrieved successfully."
+
+            # Initialize real LLM via ModelManager
+            try:
+                from ai_toolkit.models import ModelManager
+                manager = ModelManager()
+                llm = manager.create_model("deepseek", temperature=0.3, max_tokens=2048)
+                logging.info("LLM initialized: deepseek")
+            except Exception as llm_err:
+                logging.warning(f"Failed to init real LLM ({llm_err}), falling back to mock")
+                llm = lambda p: "Final Answer: Data retrieved successfully."
+
             _agent = SellerOperationsAgent(
-                llm=mock_llm,
+                llm=llm,
                 sp_api_client=client,
                 memory=_memory,
                 max_iterations=15,
                 long_term_memory=_long_term_memory,
             )
             _workflow_app = create_app(_agent)
-        except Exception:
+            logging.info("SP-API Agent initialized (real mode)")
+        except Exception as e:
+            logging.error(f"Failed to initialize agent: {e}")
             try:
                 import redis
                 redis_client = redis.Redis(host="localhost", port=6379, db=0, decode_responses=True)

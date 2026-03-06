@@ -1,41 +1,61 @@
-# RAG API and pipeline dependencies
+# IC-RAG-Agent dependencies
+# Merged from requirements.txt, requirements-remote.txt, requirements-qwen-embedding.txt
+# Python 3.11 via Miniconda recommended
 # Use: pip install -r requirements.txt
 
-# RAG REST API
+# API
 fastapi>=0.110.0
 uvicorn[standard]>=0.27.0
-
-# RAG pipeline (load/split/vector store)
-pypdf>=4.0.0
 python-dotenv>=1.0.0
-langchain>=0.1.0
-langchain-core>=0.1.0
-langchain-community>=0.0.20
-langchain-chroma>=0.1.0
-langchain-ollama>=0.1.0
 
-# Gradio chat UI (Phase 4)
-gradio>=4.0.0
+# Agent (SP-API, LangGraph)
+langgraph>=1.0.0
+redis>=5.0.0
+httpx>=0.25.0
+sse-starlette>=1.8.0
 
-# Phase 3B - Zero-shot intent classifier (optional, adds ~1s per gray-zone query)
-transformers>=4.30.0
-torch>=2.0.0
+# LangChain (Agent, RAG)
+langchain>=1.0.0
+langchain-core>=1.0.0
+langchain-community>=0.4.0
+langchain-chroma>=1.0.0
+langchain-ollama>=1.0.0
+langchain-text-splitters>=1.0.0
+langchain-huggingface>=0.0.1
 
-# Remote LLM provider GLM (optional, for RAG_LLM_PROVIDER=glm)
+# RAG (vector store, PDF)
+chromadb>=1.4.0
+pypdf>=4.0.0
+pdfplumber>=0.11.0
+pdfminer.six>=20231228
+
+# LLM & Embeddings (transformers, Qwen3-VL-Embedding-8B compatible)
+# With torch 2.2.x, apply is_autocast_enabled patch before loading Qwen embedding model
+torch>=2.2.0
+transformers>=4.57.0
+qwen-vl-utils>=0.0.14
+sentence-transformers>=2.0.0
+openai>=1.0.0
+
+# Optional: GLM (zhipuai)
 zhipuai>=2.0.0
 
-# Evaluation visualization (Phase 2.1)
-# umap-learn>=0.5.0  # Optional: better 2D projection; falls back to PCA if not installed
+# Gradio UI
+gradio>=4.0.0
+
+# Utils
+requests>=2.28.0
+pydantic>=2.0.0
 plotly>=5.0.0
+pandas>=2.0.0
+numpy>=1.24.0
+kaleido>=0.2.0
 
-# SP-API Agent (Task 000007)
-langgraph>=0.1.0
-redis>=5.0.0
-sse-starlette>=1.8.0
-httpx>=0.25.0
+# UDS Data Analysis
+clickhouse-connect>=0.6.0
 
-# Test dependencies (optional)
+# Test
 pytest>=7.0.0
 pytest-cov>=4.0.0
+pytest-asyncio>=1.0.0
 hypothesis>=6.0.0
-requests>=2.28.0

@@ -1081,7 +1081,7 @@ The following properties are derived from the acceptance criteria in the require
 **Validates: Requirements 13.6**
 
 **Property 77: Template Domain Organization**
-*For any* template storage system, templates should be organized by domain (seller_operations, data_analysis, general) with separate directories or namespaces.
+*For any* template storage system, templates should be organized by domain (seller_operations, uds, general) with separate directories or namespaces.
 **Validates: Requirements 13.7**
 
 **Property 78: Template Version Selection**
@@ -1403,7 +1403,7 @@ E2E tests verify complete workflows:
 **Example E2E Test**:
 ```python
 @pytest.mark.e2e
-async def test_complete_data_analysis_workflow():
+async def test_complete_uds_workflow():
     """Test complete data analysis workflow from query to report."""
     agent = DataAnalysisAgent(
         react_agent=ReActAgent(llm=llm, tools=uds_tools),

@@ -136,18 +136,48 @@ class ProductCatalogTool(BaseTool):
 ---
 
 ### Part 3: UDS Agent
-> Business intelligence agent — lives in `src/data_analysis/`
+> Business intelligence agent — lives in `src/uds/`
 
-- 3.1 UDS database client (connection pooling, auth, streaming)
-- 3.2 Task planner (decompose complex queries into subtasks)
-- 3.3 UDS query tools (SQL generation, schema inspection, aggregation)
-- 3.4 Analysis tools (trend analysis, comparison, visualization)
-- 3.5 Report generator (Markdown + PDF)
-- 3.6 Data Analysis Agent
+**Data Foundation:** ✅ Complete (40.3M rows loaded into ClickHouse)
+- 9 tables: orders, transactions, inventory, products, fees, listings
+- Date range: October 2025 (primary period)
+- Database: `ic_agent` on ClickHouse (8.163.3.40:8123)
 
-**Plan:** `ic_agent_docs/UDS_AGENT_PLAN.md`  
-**Spec:** `.kiro/specs/uds-agent/` *(spec to be created)*  
-**Timeline:** 8 weeks
+**Implementation Phases:**
+
+**Phase 1: Data Foundation Layer (Weeks 1-2)**
+- 1.1 Schema documentation (metadata, ERD, business glossary)
+- 1.2 Data quality & statistics (profiling, quality dashboard)
+- 1.3 Query pattern library (50+ common analytical queries)
+- 1.4 ClickHouse client library (connection pooling, streaming)
+
+**Phase 2: UDS Agent Tools (Weeks 3-4)**
+- 2.1 Schema inspection tools (list tables, describe, relationships)
+- 2.2 Query generation tools (NL→SQL, execute, validate)
+- 2.3 Analysis tools (sales, inventory, financial, performance)
+- 2.4 Visualization tools (charts, dashboards, export)
+
+**Phase 3: UDS Agent Core (Weeks 5-6)**
+- 3.1 Task planner (decompose complex queries into subtasks)
+- 3.2 UDS Agent implementation (ReAct-based orchestration)
+- 3.3 Intent classification & context enrichment
+- 3.4 Result formatting (tables, charts, insights)
+
+**Phase 4: Integration & Testing (Weeks 7-8)**
+- 4.1 RAG integration (documentation & example retrieval)
+- 4.2 REST API (query endpoints, streaming, table metadata)
+- 4.3 Comprehensive testing (unit, integration, performance)
+
+**Phase 5: Documentation & Deployment (Weeks 9-10)**
+- 5.1 Documentation (API, user guide, developer guide)
+- 5.2 Deployment (Docker, AWS ECS, monitoring, alerting)
+
+**Plans:** 
+- `ic_agent_docs/UDS_DATA_FOUNDATION_PLAN.md` ✅ Complete
+- `ic_agent_docs/UDS_AGENT_PLAN.md` *(detailed implementation plan - to be created)*
+
+**Specs:** `.kiro/specs/uds-agent/` *(specs to be created per phase)*  
+**Timeline:** 10 weeks (2.5 months)
 
 ---
 
