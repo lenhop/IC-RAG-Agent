@@ -60,12 +60,11 @@ docker compose -f docker-compose.uds.yml up -d
 - [Developer Guide](docs/guides/UDS_DEVELOPER_GUIDE.md) - Architecture, 16 tools, tool creation
 - [API Reference](docs/guides/UDS_API_REFERENCE.md) - 11 endpoints, schemas, examples
 - [Deployment Guide](docs/guides/UDS_DEPLOYMENT_GUIDE.md) - Local, Docker, Alibaba Cloud ECS
-- [Operations Guide](docs/guides/UDS_OPERATIONS_GUIDE.md) - Monitoring, troubleshooting, maintenance
+- [Operations Manual](docs/OPERATIONS.md) - Monitoring, troubleshooting, maintenance, and incident response
 
 **Project & Operations:**
 - [Project Documentation](docs/PROJECT.md) - Complete project summary, metrics, architecture decisions
-- [Operations Manual](docs/OPERATIONS.md) - Daily ops, troubleshooting, incident response, launch checklist
-- [Business Glossary](docs/uds_business_glossary.md) - Amazon seller terminology
+- [Business Glossary](docs/BUSINESS_GLOSSARY.md) - Amazon seller terminology
 - [API Spec](specs/UDS_API_SPEC.yaml) - OpenAPI specification
 
 **Historical:** See [docs/archive/](docs/archive/) for planning documents and historical references.
@@ -788,7 +787,7 @@ uvicorn src.uds.api:app --reload
 ## Support
 
 - **Documentation:** [docs/](docs/)
-- **UDS Agent:** [docs/UDS_USER_GUIDE.md](docs/UDS_USER_GUIDE.md), [docs/UDS_API_REFERENCE.md](docs/UDS_API_REFERENCE.md)
+- **UDS Agent:** [docs/guides/UDS_USER_GUIDE.md](docs/guides/UDS_USER_GUIDE.md), [docs/guides/UDS_API_REFERENCE.md](docs/guides/UDS_API_REFERENCE.md)
 - **Issues:** GitHub Issues
 
 ## Contact

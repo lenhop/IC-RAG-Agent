@@ -13,6 +13,7 @@ import pytest
 from src.gateway.services import (
     IC_DOCS_NOT_READY_MESSAGE,
     call_ic_docs,
+    call_uds,
 )
 
 
@@ -40,3 +41,74 @@ def test_call_ic_docs_enabled_calls_rag(mock_post, mock_enabled):
     assert "/query" in url
     assert payload.get("mode") == "documents"
     assert "IC docs:" in payload.get("question", "")
+
+
+@patch(
+    "src.gateway.services._http_post",
+    return_value={
+        "status": "completed",
+        "response": {
+            "summary": "Total sales in October 2025 were $12,345.",
+            "sources": [{"type": "table", "name": "amz_order"}],
+        },
+    },
+)
+def test_call_uds_completed_maps_summary(mock_post):
+    """call_uds maps completed UDS response summary into gateway answer."""
+    result = call_uds("Total sales in October 2025", None)
+    assert result["answer"] == "Total sales in October 2025 were $12,345."
+    assert result["sources"] == [{"type": "table", "name": "amz_order"}]
+    mock_post.assert_called_once()
+
+
+@patch(
+    "src.gateway.services._http_post",
+    return_value={
+        "status": "failed",
+        "error": "Database connection timeout",
+    },
+)
+def test_call_uds_failed_status_propagates_error(mock_post):
+    """call_uds returns error when UDS backend reports failed status."""
+    result = call_uds("Total sales in October 2025", None)
+    assert result["error"] == "Database connection timeout"
+    assert result["error_type"] == "UDSQueryFailed"
+    mock_post.assert_called_once()
+
+
+@patch(
+    "src.gateway.services._http_post",
+    return_value={
+        "status": "completed",
+        "response": {},
+    },
+)
+def test_call_uds_empty_response_uses_fallback_message(mock_post):
+    """call_uds avoids returning empty answer when UDS response is empty."""
+    result = call_uds("Total sales in October 2025", None)
+    assert "returned no summary" in result["answer"]
+    assert result["sources"] == []
+    mock_post.assert_called_once()
+
+
+@patch(
+    "src.gateway.services._http_post",
+    return_value={
+        "query_id": "q-1",
+        "status": "completed",
+        "query": "Total sales in October 2025",
+        "intent": "sales",
+        "response": {
+            "summary": "Sales data retrieved successfully.",
+            "sources": [],
+        },
+        "error": None,
+    },
+)
+def test_call_uds_error_null_is_not_treated_as_failure(mock_post):
+    """A null error field from UDS should still be treated as successful response."""
+    result = call_uds("Total sales in October 2025", None)
+    assert result["answer"] == "Sales data retrieved successfully."
+    assert result["sources"] == []
+    assert "error" not in result
+    mock_post.assert_called_once()

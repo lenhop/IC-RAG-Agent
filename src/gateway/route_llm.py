@@ -33,6 +33,7 @@ ROUTE_LLM_SYSTEM_PROMPT = (
     '- "ic_docs": Questions about internal company documents, policies, or project-specific documentation.\n'
     '- "sp_api": Requests to perform seller operations via Amazon SP-API (orders, shipments, inventory, etc.).\n'
     '- "uds": Analytical or BI questions over sales/metrics data in our UDS database (ClickHouse or similar).\n\n'
+    "Important rule: definition-style questions about terms like FBA/FBM (for example, 'what is FBA') should be classified as ic_docs, not sp_api.\n\n"
     "Return ONLY a single JSON object on one line:\n"
     '{"workflow": "<one of general|amazon_docs|ic_docs|sp_api|uds>", "confidence": <float between 0 and 1>}\n'
     "Do not include any explanations."

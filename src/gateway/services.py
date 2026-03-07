@@ -34,6 +34,20 @@ IC_DOCS_NOT_READY_MESSAGE = (
 BACKEND_TIMEOUT = int(os.getenv("GATEWAY_BACKEND_TIMEOUT", "120"))
 
 
+def _has_backend_error(data: Dict[str, Any]) -> bool:
+    """
+    Return True only when backend reports a real error value.
+
+    Some APIs include an `error` field with null/empty value on success.
+    """
+    err = data.get("error")
+    if err is None:
+        return False
+    if isinstance(err, str):
+        return bool(err.strip())
+    return True
+
+
 def _http_post(url: str, json_payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     Helper to POST JSON and return parsed JSON or error dict.
@@ -101,7 +115,7 @@ def call_general(query: str, session_id: Optional[str]) -> Dict[str, Any]:
     url = f"{RAG_API_URL}/query"
     payload = {"question": query, "mode": "general"}
     data = _http_post(url, payload)
-    if "error" in data:
+    if _has_backend_error(data):
         return data
 
     answer = data.get("answer", "")
@@ -126,7 +140,7 @@ def call_amazon_docs(query: str, session_id: Optional[str]) -> Dict[str, Any]:
     biased_query = f"Amazon docs: {query}"
     payload = {"question": biased_query, "mode": "documents"}
     data = _http_post(url, payload)
-    if "error" in data:
+    if _has_backend_error(data):
         return data
 
     answer = data.get("answer", "")
@@ -159,7 +173,7 @@ def call_ic_docs(query: str, session_id: Optional[str]) -> Dict[str, Any]:
     biased_query = f"IC docs: {query}"
     payload = {"question": biased_query, "mode": "documents"}
     data = _http_post(url, payload)
-    if "error" in data:
+    if _has_backend_error(data):
         return data
 
     answer = data.get("answer", "")
@@ -184,7 +198,7 @@ def call_sp_api(query: str, session_id: Optional[str]) -> Dict[str, Any]:
     url = f"{SP_API_URL}/api/v1/seller/query"
     payload = {"query": query, "session_id": session_id}
     data = _http_post(url, payload)
-    if "error" in data:
+    if _has_backend_error(data):
         return data
 
     # SP-API QueryResponse has 'response' as main text field.
@@ -210,8 +224,21 @@ def call_uds(query: str, session_id: Optional[str]) -> Dict[str, Any]:
     url = f"{UDS_API_URL}/api/v1/uds/query"
     payload = {"query": query}
     data = _http_post(url, payload)
-    if "error" in data:
+    if _has_backend_error(data):
+        status = str(data.get("status", "")).strip().lower()
+        if status == "failed" and not data.get("error_type"):
+            data["error_type"] = "UDSQueryFailed"
         return data
+
+    # UDS API always returns HTTP 200 with an internal status field.
+    # Propagate backend failures to gateway response instead of returning
+    # an empty answer.
+    status = str(data.get("status", "")).strip().lower()
+    if status and status != "completed":
+        return {
+            "error": data.get("error") or f"UDS query status: {status}",
+            "error_type": "UDSQueryFailed",
+        }
 
     # UDS QueryResponse: primary content in 'response' (dict) and 'status'.
     response_obj = data.get("response") or {}
@@ -220,12 +247,19 @@ def call_uds(query: str, session_id: Optional[str]) -> Dict[str, Any]:
         answer = (
             response_obj.get("summary")
             or response_obj.get("answer")
+            or response_obj.get("result")
             or str(response_obj)
         )
         sources = response_obj.get("sources") or []
     else:
         answer = str(response_obj)
         sources = []
+
+    if not answer or answer == "{}":
+        answer = (
+            "UDS processed the query but returned no summary. "
+            "Try narrowing the date range or asking a more specific metric."
+        )
 
     return {"answer": answer, "sources": sources}
 

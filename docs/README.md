@@ -17,13 +17,12 @@ Start here if you want to develop or extend the system:
 - **[Developer Guide](guides/UDS_DEVELOPER_GUIDE.md)** - Architecture, tool development, code structure
 - **[API Reference](guides/UDS_API_REFERENCE.md)** - Complete API documentation with examples
 - **[HuggingFace Setup Guide](guides/HUGGINGFACE_SETUP_GUIDE.md)** - HuggingFace CLI and model download
-- **[System Framework](FRAMEWORK.md)** - System architecture diagrams and component interactions
+- **[Architecture Decisions (Archive)](archive/ARCHITECTURE_DECISIONS.md)** - Historical architecture decisions and rationale
 
 ### For Operations
 Start here if you're deploying or operating the system:
 - **[Deployment Guide](guides/UDS_DEPLOYMENT_GUIDE.md)** - Docker, Alibaba Cloud ECS deployment
-- **[Operations Manual](OPERATIONS.md)** - Daily ops, troubleshooting, incidents, launch checklist
-- **[Operations Guide](guides/UDS_OPERATIONS_GUIDE.md)** - Detailed monitoring and maintenance
+- **[Operations Manual](OPERATIONS.md)** - Canonical runbook for daily ops, monitoring, troubleshooting, and incidents
 
 ### For Project Management
 Start here for project overview and decisions:
@@ -44,12 +43,11 @@ docs/
 ├── OPERATIONS.md                # Operations manual (daily ops, incidents, launch)
 ├── BUSINESS_GLOSSARY.md         # Amazon seller terminology and table reference
 │
-├── guides/                      # User guides
+├── guides/                      # User and developer guides
 │   ├── UDS_USER_GUIDE.md        # How to use UDS Agent
 │   ├── UDS_DEVELOPER_GUIDE.md   # Development guide
 │   ├── UDS_API_REFERENCE.md     # API documentation
 │   ├── UDS_DEPLOYMENT_GUIDE.md  # Deployment instructions
-│   ├── UDS_OPERATIONS_GUIDE.md  # Detailed operations
 │   └── HUGGINGFACE_SETUP_GUIDE.md # HuggingFace CLI and models
 │
 └── archive/                     # Historical reference documents

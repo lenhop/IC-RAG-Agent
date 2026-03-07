@@ -86,6 +86,20 @@ def test_route_workflow_sp_api_keywords():
     assert conf == 0.85
 
 
+def test_route_workflow_definition_fba_prefers_ic_docs():
+    """Definition-style FBA queries should route to ic_docs, not sp_api."""
+    req = QueryRequest(
+        query="What is FBA?",
+        workflow="auto",
+        rewrite_enable=True,
+        session_id=None,
+        stream=False,
+    )
+    wf, conf, src, backend, llm_conf = route_workflow(req.query.lower(), req)
+    assert wf == "ic_docs"
+    assert conf in (0.85, 0.9)
+
+
 def test_route_workflow_uds_keywords():
     """Analytical questions about sales / revenue should route to uds."""
     req = QueryRequest(
@@ -199,6 +213,27 @@ def test_route_workflow_llm_safe_default_falls_back_to_heuristic(mock_route_llm,
     assert src == "heuristic"
     assert backend is None
     assert llm_conf is None
+
+
+@patch("src.gateway.router._route_llm_enabled", return_value=True)
+@patch("src.gateway.route_llm.route_with_llm", return_value=("sp_api", 0.92))
+def test_route_workflow_llm_sp_api_is_overridden_for_definition_fba(mock_route_llm, mock_enabled):
+    """High-confidence LLM sp_api for 'what is FBA' is corrected to ic_docs."""
+    req = QueryRequest(
+        query="what is FBA",
+        workflow="auto",
+        rewrite_enable=False,
+        route_backend="ollama",
+        session_id=None,
+        stream=False,
+    )
+    wf, conf, src, backend, llm_conf = route_workflow("what is FBA", req)
+    assert wf == "ic_docs"
+    assert conf == 0.92
+    assert src == "llm"
+    assert backend == "ollama"
+    assert llm_conf == 0.92
+    mock_route_llm.assert_called_once_with("what is FBA", "ollama")
 
 
 @patch("src.gateway.router._route_llm_enabled", return_value=False)

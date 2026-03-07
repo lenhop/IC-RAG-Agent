@@ -123,10 +123,12 @@ docker compose -f docker-compose.uds.yml --profile with-llm up -d
 
 ### Health Check
 
-The Dockerfile and compose use a health check. Ensure the health endpoint is correct:
+The Dockerfile and compose use health checks. Ensure each service uses the correct endpoint:
 
-- API exposes: `GET /health`
-- Update healthcheck to: `http://localhost:8000/health` if your compose uses `/api/v1/health`
+- UDS API exposes: `GET /health`
+- RAG API exposes: `GET /health`
+- Gateway exposes: `GET /health`
+- SP-API API exposes: `GET /api/v1/health`
 
 ---
 
@@ -320,6 +322,6 @@ server {
 
 ## Related Documentation
 
-- [UDS_OPERATIONS_GUIDE.md](UDS_OPERATIONS_GUIDE.md) – Monitoring and maintenance
+- [OPERATIONS.md](../OPERATIONS.md) – Monitoring, maintenance, and incident response
 - [UDS_DEVELOPER_GUIDE.md](UDS_DEVELOPER_GUIDE.md) – Architecture and configuration
-- [ALIBABA_CLOUD_SERVER_PLAN.md](ALIBABA_CLOUD_SERVER_PLAN.md) – Alibaba Cloud resource planning
+- [ALIBABA_CLOUD_SERVER_SCHEME.md](../archive/ALIBABA_CLOUD_SERVER_SCHEME.md) – Alibaba Cloud resource planning

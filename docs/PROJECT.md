@@ -230,8 +230,7 @@ User → API (FastAPI) → UDS Agent (ReAct) → Tools → ClickHouse
 - [Developer Guide](guides/UDS_DEVELOPER_GUIDE.md) - Architecture, tool development
 - [API Reference](guides/UDS_API_REFERENCE.md) - 11 endpoints, schemas
 - [Deployment Guide](guides/UDS_DEPLOYMENT_GUIDE.md) - Docker, Alibaba Cloud
-- [Operations Guide](guides/UDS_OPERATIONS_GUIDE.md) - Monitoring, troubleshooting
-- [Operations Manual](OPERATIONS.md) - Daily ops, incidents, launch checklist
+- [Operations Manual](OPERATIONS.md) - Monitoring, troubleshooting, daily ops, and launch checklist
 
 ---
 

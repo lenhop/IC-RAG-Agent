@@ -1,76 +1,82 @@
 # IC-RAG-Agent System Framework
 
-**Version:** 1.0.0  
-**Last Updated:** 2026-03-06
+**Version:** 2.0.0  
+**Last Updated:** 2026-03-07
 
 This document describes the system framework for the IC-RAG-Agent project using Mermaid diagrams.
+
+**How to view diagrams:** Open this file in Markdown preview mode (Mermaid rendering enabled).
 
 ---
 
 ## 1. System Overview
 
-IC-RAG-Agent is an **Intent Classification + Retrieval-Augmented Generation** system with three main subsystems:
+IC-RAG-Agent is an **Intent Classification + Retrieval-Augmented Generation** system with a **Unified Gateway** routing queries to five backend workflows:
 
-- **UDS Agent** – Business Intelligence for Amazon seller data (ClickHouse)
-- **RAG Pipeline** – Document retrieval and hybrid generation with intent classification
-- **SP-API Agent** – Seller Operations API integration for Amazon marketplace
+- **Gateway** – Single entry point with query rewriting, LLM-based routing, and workflow dispatch
+- **UDS Agent** – Business Intelligence for Amazon seller data (ClickHouse + ReAct)
+- **RAG Pipeline** – Document retrieval and hybrid generation with four parallel intent methods
+- **SP-API Agent** – Seller Operations via Amazon SP-API (ReAct + LangGraph workflow)
+- **Client** – Unified Gradio Chat UI calling the gateway
 
 ```mermaid
 flowchart TB
-    subgraph Users
-        U1[Business User]
-        U2[Document User]
-        U3[Seller Ops User]
+    subgraph Client["Client Layer"]
+        UI[Unified Chat UI<br/>Gradio :7862]
     end
 
-    subgraph APIs["API Layer"]
-        UDS_API[UDS API<br/>FastAPI :8000]
-        RAG_API[RAG API<br/>FastAPI :8000]
-        SP_API[SP-API<br/>FastAPI]
+    subgraph Gateway["Unified Gateway :8000"]
+        API[FastAPI<br/>POST /api/v1/query]
+        Rewrite[Query Rewriting<br/>Ollama / DeepSeek]
+        Router[Route LLM / Heuristic<br/>router.py]
+        Dispatch[Workflow Dispatch<br/>services.py]
+    end
+
+    subgraph Backends["Backend Services"]
+        RAG[RAG Pipeline :8002<br/>src/rag/]
+        UDS[UDS Agent :8001<br/>src/uds/]
+        SP[SP-API Agent :8003<br/>src/sp_api/]
     end
 
     subgraph Agents["Agent Layer"]
-        UDS[UDS Agent<br/>ReAct + 16 Tools]
-        RAG[RAG Pipeline<br/>4 Intent Methods]
-        SP[SP-API Agent<br/>ReAct + 10 Tools]
+        UDS_A[UDS Agent<br/>ReAct + 16 Tools]
+        RAG_P[RAG Pipeline<br/>4 Intent Methods]
+        SP_A[SP-API Agent<br/>ReAct + 10 Tools]
     end
 
     subgraph Data["Data Layer"]
         CH[(ClickHouse)]
         Chroma[(ChromaDB)]
         Redis[(Redis)]
+        SPAPI_EXT[Amazon SP-API]
     end
 
-    U1 --> UDS_API
-    U2 --> RAG_API
-    U3 --> SP_API
+    UI -->|POST /api/v1/query| API
+    API --> Rewrite --> Router --> Dispatch
+    Dispatch -->|general / amazon_docs / ic_docs| RAG
+    Dispatch -->|uds| UDS
+    Dispatch -->|sp_api| SP
 
-    UDS_API --> UDS
-    RAG_API --> RAG
-    SP_API --> SP
-
-    UDS --> CH
-    UDS --> Redis
-    RAG --> Chroma
-    RAG --> Redis
-    SP --> Chroma
+    RAG --> RAG_P --> Chroma
+    UDS --> UDS_A --> CH
+    UDS_A --> Redis
+    SP --> SP_A --> SPAPI_EXT
+    SP_A --> Chroma
 ```
 
 ---
 
-## 1.1 Unified Gateway and Five Workflows
+## 1.1 Five Workflows
 
-The unified gateway (port 8000) routes each query to one of five workflows:
+| # | Workflow | Gateway Route | Backend | Port | Data Source | Status |
+|---|----------|---------------|---------|------|-------------|--------|
+| 1 | General Knowledge | `general` | RAG (general mode) | 8002 | Remote LLM (DeepSeek / Ollama) | ✅ Ready |
+| 2 | Amazon Document | `amazon_docs` | RAG (documents mode) | 8002 | ChromaDB retrieval | ✅ Ready |
+| 3 | Enterprise/IC Document | `ic_docs` | RAG (documents mode) | 8002 | ChromaDB (not populated) | ⚠️ Placeholder |
+| 4 | SP-API Agent | `sp_api` | SP-API Agent | 8003 | Amazon Seller API | ✅ Ready |
+| 5 | UDS Agent | `uds` | UDS Agent | 8001 | ClickHouse (40M+ rows) | ✅ Ready |
 
-| Workflow | Backend | Port | Note |
-|----------|---------|------|------|
-| General Knowledge | RAG (general mode) | 8002 | Remote LLM (e.g. DeepSeek) via RAG config. |
-| Amazon Document | RAG (documents mode) | 8002 | Chroma retrieval, Amazon-docs bias. |
-| Enterprise/IC Document | RAG (documents mode) or skip | 8002 | **Not ready yet:** Chroma not populated; gateway returns a friendly message when routed to IC docs. Workflow remains in diagrams. |
-| SP-API Agent | SP-API Agent | 8003 | Seller operations. |
-| UDS Agent | UDS Agent | 8001 | BI/analytics (ClickHouse). |
-
-**IC docs:** Retrieval is not ready yet (Chroma not populated). The gateway still shows this workflow and returns a friendly message when the route is IC docs; set `IC_DOCS_ENABLED=true` once Chroma is populated.
+> **IC docs:** Not ready yet — Chroma not populated. Gateway returns a friendly message; set `IC_DOCS_ENABLED=true` once populated.
 
 ---
 
@@ -78,37 +84,51 @@ The unified gateway (port 8000) routes each query to one of five workflows:
 
 ```mermaid
 flowchart TB
-    subgraph Layer1["API Layer"]
-        FastAPI[FastAPI]
-        Uvicorn[Uvicorn]
+    subgraph L0["Client Layer"]
+        Gradio[Gradio Chat UI]
+        APIClient[GatewayClient<br/>api_client.py]
     end
 
-    subgraph Layer2["Agent Layer"]
-        ReAct[ReAct Agent]
-        Intent[Intent Classifier]
+    subgraph L1["Gateway Layer"]
+        GatewayAPI[FastAPI Gateway]
+        Rewriters[Query Rewriters<br/>Ollama / DeepSeek]
+        RouteLLM[Route LLM<br/>+ Heuristic Fallback]
+        Services[Service Dispatch]
+        LogUtils[Logging Utils]
+    end
+
+    subgraph L2["API Layer"]
+        UDS_API[UDS FastAPI :8001]
+        RAG_API[RAG FastAPI :8002]
+        SP_API[SP-API FastAPI :8003]
+    end
+
+    subgraph L3["Agent Layer"]
+        ReAct[ReAct Agent Core]
+        UDS_Intent[UDS Intent Classifier]
+        RAG_Intent[RAG Intent Methods ×4]
         Planner[Task Planner]
     end
 
-    subgraph Layer3["Tool Layer"]
-        UDS_Tools[UDS Tools (16)]
-        SP_Tools[SP-API Tools (10)]
+    subgraph L4["Tool Layer"]
+        UDS_Tools[UDS Tools<br/>Schema 4 + Query 4 + Analysis 5 + Viz 3]
+        SP_Tools[SP-API Tools<br/>10 tools]
     end
 
-    subgraph Layer4["Data Layer"]
-        ClickHouse[ClickHouse]
-        ChromaDB[ChromaDB]
-        Redis[Redis]
+    subgraph L5["Data Layer"]
+        ClickHouse[(ClickHouse)]
+        ChromaDB[(ChromaDB)]
+        Redis[(Redis Cache)]
     end
 
-    subgraph Layer5["LLM Layer"]
-        Ollama[Ollama]
-        Remote[Remote API]
+    subgraph L6["LLM Layer"]
+        Ollama[Ollama<br/>Qwen3, qwen2.5]
+        DeepSeek[DeepSeek API]
+        HF[HuggingFace<br/>MiniLM, DistilBERT]
     end
 
-    Layer1 --> Layer2
-    Layer2 --> Layer3
-    Layer3 --> Layer4
-    Layer2 --> Layer5
+    L0 --> L1 --> L2 --> L3 --> L4 --> L5
+    L3 --> L6
 ```
 
 ---
@@ -118,52 +138,148 @@ flowchart TB
 ```mermaid
 flowchart LR
     subgraph src["src/"]
+        subgraph gateway["gateway/"]
+            gw_api[api.py]
+            gw_router[router.py]
+            gw_rewriters[rewriters.py]
+            gw_route_llm[route_llm.py]
+            gw_services[services.py]
+            gw_schemas[schemas.py]
+            gw_log[logging_utils.py]
+        end
+
+        subgraph client["client/"]
+            cl_api[api_client.py]
+            cl_ui[gradio_ui.py]
+        end
+
         subgraph uds["uds/"]
-            api[api.py]
-            agent[uds_agent.py]
-            client[uds_client.py]
-            intent[intent_classifier.py]
-            planner[task_planner.py]
-            formatter[result_formatter.py]
-            cache[cache.py]
-            tools[tools/]
+            u_api[api.py]
+            u_agent[uds_agent.py]
+            u_client[uds_client.py]
+            u_intent[intent_classifier.py]
+            u_planner[task_planner.py]
+            u_formatter[result_formatter.py]
+            u_cache[cache.py]
+            u_error[error_handler.py]
+            u_schemas[schemas.py]
+            u_tools[tools/]
+            u_maint[maintenance/]
+            u_data[data/]
         end
 
         subgraph rag["rag/"]
-            pipeline[query_pipeline.py]
-            intent_m[intent_methods.py]
-            aggregator[intent_aggregator.py]
-            chroma[chroma_loaders.py]
-            embeddings[embeddings.py]
+            r_api[rag_api.py]
+            r_pipeline[query_pipeline.py]
+            r_intent_m[intent_methods.py]
+            r_aggregator[intent_aggregator.py]
+            r_classifier[intent_classifier.py]
+            r_rewrite[query_rewriting.py]
+            r_chroma[chroma_loaders.py]
+            r_embed[embeddings.py]
+            r_ingest[ingest_pipeline.py]
+            r_eval[evaluation/]
         end
 
         subgraph agent_mod["agent/"]
-            react[react_agent.py]
-            models[models.py]
+            a_react[react_agent.py]
+            a_models[models.py]
+            a_logger[agent_logger.py]
+            a_except[exceptions.py]
+            a_tools[tools/]
         end
 
         subgraph sp_api["sp_api/"]
-            sp_agent[sp_api_agent.py]
-            sp_client[sp_api_client.py]
-            sp_tools[tools/]
+            s_api[fast_api.py]
+            s_agent[sp_api_agent.py]
+            s_client[sp_api_client.py]
+            s_workflow[workflow.py<br/>LangGraph]
+            s_ltm[long_term_memory.py<br/>ChromaDB]
+            s_stm[short_term_memory.py<br/>Redis]
+            s_schemas[schemas.py]
+            s_tools[tools/ ×10]
         end
     end
 
     subgraph external["external/"]
-        ai_toolkit[ai-toolkit]
+        ai_toolkit[ai-toolkit<br/>BaseTool, ToolExecutor]
+        ic_skill[IC-Agent-Skill]
         llama[llama.cpp]
     end
 
-    agent --> react
-    agent --> tools
-    sp_agent --> react
-    sp_agent --> sp_tools
-    react --> ai_toolkit
+    u_agent --> a_react
+    s_agent --> a_react
+    a_react --> ai_toolkit
+    cl_ui --> cl_api
+    cl_api --> gw_api
+    gw_api --> gw_router
+    gw_api --> gw_services
+    gw_router --> gw_route_llm
+    gw_router --> gw_rewriters
 ```
 
 ---
 
-## 4. UDS Agent Flow
+## 4. Gateway Flow
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant ChatUI as Gradio Chat UI
+    participant GW as Gateway API
+    participant Rewrite as Query Rewriter
+    participant Router as Route LLM / Heuristic
+    participant Backend as Backend Service
+
+    User->>ChatUI: Type question
+    ChatUI->>GW: POST /api/v1/query<br/>{query, workflow, rewrite_enable, session_id}
+    GW->>Rewrite: Normalize + optional LLM rewrite
+    Rewrite-->>GW: rewritten_query
+    GW->>Router: Classify workflow
+    
+    alt Route LLM enabled & confident
+        Router-->>GW: workflow + confidence (LLM)
+    else Heuristic fallback
+        Router-->>GW: workflow + confidence (keywords)
+    end
+
+    GW->>Backend: Dispatch to RAG/UDS/SP-API
+    Backend-->>GW: {answer, sources}
+    GW-->>ChatUI: QueryResponse
+    ChatUI-->>User: Display answer
+
+    Note over GW: Logs: request_id, raw_query,<br/>rewritten_query, workflow,<br/>confidence, route_source
+```
+
+---
+
+## 5. Routing Logic
+
+```mermaid
+flowchart TD
+    Q[User Query] --> WF{workflow field?}
+    
+    WF -->|explicit: general/uds/sp_api/...| MANUAL[Manual Override<br/>confidence=1.0]
+    WF -->|auto| AUTO{Route LLM<br/>enabled?}
+    
+    AUTO -->|No| HEUR[Keyword Heuristic<br/>_route_workflow_heuristic]
+    AUTO -->|Yes| LLM[Route LLM<br/>Ollama / DeepSeek]
+    
+    LLM --> CONF{confidence ≥<br/>threshold?}
+    CONF -->|Yes| USE_LLM[Use LLM result]
+    CONF -->|No| HEUR
+    
+    HEUR --> L2{Level 2 Keywords}
+    L2 -->|amazon docs, seller central| W2[amazon_docs 0.9]
+    L2 -->|ic-rag-agent, ic docs| W3[ic_docs 0.9]
+    L2 -->|sp-api, fba, shipment| W4[sp_api 0.85]
+    L2 -->|sales, revenue, orders| W5[uds 0.85]
+    L2 -->|no match| W1[general 0.7]
+```
+
+---
+
+## 6. UDS Agent Flow
 
 ```mermaid
 flowchart TB
@@ -172,88 +288,36 @@ flowchart TB
     end
 
     subgraph UDS["UDS Agent Pipeline"]
-        IC[Intent Classifier]
-        TP[Task Planner]
-        RA[ReAct Agent]
+        IC[Intent Classifier<br/>6 Domains]
+        TP[Task Planner<br/>Subtask Decomposition]
+        RA[ReAct Agent Loop]
         RF[Result Formatter]
+        EH[Error Handler<br/>Circuit Breaker + Retry]
     end
 
-    subgraph Tools["Tools"]
-        Schema[Schema Tools]
-        Query[Query Tools]
-        Analysis[Analysis Tools]
-        Viz[Visualization Tools]
+    subgraph Tools["16 Tools"]
+        Schema[Schema Tools ×4<br/>list_tables, describe_table<br/>get_relationships, search_columns]
+        Query[Query Tools ×4<br/>generate_sql, execute_query<br/>validate_query, explain_query]
+        Analysis[Analysis Tools ×5<br/>sales_trend, inventory<br/>product_perf, financial, compare]
+        Viz[Visualization Tools ×3<br/>chart, dashboard, export]
     end
 
     subgraph Data
-        CH[(ClickHouse)]
-        Cache[(Redis)]
+        CH[(ClickHouse<br/>40M+ rows)]
+        Cache[(Redis<br/>Query + Schema Cache)]
     end
 
-    Q --> IC
-    IC --> TP
-    TP --> RA
-    RA --> Tools
+    Q --> IC --> TP --> RA --> Tools
     Tools --> CH
-    RA --> RF
-    RF --> Out[Response]
-
+    RA --> RF --> Out[Response]
     IC -.-> Cache
     Tools -.-> Cache
+    RA -.-> EH
 ```
 
 ---
 
-## 5. UDS Intent and Tool Categories
-
-```mermaid
-flowchart TB
-    subgraph Intents["Intent Domains"]
-        S[Sales]
-        I[Inventory]
-        F[Financial]
-        P[Product]
-        C[Comparison]
-        G[General]
-    end
-
-    subgraph SchemaTools["Schema Tools (4)"]
-        LT[list_tables]
-        DT[describe_table]
-        RT[get_table_relationships]
-        SC[search_columns]
-    end
-
-    subgraph QueryTools["Query Tools (4)"]
-        GS[generate_sql]
-        EQ[execute_query]
-        VQ[validate_query]
-        XQ[explain_query]
-    end
-
-    subgraph AnalysisTools["Analysis Tools (5)"]
-        ST[analyze_sales_trend]
-        IA[analyze_inventory]
-        PP[analyze_product_performance]
-        FS[financial_summary]
-        CM[compare_metrics]
-    end
-
-    subgraph VizTools["Visualization Tools (3)"]
-        CC[create_chart]
-        CD[create_dashboard]
-        EV[export_visualization]
-    end
-
-    Intents --> SchemaTools
-    Intents --> QueryTools
-    Intents --> AnalysisTools
-    Intents --> VizTools
-```
-
----
-
-## 6. RAG Pipeline Flow
+## 7. RAG Pipeline Flow
 
 ```mermaid
 flowchart TB
@@ -262,29 +326,36 @@ flowchart TB
     end
 
     subgraph Preprocess
-        QR[Query Rewriting]
+        QR[Query Rewriting<br/>query_rewriting.py]
     end
 
     subgraph Parallel["Four Parallel Intent Methods"]
-        M1[Documents<br/>Chroma Retrieval]
-        M2[Keywords<br/>Domain Match]
-        M3[FAQ<br/>Similarity]
-        M4[LLM<br/>Zero-shot NLI]
+        M1[Documents Method<br/>Chroma L2 distance]
+        M2[Keywords Method<br/>Domain phrase match]
+        M3[FAQ Method<br/>Vector similarity]
+        M4[LLM Method<br/>Zero-shot NLI<br/>DistilBERT]
     end
 
     subgraph Aggregate
-        AGG[Aggregate Yes/No]
+        AGG[Aggregate Yes/No<br/>intent_aggregator.py]
     end
 
-    subgraph Mode["Answer Mode"]
-        GEN[General Mode]
-        DOC[Documents Mode]
-        HYB[Hybrid Mode]
+    subgraph Mode["Answer Mode Decision"]
+        GEN["General Mode<br/>All No -> remote LLM"]
+        DOC["Documents Mode<br/>One or more Yes -> local LLM plus context"]
+        HYB["Hybrid Mode<br/>One or more Yes -> both LLMs"]
     end
 
     subgraph Generation
-        Local[Local LLM]
-        Remote[Remote LLM]
+        Local[Local LLM<br/>Ollama Qwen3]
+        Remote[Remote LLM<br/>DeepSeek API]
+    end
+
+    subgraph Evaluation["RAG Evaluation"]
+        Recall["Recall at 5"]
+        Precision["Precision at 5"]
+        Faith["Faithfulness"]
+        Relevance["Relevance"]
     end
 
     Query --> QR
@@ -307,33 +378,88 @@ flowchart TB
 
 ---
 
-## 7. ReAct Agent Loop
+## 8. SP-API Agent Flow
 
 ```mermaid
-flowchart LR
-    subgraph ReAct["ReAct Loop"]
-        T[Thought]
-        A[Action]
-        O[Observation]
+flowchart TB
+    subgraph Input
+        Q[User Query]
     end
 
-    T --> A
-    A --> O
-    O --> T
-
-    subgraph Tools
-        T1[Tool 1]
-        T2[Tool 2]
-        Tn[Tool N]
+    subgraph SPAPI["SP-API Agent"]
+        Intent[Intent Classify<br/>query / action / report]
+        Select[Tool Selection<br/>by intent]
+        React[ReAct Loop<br/>Thought→Action→Observation]
+        Format[Format Response]
     end
 
-    A --> Tools
-    Tools --> O
+    subgraph Workflow["LangGraph Workflow"]
+        N1[classify_intent]
+        N2[select_tools]
+        N3[execute_react_loop]
+        N4[format_response]
+        N5[store_memory]
+        N1 --> N2 --> N3 --> N4 --> N5
+    end
+
+    subgraph Tools["10 Tools"]
+        T1[ProductCatalogTool]
+        T2[InventoryTool]
+        T3[ListOrdersTool]
+        T4[OrderDetailsTool]
+        T5[ListShipmentsTool]
+        T6[CreateShipmentTool]
+        T7[FBAFeeTool]
+        T8[FBAEligibilityTool]
+        T9[FinancialsTool]
+        T10[ReportRequestTool]
+    end
+
+    subgraph Memory["Memory Layer"]
+        STM[Short-term Memory<br/>Redis / ConversationMemory]
+        LTM[Long-term Memory<br/>ChromaDB Embeddings]
+    end
+
+    Q --> Intent --> Select --> React --> Format
+    React --> Tools
+    Tools -->|Amazon API| SPAPI_EXT[Amazon SP-API]
+    React -.-> STM
+    React -.-> LTM
 ```
 
 ---
 
-## 8. Data Flow
+## 9. ReAct Agent Loop
+
+```mermaid
+flowchart LR
+    subgraph ReAct["ReAct Loop (max_iterations)"]
+        T["Thought<br/>LLM reasoning"]
+        A["Action<br/>Tool selection + args"]
+        O["Observation<br/>Tool result"]
+    end
+
+    T --> A --> O --> T
+
+    subgraph Infra["Agent Infrastructure"]
+        Logger[AgentLogger<br/>Structured logging]
+        State[AgentState<br/>history, iterations]
+        Errors[MaxIterationsError<br/>ToolNotFoundError]
+    end
+
+    subgraph ToolExec["ai-toolkit"]
+        TE[ToolExecutor]
+        BT[BaseTool]
+    end
+
+    A --> TE --> BT
+    BT --> O
+    ReAct -.-> Infra
+```
+
+---
+
+## 10. Data Flow
 
 ```mermaid
 flowchart TB
@@ -341,82 +467,111 @@ flowchart TB
         U[User Request]
     end
 
+    subgraph Gateway
+        GW[Gateway API :8000]
+    end
+
     subgraph Processing
-        API[API Layer]
-        Agent[Agent]
-        Tools[Tools]
+        RAG_SVC[RAG Pipeline :8002]
+        UDS_SVC[UDS Agent :8001]
+        SP_SVC[SP-API Agent :8003]
     end
 
     subgraph Storage
-        CH[(ClickHouse<br/>40M+ rows)]
-        Chroma[(ChromaDB<br/>Vector Store)]
-        Redis[(Redis<br/>Cache)]
+        CH[(ClickHouse<br/>40M+ rows<br/>amz_order, inventory, etc.)]
+        Chroma[(ChromaDB<br/>Collections: documents,<br/>fqa_question, keyword)]
+        Redis[(Redis<br/>Query cache, session,<br/>schema metadata)]
+        LTM_Store[(ChromaDB<br/>SP-API long-term memory)]
     end
 
     subgraph Outbound
         R[Response]
     end
 
-    U --> API
-    API --> Agent
-    Agent --> Tools
-    Tools --> CH
-    Tools --> Cache
-    Agent -.-> Chroma
-    Agent -.-> Redis
-    Tools --> R
+    U --> GW
+    GW --> RAG_SVC --> Chroma
+    GW --> UDS_SVC --> CH
+    GW --> SP_SVC --> LTM_Store
+    UDS_SVC -.-> Redis
+    SP_SVC -.-> Redis
+    RAG_SVC --> R
+    UDS_SVC --> R
+    SP_SVC --> R
 ```
 
 ---
 
-## 9. Deployment Architecture
+## 11. Deployment Architecture
 
 ```mermaid
 flowchart TB
     subgraph Cloud["Alibaba Cloud ECS"]
-        subgraph Containers["Docker Containers"]
-            UDS[UDS Agent<br/>:8001]
-            CH[ClickHouse<br/>:8123]
-            R[Redis<br/>:6379]
-            Chroma[ChromaDB<br/>:8000]
+        subgraph Nginx_LB["Nginx :80"]
+            LB[Reverse Proxy<br/>Rate Limiting<br/>Security Headers]
+        end
+
+        subgraph AppServices["Application Services"]
+            GW[Gateway :8000]
+            UDS[UDS Agent :8001]
+            RAG[RAG Pipeline :8002]
+            SP[SP-API Agent :8003]
+            ChatUI[Chat UI :7862]
+        end
+
+        subgraph DataServices["Data Services (Docker)"]
+            CH[ClickHouse :8123/:9000]
+            R[Redis :6379]
+            Chroma[ChromaDB :8000]
         end
 
         subgraph Monitoring["Monitoring"]
             Prom[Prometheus]
             Graf[Grafana]
+            Alerts[Alert Rules]
         end
     end
 
-    subgraph External
-        Ollama[Ollama LLM]
-        Nginx[Nginx Proxy]
+    subgraph External["External Services"]
+        Ollama[Ollama LLM<br/>qwen3, qwen2.5]
+        DeepSeekAPI[DeepSeek API]
+        AmazonAPI[Amazon SP-API]
     end
 
-    Nginx --> UDS
-    UDS --> CH
-    UDS --> R
-    UDS --> Ollama
-    UDS --> Prom
-    Prom --> Graf
+    subgraph CI["CI/CD"]
+        GHA[GitHub Actions]
+        ACR[Alibaba Container Registry]
+    end
+
+    LB -->|/api/v1/query| GW
+    LB -->|/api/| UDS
+    GW --> RAG & UDS & SP
+    RAG --> Chroma
+    UDS --> CH & R
+    SP --> AmazonAPI
+    GW & UDS & RAG & SP --> Ollama & DeepSeekAPI
+    AppServices --> Prom --> Graf
+    GHA --> ACR --> Cloud
 ```
 
 ---
 
-## 10. Technology Stack
+## 12. Technology Stack
 
 ```mermaid
 flowchart TB
-    subgraph Framework["Framework"]
+    subgraph Framework["Web Framework"]
         FastAPI[FastAPI]
-        Pydantic[Pydantic]
+        Pydantic[Pydantic v2]
         Uvicorn[Uvicorn]
+        Gradio[Gradio]
     end
 
     subgraph Agent["Agent & LLM"]
         LangChain[LangChain]
         LangGraph[LangGraph]
         Ollama[Ollama]
-        Remote[Remote API]
+        DeepSeek[DeepSeek API]
+        HF[HuggingFace<br/>Transformers]
     end
 
     subgraph Data["Data & Cache"]
@@ -425,65 +580,214 @@ flowchart TB
         Redis[Redis]
     end
 
-    subgraph External["External"]
-        ai_toolkit[ai-toolkit]
+    subgraph Embedding["Embeddings"]
+        MiniLM[all-MiniLM-L6-v2]
+        DistilBERT[DistilBERT SST-2]
+        Qwen3VL[Qwen3-VL-Embedding]
+    end
+
+    subgraph External["External Libraries"]
+        ai_toolkit[ai-toolkit<br/>BaseTool, ToolExecutor]
+        ic_skill[IC-Agent-Skill]
+        llama_cpp[llama.cpp]
     end
 
     subgraph Infra["Infrastructure"]
-        Docker[Docker]
-        DockerCompose[Docker Compose]
+        Docker[Docker + Compose]
+        Nginx[Nginx]
+        GitHub[GitHub Actions CI/CD]
+        Prometheus[Prometheus + Grafana]
+        Aliyun[Alibaba Cloud ECS]
     end
 
-    Framework --> Agent
-    Agent --> Data
+    Framework --> Agent --> Data
+    Agent --> Embedding
     Agent --> External
     Infra --> Framework
 ```
 
 ---
 
-## 11. Directory Structure
+## 13. Directory Structure
 
 ```
 IC-RAG-Agent/
 ├── src/
-│   ├── uds/           # UDS Agent (BI for Amazon data)
-│   ├── rag/           # RAG pipeline (intent + retrieval)
-│   ├── agent/         # ReAct agent core
-│   ├── sp_api/        # SP-API Agent
-
-│   ├── tools/         # Shared utilities
-│   └── draft/         # Prototypes
-├── docs/
-│   ├── guides/        # User, Developer, API, Deployment, Operations
-│   ├── archive/       # Historical docs
-│   └── FRAMEWORK.md   # This file
-├── tests/
+│   ├── gateway/        # Unified gateway (routing, rewriting, dispatch)
+│   │   ├── api.py            # FastAPI app, POST /api/v1/query
+│   │   ├── router.py         # Route LLM + heuristic fallback
+│   │   ├── rewriters.py      # Ollama / DeepSeek query rewriting
+│   │   ├── route_llm.py      # LLM-based workflow classifier
+│   │   ├── services.py       # Backend HTTP dispatch
+│   │   ├── schemas.py        # QueryRequest / QueryResponse
+│   │   └── logging_utils.py  # Structured routing log helpers
+│   ├── client/         # Unified chat client
+│   │   ├── api_client.py     # GatewayClient (HTTP + mock mode)
+│   │   └── gradio_ui.py      # Gradio Chat UI
+│   ├── uds/            # UDS Agent (BI for Amazon data)
+│   │   ├── api.py            # FastAPI :8001 (sync + streaming)
+│   │   ├── uds_agent.py      # UDSAgent extends ReActAgent
+│   │   ├── uds_client.py     # ClickHouse client + retry
+│   │   ├── intent_classifier.py
+│   │   ├── task_planner.py
+│   │   ├── result_formatter.py
+│   │   ├── cache.py          # Redis cache wrapper
+│   │   ├── error_handler.py  # Circuit breaker + retry + backoff
+│   │   ├── schemas.py        # Pydantic request/response
+│   │   ├── tools/            # 16 tools (schema, query, analysis, viz)
+│   │   ├── maintenance/      # quality_checks, statistics
+│   │   └── data/             # Business glossary, schema metadata
+│   ├── rag/            # RAG Pipeline (intent + retrieval + generation)
+│   │   ├── rag_api.py        # FastAPI :8002
+│   │   ├── query_pipeline.py # RAGPipeline.build() + query()
+│   │   ├── intent_methods.py # 4 parallel intent methods
+│   │   ├── intent_aggregator.py
+│   │   ├── intent_classifier.py  # Zero-shot NLI
+│   │   ├── query_rewriting.py
+│   │   ├── chroma_loaders.py
+│   │   ├── embeddings.py
+│   │   ├── ingest_pipeline.py
+│   │   └── evaluation/       # RAGAS metrics, dataset loader, reports
+│   ├── agent/          # ReAct agent core (shared by UDS + SP-API)
+│   │   ├── react_agent.py    # ReActAgent class
+│   │   ├── models.py         # Action, Observation, AgentState
+│   │   ├── agent_logger.py   # Structured agent logging
+│   │   ├── exceptions.py     # MaxIterationsError, ToolNotFoundError
+│   │   └── tools/            # Stub tools (uds_stubs, sp_api_stubs)
+│   ├── sp_api/         # SP-API Agent (Amazon seller operations)
+│   │   ├── fast_api.py       # FastAPI :8003 (SSE streaming)
+│   │   ├── sp_api_agent.py   # SellerOperationsAgent extends ReActAgent
+│   │   ├── sp_api_client.py  # Amazon SP-API HTTP client
+│   │   ├── workflow.py       # LangGraph state machine
+│   │   ├── long_term_memory.py   # ChromaDB semantic memory
+│   │   ├── short_term_memory.py  # Redis conversation memory
+│   │   ├── schemas.py
+│   │   └── tools/            # 10 tools (catalog, orders, inventory, etc.)
+│   └── draft/          # Prototypes and experiments
 ├── scripts/
+│   ├── run_gateway.py        # Gateway launcher
+│   ├── run_unified_chat.py   # Chat UI launcher
+│   ├── run_all_tests.py      # Test runner
+│   ├── run_evaluation.py     # RAG evaluation runner
+│   ├── load_to_chroma.py     # RAG ingest helper
+│   ├── query_rag.py          # RAG query helper
+│   └── run_sp_api_gradio.py  # SP-API UI launcher
 ├── docker/
+│   ├── docker-compose.yml    # Redis + ClickHouse + ChromaDB + Gateway
+│   ├── Dockerfile.gateway    # Gateway Docker image
+│   ├── nginx.conf            # Reverse proxy + rate limiting
+│   └── docker-compose.*.yml  # ECS, prod, UDS variants
 ├── monitoring/
+│   ├── prometheus.yml        # Prometheus scrape config
+│   ├── alert-rules.yml       # Alert rules
+│   └── grafana-dashboards/   # Overview, performance, errors, infra
+├── tests/                    # 60+ test files
+│   ├── test_gateway_*.py     # Gateway API, router, rewriters, services
+│   ├── test_client_*.py      # Client API, Gradio UI
+│   ├── test_uds_*.py         # UDS agent, API, client, integration
+│   ├── test_rag_*.py         # RAG API, intent, pipeline
+│   ├── test_*_agent.py       # ReAct agent, SP-API agent
+│   └── *.py                  # Cache, error handling, security, load, UAT
+├── tools/                    # Dev/ops utilities
+│   ├── benchmark_api.py
+│   ├── optimize_queries.py
+│   └── generate_*.py         # Quality reports, schema metadata
+├── bin/                      # Shell scripts
+│   ├── run_rag_api.sh
+│   ├── uds_ops.sh
+│   └── download_models_from_hf.sh
+├── db/                       # Database DDL
+│   └── uds/
+│       ├── create_tables.sql
+│       └── create_indexes.sql
+├── specs/                    # API specifications
+│   └── UDS_API_SPEC.yaml
+├── .github/workflows/        # CI/CD
+│   └── deploy.yml            # GitHub Actions → Alibaba Cloud
 ├── external/
-│   ├── ai-toolkit/    # BaseTool, ToolExecutor
-│   ├── IC-Agent-Skill/
-│   └── llama.cpp/
+│   ├── ai-toolkit/           # BaseTool, ToolExecutor
+│   ├── IC-Agent-Skill/       # Skill definitions
+│   └── llama.cpp/            # Local LLM inference
+├── models/                   # Local model weights
+│   ├── all-MiniLM-L6-v2/
+│   ├── distilbert-base-uncased-finetuned-sst-2-english/
+│   ├── Qwen3-1.7B/
+│   └── Qwen3-VL-Embedding-*/
 └── data/
+    ├── documents/            # Source documents for RAG
+    ├── chroma_db/            # ChromaDB persistent storage
+    ├── vector_store/         # Additional vector stores
+    └── intent_classification/ # Intent training data
 ```
 
 ---
 
-## 12. Key Integration Points
+## 14. Key Integration Points
 
-| From | To | Purpose |
-|------|-----|---------|
-| UDS API | UDS Agent | Query processing |
-| UDS Agent | ReAct Agent | Tool orchestration |
-| UDS Agent | Intent Classifier | Domain classification |
-| UDS Agent | Task Planner | Subtask decomposition |
-| UDS Tools | UDS Client | ClickHouse queries |
-| UDS Client | Redis | Query caching |
-| RAG Pipeline | ChromaDB | Document retrieval |
-| SP-API Agent | Long-term Memory | Uses RAG embeddings |
-| All Agents | ai-toolkit | BaseTool, ToolExecutor |
+| From | To | Method | Purpose |
+|------|----|--------|---------|
+| Chat UI | Gateway | HTTP POST | Unified entry point for all queries |
+| Gateway | RAG API | HTTP POST `/query` | General, Amazon docs, IC docs workflows |
+| Gateway | UDS API | HTTP POST `/api/v1/uds/query` | BI analytics queries |
+| Gateway | SP-API | HTTP POST `/api/v1/seller/query` | Seller operations |
+| Gateway Router | Route LLM | Function call | LLM-based workflow classification |
+| Gateway Router | Heuristic | Function call | Keyword-based fallback routing |
+| Gateway Rewriter | Ollama/DeepSeek | HTTP | Query rewriting before routing |
+| UDS Agent | ReAct Agent | Inheritance | Tool orchestration loop |
+| SP-API Agent | ReAct Agent | Inheritance | Tool orchestration loop |
+| SP-API Agent | LangGraph | StateGraph | Workflow state machine |
+| UDS Agent | ClickHouse | clickhouse-connect | SQL query execution |
+| UDS Agent | Redis | redis-py | Query + schema caching |
+| RAG Pipeline | ChromaDB | chromadb | Document retrieval (L2 distance) |
+| RAG Pipeline | HuggingFace | transformers | Zero-shot NLI intent classification |
+| SP-API Agent | ChromaDB | chromadb | Long-term semantic memory |
+| SP-API Agent | Redis | redis-py | Short-term conversation memory |
+| All Agents | ai-toolkit | import | BaseTool, ToolExecutor |
+| Nginx | Gateway | proxy_pass | Reverse proxy + rate limiting |
+| GitHub Actions | Alibaba Cloud | SSH deploy | CI/CD pipeline |
+
+---
+
+## 15. API Contract
+
+### 15.0 Service Health Endpoints
+
+| Service | Base Port | Health Endpoint |
+|---------|-----------|-----------------|
+| Gateway | 8000 | `/health` |
+| UDS API | 8001 | `/health` |
+| RAG API | 8002 | `/health` |
+| SP-API API | 8003 | `/api/v1/health` |
+
+### 15.1 Gateway Request
+
+```http
+POST /api/v1/query
+Content-Type: application/json
+
+{
+  "query": "What were my sales in October?",
+  "workflow": "auto",
+  "rewrite_enable": true,
+  "rewrite_backend": "ollama",
+  "route_backend": null,
+  "session_id": "session-1234",
+  "stream": false
+}
+```
+
+### 15.2 Gateway Response
+
+```json
+{
+  "answer": "Your total Amazon sales in October were $12,345.",
+  "workflow": "uds",
+  "routing_confidence": 0.96,
+  "sources": [{"type": "table", "name": "amz_order"}],
+  "request_id": "req-uuid",
+  "error": null
+}
+```
 
 ---
 
@@ -492,4 +796,7 @@ IC-RAG-Agent/
 - [PROJECT.md](PROJECT.md) – Project summary, metrics
 - [OPERATIONS.md](OPERATIONS.md) – Operations manual
 - [guides/UDS_DEVELOPER_GUIDE.md](guides/UDS_DEVELOPER_GUIDE.md) – Developer guide
+- [guides/UDS_API_REFERENCE.md](guides/UDS_API_REFERENCE.md) – UDS API reference
+- [guides/QUERY_REWRITING.md](guides/QUERY_REWRITING.md) – Query rewriting guide
 - [archive/ARCHITECTURE_DECISIONS.md](archive/ARCHITECTURE_DECISIONS.md) – ADRs
+- [archive/ANSWER_MODEL_IDENTITY.md](archive/ANSWER_MODEL_IDENTITY.md) – Answer model identity notes

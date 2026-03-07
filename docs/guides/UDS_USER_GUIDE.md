@@ -319,7 +319,7 @@ const data = await res.json();
 
 - Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
-- API Guide: [UDS_API_GUIDE.md](UDS_API_GUIDE.md)
+- API Reference: [UDS_API_REFERENCE.md](UDS_API_REFERENCE.md)
 - API Reference: [UDS_API_REFERENCE.md](UDS_API_REFERENCE.md)
 
 ---

@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Tuple
+from typing import Tuple, Optional
 
 from .schemas import QueryRequest
 
@@ -42,6 +42,35 @@ def _normalize(query: str) -> str:
     text = text.strip()
     text = re.sub(r"\s+", " ", text)
     return text
+
+
+def _is_definition_query(query: str) -> bool:
+    """Return True for definition/explanation style questions."""
+    q = (query or "").strip().lower()
+    return (
+        q.startswith("what is ")
+        or q.startswith("what's ")
+        or q.startswith("define ")
+        or q.startswith("explain ")
+    )
+
+
+def _is_fba_term_query(query: str) -> bool:
+    """Return True when query focuses on FBA terminology."""
+    q = (query or "").lower()
+    return "fba" in q or "fbm" in q
+
+
+def _apply_docs_preference(query: str, workflow: str) -> str:
+    """
+    Prefer IC docs for definition-style FBA/FBM questions.
+
+    This prevents conceptual documentation queries (e.g. "what is FBA")
+    from being routed to operational SP-API workflow.
+    """
+    if workflow == "sp_api" and _is_definition_query(query) and _is_fba_term_query(query):
+        return "ic_docs"
+    return workflow
 
 
 def rewrite_query(request: QueryRequest) -> str:
@@ -165,12 +194,14 @@ def route_workflow(
 
     if not _route_llm_enabled():
         wf, conf = _route_workflow_heuristic(query or "")
+        wf = _apply_docs_preference(query or "", wf)
         return wf, conf, "heuristic", None, None
 
     # Route LLM path: call LLM; fall back to heuristic if confidence too low.
     from .route_llm import route_with_llm
 
     workflow, confidence = route_with_llm(query or "", backend)
+    workflow = _apply_docs_preference(query or "", workflow)
     if confidence >= threshold:
         logger.debug(
             "Route LLM selected workflow=%s confidence=%.2f (>= %.2f)",
@@ -187,6 +218,7 @@ def route_workflow(
         threshold,
     )
     wf2, conf2 = _route_workflow_heuristic(query or "")
+    wf2 = _apply_docs_preference(query or "", wf2)
     return wf2, conf2, "heuristic", None, None
 
 

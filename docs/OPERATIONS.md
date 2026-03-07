@@ -64,7 +64,7 @@ UDS Agent is a Business Intelligence system that answers natural language questi
 **Notes:**
 - Ollama not included in ic-agent-services - add Ollama container or configure remote LLM
 - Port 8001 used to avoid conflict with ChromaDB on 8000
-- Health endpoint: `GET /health` (not `/api/v1/health`)
+- UDS API health endpoint: `GET /health` (SP-API uses `GET /api/v1/health`)
 
 ### Gateway downstream backends
 
@@ -145,6 +145,24 @@ pytest tests/test_smoke.py -v
 curl http://localhost:8001/health
 
 # Expected: {"status":"healthy","database":"connected"}
+```
+
+### Service Health Endpoints (Local)
+
+Use the endpoint that matches each service implementation:
+
+| Service | Port | Health Endpoint |
+|---------|------|-----------------|
+| Gateway | 8000 | `GET /health` |
+| UDS API | 8001 | `GET /health` |
+| RAG API | 8002 | `GET /health` |
+| SP-API API | 8003 | `GET /api/v1/health` |
+
+```bash
+curl http://localhost:8000/health
+curl http://localhost:8001/health
+curl http://localhost:8002/health
+curl http://localhost:8003/api/v1/health
 ```
 
 ### View Logs
@@ -620,7 +638,6 @@ export GATEWAY_ROUTE_LLM_CONF_THRESHOLD=0.5
 - [Developer Guide](guides/UDS_DEVELOPER_GUIDE.md) - Architecture, development
 - [API Reference](guides/UDS_API_REFERENCE.md) - API endpoints
 - [Deployment Guide](guides/UDS_DEPLOYMENT_GUIDE.md) - Deployment instructions
-- [Operations Guide](guides/UDS_OPERATIONS_GUIDE.md) - Detailed operations
 - [Project Documentation](PROJECT.md) - Project summary, metrics, ADRs
 
 ---

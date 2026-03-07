@@ -660,5 +660,5 @@ console.log(result.response.summary);
 ## Related Documentation
 
 - [UDS_USER_GUIDE.md](UDS_USER_GUIDE.md) – User guide and query examples
-- [UDS_API_GUIDE.md](UDS_API_GUIDE.md) – Quick start and configuration
+- [UDS_USER_GUIDE.md](UDS_USER_GUIDE.md) – Quick start and usage examples
 - [UDS_DEVELOPER_GUIDE.md](UDS_DEVELOPER_GUIDE.md) – Architecture and extensions
