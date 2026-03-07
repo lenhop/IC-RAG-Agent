@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from src.uds.statistics import StatisticalAnalyzer
+from src.uds.maintenance.statistics import StatisticalAnalyzer
 
 
 class DummyClient:

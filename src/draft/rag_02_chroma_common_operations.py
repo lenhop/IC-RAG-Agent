@@ -13,7 +13,7 @@ load_dotenv()
 __file__ = '/Users/hzz/KMS/IC-RAG-Agent/src/draft/load_split_pdf.py'
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
-sys.path.insert(0, str(project_root / 'libs/ai-toolkit/'))
+sys.path.insert(0, str(project_root / 'external/ai-toolkit/'))
 
 
 # 配置Chroma存储参数

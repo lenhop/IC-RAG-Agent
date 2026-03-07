@@ -13,7 +13,6 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 
 from src.uds.intent_classifier import IntentResult, IntentDomain
-from src.uds.tools import UDSToolRegistry
 
 
 @dataclass
@@ -77,7 +76,6 @@ class UDSTaskPlanner:
             llm_client: Optional LLM for complex planning
         """
         self.llm = llm_client
-        self.tool_registry = UDSToolRegistry()
 
     def create_plan(self, query: str, intent: IntentResult) -> TaskPlan:
         """

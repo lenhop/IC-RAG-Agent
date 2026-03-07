@@ -183,6 +183,8 @@ class UDSIntentClassifier:
             llm_client: Optional LLM client with generate() or invoke() method
         """
         self.llm = llm_client
+        # optional cache layer supporting get_intent/set_intent
+        self.cache = None
 
     def classify(self, query: str) -> IntentResult:
         """
@@ -194,7 +196,9 @@ class UDSIntentClassifier:
         Returns:
             IntentResult with classification
         """
-        if not query or not str(query).strip():
+        # normalize and validate input
+        key = str(query).strip() if query is not None else ""
+        if not key:
             return IntentResult(
                 primary_domain=IntentDomain.GENERAL,
                 secondary_domains=[],
@@ -204,13 +208,50 @@ class UDSIntentClassifier:
                 reasoning="Empty query",
             )
 
+        # check cache first
+        if self.cache is not None:
+            cached = self.cache.get_intent(key)
+            if cached is not None:
+                logger.debug("Intent cache hit for query")
+                try:
+                    return IntentResult(
+                        primary_domain=IntentDomain(cached["primary_domain"]),
+                        secondary_domains=[IntentDomain(d) for d in cached.get("secondary_domains", [])],
+                        confidence=cached.get("confidence", 0.0),
+                        keywords=cached.get("keywords", []),
+                        suggested_tools=cached.get("suggested_tools", []),
+                        reasoning=cached.get("reasoning", ""),
+                    )
+                except Exception:
+                    # fall through to re-classify if reconstruction fails
+                    pass
+
+        # perform classification using LLM if available
+        result: IntentResult
         if self.llm:
             try:
-                return self._llm_classify(str(query).strip())
+                result = self._llm_classify(key)
             except Exception as e:
                 logger.warning("LLM classification failed: %s, falling back to keywords", e)
+                result = self._keyword_classify(key)
+        else:
+            result = self._keyword_classify(key)
 
-        return self._keyword_classify(str(query).strip())
+        # cache the result for future calls
+        if self.cache is not None:
+            try:
+                self.cache.set_intent(key, {
+                    "primary_domain": result.primary_domain.value,
+                    "secondary_domains": [d.value for d in result.secondary_domains],
+                    "confidence": result.confidence,
+                    "keywords": result.keywords,
+                    "suggested_tools": result.suggested_tools,
+                    "reasoning": result.reasoning,
+                })
+            except Exception:
+                pass
+
+        return result
 
     def _llm_classify(self, query: str) -> IntentResult:
         """
@@ -308,22 +349,42 @@ Domain:"""
 
     def _parse_llm_response(self, response: str, query: str) -> IntentResult:
         """Parse LLM response into IntentResult."""
-        response_lower = response.lower().strip()
-
+        key = str(query).strip()
+        if not key:
+            return self._keyword_classify(query)
+        
+        response_lower = response.lower()
         primary = None
         for domain in IntentDomain:
             if domain.value in response_lower:
                 primary = domain
                 break
-
+        
         if not primary:
             return self._keyword_classify(query)
 
-        return IntentResult(
+        # return classification result from LLM
+        result = IntentResult(
             primary_domain=primary,
             secondary_domains=[],
             confidence=0.9,
             keywords=[],
-            suggested_tools=self.DOMAIN_TOOLS[primary],
+            suggested_tools=self.DOMAIN_TOOLS.get(primary, []),
             reasoning="LLM classification",
         )
+
+        # store in cache if available
+        if self.cache is not None:
+            try:
+                self.cache.set_intent(key, {
+                    "primary_domain": result.primary_domain.value,
+                    "secondary_domains": [d.value for d in result.secondary_domains],
+                    "confidence": result.confidence,
+                    "keywords": result.keywords,
+                    "suggested_tools": result.suggested_tools,
+                    "reasoning": result.reasoning,
+                })
+            except Exception:
+                pass
+
+        return result

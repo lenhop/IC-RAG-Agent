@@ -7,7 +7,6 @@ from .sales import SalesQueries
 from .inventory import InventoryQueries
 from .financial import FinancialQueries
 from .products import ProductQueries
-from .customers import CustomerQueries
 from ..uds_client import UDSClient
 
 
@@ -24,7 +23,6 @@ class QueryTemplateRegistry:
         self.inventory = InventoryQueries(client)
         self.financial = FinancialQueries(client)
         self.products = ProductQueries(client)
-        self.customers = CustomerQueries(client)
 
     def list_templates(self) -> dict:
         """
@@ -87,13 +85,6 @@ class QueryTemplateRegistry:
                 "product_review_analysis",
                 "product_return_analysis",
                 "product_cross_sell_analysis"
-            ],
-            "customers": [
-                "customer_segmentation",
-                "customer_lifetime_value",
-                "customer_purchase_frequency",
-                "customer_geographic_distribution",
-                "customer_retention_analysis"
             ]
         }
 

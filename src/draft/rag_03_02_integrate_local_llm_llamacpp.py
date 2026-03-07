@@ -13,7 +13,7 @@ Step 1: Build llama.cpp (CMake, NOT make)
 -----------------------------------------
 The legacy Makefile is deprecated. Use CMake:
 
-  cd IC-RAG-Agent/libs/llama.cpp
+  cd IC-RAG-Agent/external/llama.cpp
   cmake -B build
   cmake --build build --config Release
 
@@ -33,16 +33,16 @@ Example filenames: Qwen3-1.7B-Q8_0.gguf
 Step 3: Run the model
 ----------------------
 Option A - CLI (quick test):
-  ./libs/llama.cpp/build/bin/llama-cli -m ./models/Qwen3-1.7B-GGUF/Qwen3-1.7B-Q8_0.gguf -p "Give me a short introduction to large language model." -n 256
+  ./external/llama.cpp/build/bin/llama-cli -m ./models/Qwen3-1.7B-GGUF/Qwen3-1.7B-Q8_0.gguf -p "Give me a short introduction to large language model." -n 256
 
 Option B - HTTP server (for RAG / OpenAI-compatible API):
-  ./libs/llama.cpp/build/bin/llama-server -m ./models/Qwen3-1.7B-GGUF/Qwen3-1.7B-Q8_0.gguf --host 127.0.0.1 --port 8080
+  ./external/llama.cpp/build/bin/llama-server -m ./models/Qwen3-1.7B-GGUF/Qwen3-1.7B-Q8_0.gguf --host 127.0.0.1 --port 8080
 
   - Web UI: http://127.0.0.1:8080
   - API base: http://127.0.0.1:8080/v1
 
 Option C - Download from Hugging Face (if not downloaded):
-  ./libs/llama.cpp/build/bin/llama-server -hf Qwen/Qwen3-1.7B-GGUF:Q8_0
+  ./external/llama.cpp/build/bin/llama-server -hf Qwen/Qwen3-1.7B-GGUF:Q8_0
 
 Step 4: Python dependencies
 ---------------------------

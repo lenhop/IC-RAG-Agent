@@ -6,7 +6,27 @@ import pandas as pd
 import numpy as np
 
 
-class SalesTrendTool(BaseTool):
+def _build_registry() -> QueryTemplateRegistry:
+    """Create a query template registry backed by a configured UDS client."""
+    client = UDSClient(
+        host=UDSConfig.CH_HOST,
+        port=UDSConfig.CH_PORT,
+        user=UDSConfig.CH_USER,
+        password=UDSConfig.CH_PASSWORD,
+        database=UDSConfig.CH_DATABASE,
+    )
+    return QueryTemplateRegistry(client)
+
+
+class _BaseAnalysisTool(BaseTool):
+    """Shared initializer for analysis tools."""
+
+    def __init__(self, name: str, description: str):
+        super().__init__(name, description)
+        self.registry = _build_registry()
+
+
+class SalesTrendTool(_BaseAnalysisTool):
     """
     Analyze sales trends over time with automatic insights.
     Calculates growth rates, identifies peaks, and detects patterns.
@@ -44,16 +64,7 @@ class SalesTrendTool(BaseTool):
     ]
     
     def __init__(self):
-        # BaseTool expects name and description arguments
         super().__init__(self.name, self.description)
-        client = UDSClient(
-            host=UDSConfig.CH_HOST,
-            port=UDSConfig.CH_PORT,
-            user=UDSConfig.CH_USER,
-            password=UDSConfig.CH_PASSWORD,
-            database=UDSConfig.CH_DATABASE
-        )
-        self.registry = QueryTemplateRegistry(client)
     
     def _calculate_insights(self, df: pd.DataFrame) -> dict:
         """Calculate automatic insights from sales data."""
@@ -177,7 +188,7 @@ Sales Trend Analysis ({start_date} to {end_date}):
         return self.parameters
 
 
-class InventoryAnalysisTool(BaseTool):
+class InventoryAnalysisTool(_BaseAnalysisTool):
     """
     Analyze inventory levels, turnover, and generate alerts.
     Identifies low stock, slow-moving items, and stockout risks.
@@ -204,14 +215,6 @@ class InventoryAnalysisTool(BaseTool):
     
     def __init__(self):
         super().__init__(self.name, self.description)
-        client = UDSClient(
-            host=UDSConfig.CH_HOST,
-            port=UDSConfig.CH_PORT,
-            user=UDSConfig.CH_USER,
-            password=UDSConfig.CH_PASSWORD,
-            database=UDSConfig.CH_DATABASE
-        )
-        self.registry = QueryTemplateRegistry(client)
     
     def execute(
         self,
@@ -289,7 +292,7 @@ Inventory Analysis:
         return self.parameters
 
 
-class ProductPerformanceTool(BaseTool):
+class ProductPerformanceTool(_BaseAnalysisTool):
     """
     Analyze product performance metrics.
     Identifies top/bottom performers and provides insights.
@@ -329,14 +332,6 @@ class ProductPerformanceTool(BaseTool):
     
     def __init__(self):
         super().__init__(self.name, self.description)
-        client = UDSClient(
-            host=UDSConfig.CH_HOST,
-            port=UDSConfig.CH_PORT,
-            user=UDSConfig.CH_USER,
-            password=UDSConfig.CH_PASSWORD,
-            database=UDSConfig.CH_DATABASE
-        )
-        self.registry = QueryTemplateRegistry(client)
     
     def execute(
         self,
@@ -418,7 +413,7 @@ Product Performance Analysis ({start_date} to {end_date}):
         return self.parameters
 
 
-class FinancialSummaryTool(BaseTool):
+class FinancialSummaryTool(_BaseAnalysisTool):
     """
     Generate financial summary with revenue, fees, and profitability.
     """
@@ -443,14 +438,6 @@ class FinancialSummaryTool(BaseTool):
     
     def __init__(self):
         super().__init__(self.name, self.description)
-        client = UDSClient(
-            host=UDSConfig.CH_HOST,
-            port=UDSConfig.CH_PORT,
-            user=UDSConfig.CH_USER,
-            password=UDSConfig.CH_PASSWORD,
-            database=UDSConfig.CH_DATABASE
-        )
-        self.registry = QueryTemplateRegistry(client)
     
     def execute(self, start_date: str, end_date: str) -> ToolResult:
         """
@@ -515,7 +502,7 @@ Financial Summary ({start_date} to {end_date}):
         return self.parameters
 
 
-class ComparisonTool(BaseTool):
+class ComparisonTool(_BaseAnalysisTool):
     """
     Compare metrics across periods, products, or marketplaces.
     Calculates growth rates and statistical significance.
@@ -559,14 +546,6 @@ class ComparisonTool(BaseTool):
     
     def __init__(self):
         super().__init__(self.name, self.description)
-        client = UDSClient(
-            host=UDSConfig.CH_HOST,
-            port=UDSConfig.CH_PORT,
-            user=UDSConfig.CH_USER,
-            password=UDSConfig.CH_PASSWORD,
-            database=UDSConfig.CH_DATABASE
-        )
-        self.registry = QueryTemplateRegistry(client)
     
     def execute(
         self,

@@ -11,13 +11,25 @@ Extends ReActAgent with UDS-specific capabilities including:
 
 import json
 from typing import Dict, Any, List, Optional
-
+from src.uds.cache import UDSCache  # for type hints
 from src.agent.react_agent import ReActAgent
 from src.uds.uds_client import UDSClient
+from src.uds.config import UDSConfig
 from src.uds.intent_classifier import UDSIntentClassifier, IntentResult, IntentDomain
 from src.uds.task_planner import UDSTaskPlanner, TaskPlan
 from src.uds.result_formatter import UDSResultFormatter
 from src.uds.tools import UDSToolRegistry
+from src.uds.error_handler import (
+    UDSError,
+    DatabaseError,
+    ToolExecutionError,
+    retry_with_backoff,
+    CircuitBreaker,
+    handle_database_error,
+    handle_tool_execution_error,
+    handle_llm_error,
+    handle_api_error
+)
 
 
 class UDSAgent(ReActAgent):
@@ -28,11 +40,12 @@ class UDSAgent(ReActAgent):
 
     def __init__(
         self,
-        uds_client: UDSClient,
+        uds_client: Optional[UDSClient],
         llm_client,
         intent_classifier: Optional[UDSIntentClassifier] = None,
         task_planner: Optional[UDSTaskPlanner] = None,
-        result_formatter: Optional[UDSResultFormatter] = None
+        result_formatter: Optional[UDSResultFormatter] = None,
+        cache: Optional[UDSCache] = None,
     ):
         """
         Initialize UDS Agent.
@@ -46,8 +59,24 @@ class UDSAgent(ReActAgent):
         """
         super().__init__(llm=llm_client)
 
-        self.uds_client = uds_client
+        # caching layer shared across components
+        self.cache = cache
+
+        # initialize or accept provided UDS client
+        if uds_client is None:
+            self.uds_client = UDSClient(cache=cache)
+        else:
+            self.uds_client = uds_client
+            # propagate cache if possible
+            try:
+                self.uds_client.cache = cache
+            except Exception:
+                pass
+
+        # classifier/planner/formatter
         self.intent_classifier = intent_classifier or UDSIntentClassifier(llm_client)
+        if self.cache is not None:
+            self.intent_classifier.cache = self.cache
         self.task_planner = task_planner or UDSTaskPlanner(llm_client)
         self.result_formatter = result_formatter or UDSResultFormatter()
 
@@ -74,7 +103,8 @@ class UDSAgent(ReActAgent):
     def _load_schema_context(self) -> Dict[str, Any]:
         """Load schema metadata for context."""
         try:
-            with open('src/uds/uds_schema_metadata.json', 'r') as f:
+            schema_path = UDSConfig.project_path(UDSConfig.SCHEMA_METADATA_PATH)
+            with open(schema_path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
             print(f"Warning: Could not load schema metadata: {e}")
@@ -94,33 +124,70 @@ class UDSAgent(ReActAgent):
         try:
             intent = self.intent_classifier.classify(query)
             print(f"Intent: {intent.primary_domain.value} (confidence: {intent.confidence:.2f})")
-
+        except Exception as e:
+            error = handle_llm_error(e)
+            return {
+                'success': False,
+                'query': query,
+                'error': error['error'],
+                'error_type': error['error_type']
+            }
+        
+        try:
             plan = self.task_planner.create_plan(query, intent)
             print(f"Plan: {len(plan.subtasks)} subtasks")
-
+        except Exception as e:
+            error = handle_tool_execution_error(e, "TaskPlanner")
+            return {
+                'success': False,
+                'query': query,
+                'error': error['error'],
+                'error_type': error['error_type']
+            }
+        
+        try:
             context = self._build_context(query, intent, plan)
-
             print("Executing ReAct loop...")
+        except Exception as e:
+            error = handle_tool_execution_error(e, "ContextBuilder")
+            return {
+                'success': False,
+                'query': query,
+                'error': error['error'],
+                'error_type': error['error_type']
+            }
+        
+        try:
             result = self.run(query)
-
+        except Exception as e:
+            error = handle_llm_error(e)
+            return {
+                'success': False,
+                'query': query,
+                'error': error['error'],
+                'error_type': error['error_type']
+            }
+        
+        try:
             formatted = self.result_formatter.format(
                 agent_result={'output': result},
                 intent=intent
             )
-
-            return {
-                'success': True,
-                'query': query,
-                'intent': intent.primary_domain.value,
-                'response': formatted
-            }
-
         except Exception as e:
+            error = handle_tool_execution_error(e, "ResultFormatter")
             return {
                 'success': False,
                 'query': query,
-                'error': str(e)
+                'error': error['error'],
+                'error_type': error['error_type']
             }
+        
+        return {
+            'success': True,
+            'query': query,
+            'intent': intent.primary_domain.value,
+            'response': formatted
+        }
 
     def _build_context(
         self,

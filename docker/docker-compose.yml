@@ -78,6 +78,41 @@ services:
         reservations:
           memory: 512M
 
+  gateway:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.gateway
+    container_name: ic-rag-agent-gateway
+    ports:
+      - "127.0.0.1:8001:8001"   # Gateway API port
+    environment:
+      - GATEWAY_HOST=0.0.0.0
+      - GATEWAY_PORT=8001
+      - GATEWAY_LOG_LEVEL=info
+      - GATEWAY_WORKERS=1
+      - GATEWAY_RELOAD=false
+    depends_on:
+      redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1"
+        reservations:
+          memory: 512M
+
 volumes:
   redis_data:
   clickhouse_data:

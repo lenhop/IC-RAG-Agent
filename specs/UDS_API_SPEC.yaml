@@ -1,0 +1,438 @@
+openapi: 3.1.0
+info:
+  title: UDS Agent API
+  description: Business Intelligence API for Amazon Data
+  version: 1.0.0
+paths:
+  /api/v1/uds/query:
+    post:
+      summary: Submit Query
+      description: Submit analytical question (synchronous).
+      operationId: submit_query_api_v1_uds_query_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/uds/query/stream:
+    post:
+      summary: Submit Query Stream
+      description: Submit question with streaming response (SSE).
+      operationId: submit_query_stream_api_v1_uds_query_stream_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QueryRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/uds/query/{query_id}:
+    get:
+      summary: Get Query Result
+      description: Get query status and results.
+      operationId: get_query_result_api_v1_uds_query__query_id__get
+      parameters:
+      - name: query_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Query Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      summary: Cancel Query
+      description: Cancel running query (removes from cache).
+      operationId: cancel_query_api_v1_uds_query__query_id__delete
+      parameters:
+      - name: query_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Query Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: string
+                title: Response Cancel Query Api V1 Uds Query  Query Id  Delete
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/uds/tables:
+    get:
+      summary: List Tables
+      description: List all available tables.
+      operationId: list_tables_api_v1_uds_tables_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  items: {}
+                  type: array
+                type: object
+                title: Response List Tables Api V1 Uds Tables Get
+  /api/v1/uds/tables/{table_name}:
+    get:
+      summary: Get Table Schema
+      description: Get table schema.
+      operationId: get_table_schema_api_v1_uds_tables__table_name__get
+      parameters:
+      - name: table_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Table Name
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableSchema'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/uds/tables/{table_name}/sample:
+    get:
+      summary: Get Table Sample
+      description: Get sample data from table.
+      operationId: get_table_sample_api_v1_uds_tables__table_name__sample_get
+      parameters:
+      - name: table_name
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Table Name
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 10
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TableSampleResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/uds/statistics:
+    get:
+      summary: Get Statistics
+      description: Get database statistics from uds_statistics.json.
+      operationId: get_statistics_api_v1_uds_statistics_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Get Statistics Api V1 Uds Statistics Get
+  /health:
+    get:
+      summary: Health Check
+      description: Health check endpoint.
+      operationId: health_check_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+  /metrics:
+    get:
+      summary: Metrics
+      description: Prometheus-style metrics (placeholder).
+      operationId: metrics_metrics_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Metrics Metrics Get
+  /api/v1/uds/status:
+    get:
+      summary: Agent Status
+      description: Get agent status.
+      operationId: agent_status_api_v1_uds_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AgentStatusResponse'
+components:
+  schemas:
+    AgentStatusResponse:
+      properties:
+        status:
+          type: string
+          title: Status
+          description: Agent status
+        tools:
+          type: integer
+          title: Tools
+          description: Number of registered tools
+        queries_processed:
+          type: integer
+          title: Queries Processed
+          description: Total queries processed
+      type: object
+      required:
+      - status
+      - tools
+      - queries_processed
+      title: AgentStatusResponse
+      description: Agent status response.
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    HealthResponse:
+      properties:
+        status:
+          type: string
+          title: Status
+          description: healthy or unhealthy
+        database:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Database
+          description: Database connection status
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+          description: Error message if unhealthy
+        timestamp:
+          type: string
+          format: date-time
+          title: Timestamp
+          description: Check timestamp
+      type: object
+      required:
+      - status
+      title: HealthResponse
+      description: Health check response.
+    QueryRequest:
+      properties:
+        query:
+          type: string
+          title: Query
+          description: Natural language business question
+        options:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Options
+          description: Query options
+      type: object
+      required:
+      - query
+      title: QueryRequest
+      description: Request model for query submission.
+      example:
+        options:
+          include_charts: true
+          include_insights: true
+        query: What were total sales in October?
+    QueryResponse:
+      properties:
+        query_id:
+          type: string
+          title: Query Id
+          description: Unique query identifier
+        status:
+          type: string
+          title: Status
+          description: 'Query status: pending, running, completed, failed'
+        query:
+          type: string
+          title: Query
+          description: Original query text
+        intent:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Intent
+          description: Classified intent domain
+        response:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Response
+          description: Formatted response
+        metadata:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Metadata
+          description: Additional metadata
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+          description: Error message if failed
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+          description: Timestamp when query was created
+      type: object
+      required:
+      - query_id
+      - status
+      - query
+      title: QueryResponse
+      description: Response model for query results.
+    TableSampleResponse:
+      properties:
+        table_name:
+          type: string
+          title: Table Name
+          description: Table name
+        sample:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Sample
+          description: Sample rows
+        limit:
+          type: integer
+          title: Limit
+          description: Number of rows returned
+      type: object
+      required:
+      - table_name
+      - limit
+      title: TableSampleResponse
+      description: Sample data response.
+    TableSchema:
+      properties:
+        table_name:
+          type: string
+          title: Table Name
+          description: Table name
+        database:
+          type: string
+          title: Database
+          description: Database name
+        row_count:
+          type: integer
+          title: Row Count
+          description: Number of rows
+        columns:
+          items:
+            additionalProperties:
+              type: string
+            type: object
+          type: array
+          title: Columns
+          description: Column definitions
+      type: object
+      required:
+      - table_name
+      - database
+      - row_count
+      title: TableSchema
+      description: Table schema information.
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError

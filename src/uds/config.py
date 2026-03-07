@@ -27,11 +27,18 @@ class UDSConfig:
     QUERY_TIMEOUT = int(os.getenv("UDS_QUERY_TIMEOUT", "300"))  # 5 minutes
     STREAM_CHUNK_SIZE = int(os.getenv("UDS_STREAM_CHUNK_SIZE", "10000"))
 
-    # Schema metadata path (relative to project root)
-    SCHEMA_METADATA_PATH = "src/uds/uds_schema_metadata.json"
+    # UDS data artifact paths (relative to project root)
+    SCHEMA_METADATA_PATH = "src/uds/data/uds_schema_metadata.json"
+    STATISTICS_PATH = "src/uds/data/uds_statistics.json"
+    BUSINESS_GLOSSARY_PATH = "src/uds/data/uds_business_glossary.json"
 
     # Path to IC-Data-Loader schema CSVs (sibling project)
     SCHEMA_DIR = os.getenv(
         "UDS_SCHEMA_DIR",
         str(_PROJECT_ROOT.parent / "IC-Data-Loader" / "schema"),
     )
+
+    @staticmethod
+    def project_path(relative_path: str) -> Path:
+        """Resolve a repository-relative path to absolute path."""
+        return _PROJECT_ROOT / relative_path

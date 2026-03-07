@@ -1,8 +1,8 @@
-[submodule "libs/ai-toolkit"]
-	path = libs/ai-toolkit
+[submodule "external/ai-toolkit"]
+	path = external/ai-toolkit
 	url = ../ai-toolkit.git
-[submodule "libs/llama.cpp"]
-	path = libs/llama.cpp
+[submodule "external/llama.cpp"]
+	path = external/llama.cpp
 	url = https://github.com/ggerganov/llama.cpp
 [submodule "external/IC-Agent-Skill"]
 	path = external/IC-Agent-Skill

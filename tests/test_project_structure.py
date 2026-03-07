@@ -77,7 +77,7 @@ def test_requirements_file():
         
         # 检查是否包含 ai-toolkit
         content = requirements_file.read_text()
-        if "ai-toolkit" in content or "libs/ai-toolkit" in content:
+        if "ai-toolkit" in content or "external/ai-toolkit" in content:
             print("✅ requirements.txt 包含 ai-toolkit")
         else:
             print("⚠️  requirements.txt 不包含 ai-toolkit")

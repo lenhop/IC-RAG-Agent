@@ -1,0 +1,41 @@
+# UDS Agent on ECS - connects to existing ClickHouse and Redis from ic-agent-services
+# Port 8001 to avoid conflict with ChromaDB (8000)
+version: '3.8'
+
+services:
+  uds-agent:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: uds-agent
+    restart: unless-stopped
+    ports:
+      - "8001:8000"
+    environment:
+      - UDS_HOST=0.0.0.0
+      - UDS_PORT=8000
+      - CH_HOST=clickhouse
+      - CH_PORT=8123
+      - CH_USER=ic_agent
+      - CH_PASSWORD=ic_agent_2026
+      - CH_DATABASE=ic_agent
+      - REDIS_URL=redis://redis:6379/0
+      - UDS_LLM_PROVIDER=ollama
+      - UDS_LLM_MODEL=qwen3:1.7b
+    networks:
+      - ic-agent-services_default
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "1.0"
+
+networks:
+  ic-agent-services_default:
+    external: true

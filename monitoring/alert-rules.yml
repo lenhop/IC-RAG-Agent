@@ -1,0 +1,171 @@
+groups:
+  - name: uds_agent_alerts
+    rules:
+      # Critical Alerts
+      - alert: UDSAgentDown
+        expr: up{job="uds-agent"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: uds-agent
+        annotations:
+          summary: "UDS Agent is down"
+          description: "UDS Agent has been down for more than 1 minute."
+          runbook_url: "https://docs.example.com/runbooks/uds-agent-down"
+
+      - alert: UDSAgentHighErrorRate
+        expr: rate(http_requests_total{job="uds-agent", status=~"5.."}[5m]) / rate(http_requests_total{job="uds-agent"}[5m]) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+          service: uds-agent
+        annotations:
+          summary: "High error rate on UDS Agent"
+          description: "UDS Agent error rate is {{ $value | printf \"%.2f\" }}% (threshold: 5%)."
+          runbook_url: "https://docs.example.com/runbooks/high-error-rate"
+
+      - alert: DatabaseUnavailable
+        expr: up{job="clickhouse"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          service: database
+        annotations:
+          summary: "ClickHouse database is unavailable"
+          description: "ClickHouse database has been unavailable for more than 1 minute."
+          runbook_url: "https://docs.example.com/runbooks/database-unavailable"
+
+      - alert: RedisUnavailable
+        expr: up{job="redis"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: cache
+        annotations:
+          summary: "Redis cache is unavailable"
+          description: "Redis cache has been unavailable for more than 2 minutes."
+          runbook_url: "https://docs.example.com/runbooks/redis-unavailable"
+
+      - alert: MemoryExhausted
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+          service: infrastructure
+        annotations:
+          summary: "Memory exhausted"
+          description: "System memory usage is {{ $value | printf \"%.1f\" }}% (threshold: 90%)."
+          runbook_url: "https://docs.example.com/runbooks/memory-exhausted"
+
+      # Warning Alerts
+      - alert: UDSAgentWarningErrorRate
+        expr: rate(http_requests_total{job="uds-agent", status=~"5.."}[5m]) / rate(http_requests_total{job="uds-agent"}[5m]) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+          service: uds-agent
+        annotations:
+          summary: "Elevated error rate on UDS Agent"
+          description: "UDS Agent error rate is {{ $value | printf \"%.2f\" }}% (threshold: 1%)."
+          runbook_url: "https://docs.example.com/runbooks/elevated-error-rate"
+
+      - alert: HighResponseTime
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="uds-agent"}[5m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: uds-agent
+        annotations:
+          summary: "High response time (P95)"
+          description: "UDS Agent P95 response time is {{ $value | printf \"%.2f\" }}s (threshold: 10s)."
+          runbook_url: "https://docs.example.com/runbooks/high-response-time"
+
+      - alert: LowCacheHitRate
+        expr: rate(cache_hits_total[5m]) / (rate(cache_hits_total[5m]) + rate(cache_misses_total[5m])) < 0.5
+        for: 10m
+        labels:
+          severity: warning
+          service: cache
+        annotations:
+          summary: "Low cache hit rate"
+          description: "Cache hit rate is {{ $value | printf \"%.1f\" }}% (threshold: 50%)."
+          runbook_url: "https://docs.example.com/runbooks/low-cache-hit-rate"
+
+      - alert: HighCPUUsage
+        expr: 100 - (avg by(instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 70
+        for: 10m
+        labels:
+          severity: warning
+          service: infrastructure
+        annotations:
+          summary: "High CPU usage"
+          description: "CPU usage is {{ $value | printf \"%.1f\" }}% (threshold: 70%)."
+          runbook_url: "https://docs.example.com/runbooks/high-cpu-usage"
+
+      - alert: DiskSpaceLow
+        expr: (node_filesystem_avail_bytes / node_filesystem_size_bytes) * 100 < 10
+        for: 5m
+        labels:
+          severity: warning
+          service: infrastructure
+        annotations:
+          summary: "Low disk space"
+          description: "Disk space available is {{ $value | printf \"%.1f\" }}% (threshold: 10%)."
+          runbook_url: "https://docs.example.com/runbooks/low-disk-space"
+
+      - alert: NetworkErrors
+        expr: rate(node_network_receive_errs_total[5m]) > 10 or rate(node_network_transmit_errs_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          service: infrastructure
+        annotations:
+          summary: "Network interface errors"
+          description: "Network interface has errors (receive: {{ $value }})."
+          runbook_url: "https://docs.example.com/runbooks/network-errors"
+
+      # Query Performance Alerts
+      - alert: SlowDatabaseQueries
+        expr: histogram_quantile(0.95, rate(clickhouse_query_duration_seconds_bucket[5m])) > 30
+        for: 5m
+        labels:
+          severity: warning
+          service: database
+        annotations:
+          summary: "Slow database queries"
+          description: "ClickHouse P95 query time is {{ $value | printf \"%.2f\" }}s (threshold: 30s)."
+          runbook_url: "https://docs.example.com/runbooks/slow-queries"
+
+      - alert: HighLLMLatency
+        expr: histogram_quantile(0.95, rate(llm_request_duration_seconds_bucket[5m])) > 60
+        for: 10m
+        labels:
+          severity: warning
+          service: llm
+        annotations:
+          summary: "High LLM latency"
+          description: "LLM P95 response time is {{ $value | printf \"%.2f\" }}s (threshold: 60s)."
+          runbook_url: "https://docs.example.com/runbooks/high-llm-latency"
+
+      # Container Health Alerts
+      - alert: ContainerUnhealthy
+        expr: container_health_status{health!="healthy"} > 0
+        for: 2m
+        labels:
+          severity: critical
+          service: containers
+        annotations:
+          summary: "Container is unhealthy"
+          description: "Container {{ $labels.container }} is in {{ $labels.health }} state."
+          runbook_url: "https://docs.example.com/runbooks/container-unhealthy"
+
+      - alert: ContainerRestarting
+        expr: rate(container_restart_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: containers
+        annotations:
+          summary: "Container restarting frequently"
+          description: "Container {{ $labels.container }} has restarted {{ $value }} times in 5 minutes."
+          runbook_url: "https://docs.example.com/runbooks/container-restarting"

@@ -2,7 +2,7 @@
 RAG API integration tests.
 
 Requires the RAG API server to be running:
-  ./scripts/run_rag_api.sh
+  ./bin/run_rag_api.sh
 
 Run tests:
   pytest tests/test_rag_api.py -v
@@ -39,7 +39,7 @@ def skip_if_unavailable():
     if not _api_available():
         pytest.skip(
             f"RAG API not available at {RAG_API_URL}. "
-            "Start with: ./scripts/run_rag_api.sh"
+            "Start with: ./bin/run_rag_api.sh"
         )
 
 

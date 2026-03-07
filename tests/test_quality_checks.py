@@ -3,7 +3,7 @@
 import pandas as pd
 import pytest
 
-from src.uds.quality_checks import DataQualityChecker
+from src.uds.maintenance.quality_checks import DataQualityChecker
 from src.uds.uds_client import UDSClient
 
 
@@ -82,7 +82,7 @@ def test_run_all_checks(dummy_checker):
 
 def test_generate_quality_report_function():
     client = DummyClient()
-    from src.uds.quality_checks import generate_quality_report
+    from src.uds.maintenance.quality_checks import generate_quality_report
     # generation should complete and return a dict
     report = generate_quality_report(client, output_file="test.json")
     assert isinstance(report, dict)

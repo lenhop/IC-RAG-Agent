@@ -212,8 +212,8 @@ docs/_build/
 docs/.doctrees/
 site/
 
-# Embedded/submodule: avoid adding libs/ai-toolkit as nested repo (use sibling ai-toolkit)
-libs/ai-toolkit/
+# Embedded/submodule: avoid adding external/ai-toolkit as nested repo (use sibling ai-toolkit)
+external/ai-toolkit/
 
 # Task management folder
 tasks/

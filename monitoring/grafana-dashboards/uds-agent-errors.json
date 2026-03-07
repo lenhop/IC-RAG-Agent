@@ -1,0 +1,282 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "UDS Agent Errors",
+    "tags": ["uds-agent", "errors", "debugging"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "HTTP Error Rate by Status Code",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(http_requests_total{job=\"uds-agent\", status=~\"4..\"}[5m])",
+            "legendFormat": "4xx Errors/sec"
+          },
+          {
+            "expr": "rate(http_requests_total{job=\"uds-agent\", status=~\"5..\"}[5m])",
+            "legendFormat": "5xx Errors/sec"
+          },
+          {
+            "expr": "rate(http_requests_total{job=\"uds-agent\", status=\"404\"}[5m])",
+            "legendFormat": "404 Not Found/sec"
+          },
+          {
+            "expr": "rate(http_requests_total{job=\"uds-agent\", status=\"500\"}[5m])",
+            "legendFormat": "500 Internal Error/sec"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 0
+        }
+      },
+      {
+        "id": 2,
+        "title": "Error Rate Percentage",
+        "type": "singlestat",
+        "targets": [
+          {
+            "expr": "(rate(http_requests_total{job=\"uds-agent\", status=~\"[45]..\"}[5m]) / rate(http_requests_total{job=\"uds-agent\"}[5m])) * 100",
+            "legendFormat": "Error Rate %"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 6,
+          "x": 12,
+          "y": 0
+        }
+      },
+      {
+        "id": 3,
+        "title": "Errors by Endpoint",
+        "type": "table",
+        "targets": [
+          {
+            "expr": "rate(http_requests_total{job=\"uds-agent\", status=~\"[45]..\"}[5m]) by (path)",
+            "legendFormat": "{{ path }}"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 6,
+          "x": 18,
+          "y": 0
+        }
+      },
+      {
+        "id": 4,
+        "title": "Database Errors",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(clickhouse_query_errors_total[5m])",
+            "legendFormat": "Query Errors/sec"
+          },
+          {
+            "expr": "rate(clickhouse_connection_errors_total[5m])",
+            "legendFormat": "Connection Errors/sec"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 8
+        }
+      },
+      {
+        "id": 5,
+        "title": "Cache Errors",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(redis_errors_total[5m])",
+            "legendFormat": "Redis Errors/sec"
+          },
+          {
+            "expr": "rate(cache_errors_total[5m])",
+            "legendFormat": "Cache Errors/sec"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 8
+        }
+      },
+      {
+        "id": 6,
+        "title": "LLM Service Errors",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(llm_requests_total{status=\"error\"}[5m])",
+            "legendFormat": "LLM Errors/sec"
+          },
+          {
+            "expr": "rate(llm_requests_total{status=\"timeout\"}[5m])",
+            "legendFormat": "LLM Timeouts/sec"
+          },
+          {
+            "expr": "rate(llm_requests_total{status=\"rate_limited\"}[5m])",
+            "legendFormat": "Rate Limited/sec"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 16
+        }
+      },
+      {
+        "id": 7,
+        "title": "Tool Execution Errors",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(tool_execution_errors_total[5m]) by (tool_name)",
+            "legendFormat": "{{ tool_name }} Errors/sec"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 16
+        }
+      },
+      {
+        "id": 8,
+        "title": "Error Correlation Matrix",
+        "type": "heatmap",
+        "targets": [
+          {
+            "expr": "rate(http_requests_total{job=\"uds-agent\", status=~\"5..\"}[5m])",
+            "legendFormat": "5xx Errors"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 24
+        }
+      },
+      {
+        "id": 9,
+        "title": "Recent Error Logs",
+        "type": "logs",
+        "targets": [
+          {
+            "expr": "{job=\"uds-agent\"} |= \"ERROR\"",
+            "legendFormat": "{{ message }}"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 24
+        }
+      },
+      {
+        "id": 10,
+        "title": "Error Trends",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "increase(http_requests_total{job=\"uds-agent\", status=~\"[45]..\"}[1h])",
+            "legendFormat": "Errors in last hour"
+          },
+          {
+            "expr": "increase(http_requests_total{job=\"uds-agent\", status=~\"[45]..\"}[24h])",
+            "legendFormat": "Errors in last 24h"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 32
+        }
+      },
+      {
+        "id": 11,
+        "title": "Top Error Endpoints",
+        "type": "table",
+        "targets": [
+          {
+            "expr": "topk(10, rate(http_requests_total{job=\"uds-agent\", status=~\"[45]..\"}[1h]) by (path))",
+            "legendFormat": "{{ path }}"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 32
+        }
+      },
+      {
+        "id": 12,
+        "title": "Application Exceptions",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(application_exceptions_total[5m]) by (exception_type)",
+            "legendFormat": "{{ exception_type }}"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 40
+        }
+      },
+      {
+        "id": 13,
+        "title": "Timeout Errors",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(http_requests_total{job=\"uds-agent\", status=\"504\"}[5m])",
+            "legendFormat": "Gateway Timeout"
+          },
+          {
+            "expr": "rate(request_timeouts_total[5m])",
+            "legendFormat": "Request Timeouts"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 40
+        }
+      }
+    ],
+    "time": {
+      "from": "now-6h",
+      "to": "now"
+    },
+    "timepicker": {},
+    "templating": {
+      "list": []
+    },
+    "annotations": {
+      "list": []
+    },
+    "refresh": "30s",
+    "schemaVersion": 27,
+    "version": 0,
+    "links": []
+  }
+}

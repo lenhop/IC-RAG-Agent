@@ -48,7 +48,8 @@ class GenerateSQLTool(BaseTool):
         )
 
         # Load schema metadata
-        with open(UDSConfig.SCHEMA_METADATA_PATH, 'r') as f:
+        schema_path = UDSConfig.project_path(UDSConfig.SCHEMA_METADATA_PATH)
+        with open(schema_path, "r", encoding="utf-8") as f:
             self.schema_metadata = json.load(f)
 
         # Initialize LLM (will be configured later)
@@ -382,7 +383,8 @@ class ValidateQueryTool(BaseTool):
             database=UDSConfig.CH_DATABASE
         )
 
-        with open(UDSConfig.SCHEMA_METADATA_PATH, 'r') as f:
+        schema_path = UDSConfig.project_path(UDSConfig.SCHEMA_METADATA_PATH)
+        with open(schema_path, "r", encoding="utf-8") as f:
             self.schema_metadata = json.load(f)
 
     def _get_parameters(self) -> list:

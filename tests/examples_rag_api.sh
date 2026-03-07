@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # RAG API usage examples (curl).
-# Prerequisite: Start the API with ./scripts/run_rag_api.sh
+# Prerequisite: Start the API with ./bin/run_rag_api.sh
 #
 # Usage:
 #   ./tests/examples_rag_api.sh

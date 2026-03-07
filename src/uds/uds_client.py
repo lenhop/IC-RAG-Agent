@@ -59,6 +59,7 @@ class UDSClient:
         password: Optional[str] = None,
         database: Optional[str] = None,
         query_timeout: int = 300,
+        cache: Any = None,
     ):
         """Initialize UDS client."""
         self.host = host or UDSConfig.CH_HOST
@@ -84,6 +85,8 @@ class UDSClient:
             self.port,
             self.database,
         )
+        # optional caching layer (expected to provide get_query/set_query semantics)
+        self.cache = cache
 
     def query(
         self,
@@ -105,6 +108,17 @@ class UDSClient:
         Raises:
             QueryError: If query execution fails
         """
+        # attempt to pull from cache before hitting database
+        if self.cache is not None:
+            cached = self.cache.get_query(sql)
+            if cached is not None:
+                logger.debug("Cache hit for query")
+                # cached format is {'rows': rows, 'cols': cols}
+                if as_dataframe:
+                    import pandas as _pd
+                    return _pd.DataFrame(cached['rows'], columns=cached['cols'])
+                return cached['rows']
+
         try:
             logger.debug("Executing query: %s...", sql[:100] if len(sql) > 100 else sql)
             start = time.time()
@@ -118,7 +132,18 @@ class UDSClient:
             if as_dataframe:
                 df = pd.DataFrame(rows, columns=cols)
                 logger.info("Query returned %d rows in %.2fs", len(df), elapsed)
+                if self.cache is not None:
+                    # store rows/columns rather than DataFrame directly
+                    try:
+                        self.cache.set_query(sql, {"rows": rows, "cols": cols})
+                    except Exception:
+                        pass
                 return df
+            if self.cache is not None:
+                try:
+                    self.cache.set_query(sql, {"rows": rows, "cols": cols})
+                except Exception:
+                    pass
             return rows
 
         except Exception as e:
@@ -186,6 +211,12 @@ class UDSClient:
         Returns:
             Dictionary with schema information
         """
+        # if we have a cache we may store schemas as well
+        if self.cache is not None:
+            cached = self.cache.get_schema(table_name)
+            if cached is not None:
+                return cached
+
         try:
             schema_query = f"""
             SELECT

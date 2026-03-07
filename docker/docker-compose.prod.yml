@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  uds-agent:
+    image: ${ACR_REGISTRY}/uds-agent:${VERSION}
+    container_name: uds-agent
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - CLICKHOUSE_HOST=${CLICKHOUSE_HOST}
+      - CLICKHOUSE_PORT=${CLICKHOUSE_PORT}
+      - CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT}
+      - LLM_PROVIDER=${LLM_PROVIDER}
+      - LLM_BASE_URL=${LLM_BASE_URL}
+      - LLM_MODEL=${LLM_MODEL}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - WORKERS=${WORKERS}
+    volumes:
+      - uds-logs:/app/logs
+    depends_on:
+      - redis
+    networks:
+      - uds-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  redis:
+    image: redis:7-alpine
+    container_name: uds-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - uds-network
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  uds-network:
+    driver: bridge
+
+volumes:
+  redis-data:
+  uds-logs:

@@ -1,0 +1,349 @@
+# Alibaba Cloud Simple Log Service (SLS) Configuration
+# This file defines centralized logging configuration for UDS Agent
+
+version: '1.0'
+metadata:
+  name: uds-agent-logging
+  description: "Centralized logging for UDS Agent production deployment"
+  region: cn-hangzhou
+  project: uds-agent-logs
+
+# Log Stores Configuration
+log_stores:
+  - name: uds-agent-application
+    description: "UDS Agent application logs"
+    ttl: 30  # 30 days retention
+    shard_count: 2
+    auto_split: true
+    max_split_shard: 64
+    enable_tracking: true
+    append_meta: true
+
+  - name: uds-agent-access
+    description: "UDS Agent access logs (API requests)"
+    ttl: 30
+    shard_count: 2
+    auto_split: true
+    max_split_shard: 32
+    enable_tracking: true
+    append_meta: true
+
+  - name: uds-agent-error
+    description: "UDS Agent error logs"
+    ttl: 30
+    shard_count: 2
+    auto_split: true
+    max_split_shard: 16
+    enable_tracking: true
+    append_meta: true
+
+  - name: uds-agent-audit
+    description: "UDS Agent audit logs (security events)"
+    ttl: 90  # 90 days retention for audit logs
+    shard_count: 1
+    auto_split: true
+    max_split_shard: 8
+    enable_tracking: true
+    append_meta: true
+
+  - name: system-logs
+    description: "System and container logs"
+    ttl: 30
+    shard_count: 2
+    auto_split: true
+    max_split_shard: 32
+    enable_tracking: true
+    append_meta: true
+
+# Log Parsing Rules
+log_parsing_rules:
+  - log_store: uds-agent-application
+    rule_name: json_parser
+    rule_type: json
+    sample_log: |
+      {"timestamp": "2026-03-06T10:00:00Z", "level": "INFO", "service": "uds-agent", "message": "Query processed successfully", "user_id": "user123", "query_id": "q456", "duration_ms": 1500, "cache_hit": true}
+    fields:
+      - name: timestamp
+        type: date
+        format: "%Y-%m-%dT%H:%M:%SZ"
+      - name: level
+        type: text
+      - name: service
+        type: text
+      - name: message
+        type: text
+      - name: user_id
+        type: text
+      - name: query_id
+        type: text
+      - name: duration_ms
+        type: long
+      - name: cache_hit
+        type: boolean
+
+  - log_store: uds-agent-access
+    rule_name: nginx_access_parser
+    rule_type: regex
+    regex_pattern: '(\S+) - (\S+) \[([^\]]+)\] "(\S+) (\S+) (\S+)" (\d+) (\d+) "([^"]*)" "([^"]*)" (\d+\.\d+)'
+    sample_log: '192.168.1.100 - - [06/Mar/2026:10:00:00 +0000] "POST /api/v1/query HTTP/1.1" 200 1234 "-" "python-requests/2.28.0" 0.150'
+    fields:
+      - name: remote_addr
+        type: text
+      - name: remote_user
+        type: text
+      - name: time_local
+        type: date
+        format: "%d/%b/%Y:%H:%M:%S %z"
+      - name: method
+        type: text
+      - name: request_uri
+        type: text
+      - name: http_version
+        type: text
+      - name: status
+        type: long
+      - name: body_bytes_sent
+        type: long
+      - name: http_referer
+        type: text
+      - name: http_user_agent
+        type: text
+      - name: request_time
+        type: double
+
+  - log_store: uds-agent-error
+    rule_name: error_log_parser
+    rule_type: regex
+    regex_pattern: '(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (\w+) (\w+): (.+)'
+    sample_log: '2026-03-06 10:00:00 ERROR uds-agent: Database connection failed: timeout'
+    fields:
+      - name: timestamp
+        type: date
+        format: "%Y-%m-%d %H:%M:%S"
+      - name: level
+        type: text
+      - name: service
+        type: text
+      - name: message
+        type: text
+
+  - log_store: uds-agent-audit
+    rule_name: audit_parser
+    rule_type: json
+    sample_log: |
+      {"timestamp": "2026-03-06T10:00:00Z", "event": "user_login", "user_id": "user123", "ip_address": "192.168.1.100", "user_agent": "Mozilla/5.0...", "success": true, "session_id": "sess789"}
+    fields:
+      - name: timestamp
+        type: date
+        format: "%Y-%m-%dT%H:%M:%SZ"
+      - name: event
+        type: text
+      - name: user_id
+        type: text
+      - name: ip_address
+        type: ip
+      - name: user_agent
+        type: text
+      - name: success
+        type: boolean
+      - name: session_id
+        type: text
+
+  - log_store: system-logs
+    rule_name: docker_log_parser
+    rule_type: regex
+    regex_pattern: '(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z) (\w+) (\w+): (.+)'
+    sample_log: '2026-03-06T10:00:00.123456Z INFO uds-agent: Starting UDS Agent v1.0.0'
+    fields:
+      - name: timestamp
+        type: date
+        format: "%Y-%m-%dT%H:%M:%S.%fZ"
+      - name: level
+        type: text
+      - name: service
+        type: text
+      - name: message
+        type: text
+
+# Log Indexes Configuration
+log_indexes:
+  - log_store: uds-agent-application
+    full_text_index: true
+    key_value_index:
+      - key: level
+        case_sensitive: false
+        token: ", '\";=()[]{}?@&<>/:\n\t\r"
+      - key: service
+        case_sensitive: false
+        token: ", '\";=()[]{}?@&<>/:\n\t\r"
+      - key: user_id
+        case_sensitive: false
+        token: ", '\";=()[]{}?@&<>/:\n\t\r"
+      - key: duration_ms
+        type: long
+      - key: cache_hit
+        type: boolean
+
+  - log_store: uds-agent-access
+    full_text_index: true
+    key_value_index:
+      - key: remote_addr
+        case_sensitive: false
+        token: ", '\";=()[]{}?@&<>/:\n\t\r"
+      - key: method
+        case_sensitive: false
+        token: ", '\";=()[]{}?@&<>/:\n\t\r"
+      - key: request_uri
+        case_sensitive: false
+        token: ", '\";=()[]{}?@&<>/:\n\t\r"
+      - key: status
+        type: long
+      - key: request_time
+        type: double
+
+  - log_store: uds-agent-error
+    full_text_index: true
+    key_value_index:
+      - key: level
+        case_sensitive: false
+        token: ", '\";=()[]{}?@&<>/:\n\t\r"
+      - key: service
+        case_sensitive: false
+        token: ", '\";=()[]{}?@&<>/:\n\t\r"
+
+  - log_store: uds-agent-audit
+    full_text_index: true
+    key_value_index:
+      - key: event
+        case_sensitive: false
+        token: ", '\";=()[]{}?@&<>/:\n\t\r"
+      - key: user_id
+        case_sensitive: false
+        token: ", '\";=()[]{}?@&<>/:\n\t\r"
+      - key: success
+        type: boolean
+
+  - log_store: system-logs
+    full_text_index: true
+    key_value_index:
+      - key: level
+        case_sensitive: false
+        token: ", '\";=()[]{}?@&<>/:\n\t\r"
+      - key: service
+        case_sensitive: false
+        token: ", '\";=()[]{}?@&<>/:\n\t\r"
+
+# Log Shipping Configuration
+log_shipping:
+  - name: uds-agent-to-sls
+    source:
+      type: file
+      paths:
+        - "/app/logs/application.log"
+        - "/app/logs/access.log"
+        - "/app/logs/error.log"
+        - "/app/logs/audit.log"
+      format: multiline
+      multiline_pattern: '^\d{4}-\d{2}-\d{2}'
+    destination:
+      project: uds-agent-logs
+      logstore: uds-agent-application
+    processing:
+      - type: grok
+        pattern: '%{TIMESTAMP_ISO8601:timestamp} %{LOGLEVEL:level} %{WORD:service}: %{GREEDYDATA:message}'
+      - type: json
+        source_field: message
+        expand_json: true
+
+  - name: nginx-access-to-sls
+    source:
+      type: file
+      paths:
+        - "/var/log/nginx/access.log"
+      format: singleline
+    destination:
+      project: uds-agent-logs
+      logstore: uds-agent-access
+    processing:
+      - type: grok
+        pattern: '%{IP:remote_addr} - %{DATA:remote_user} \[%{HTTPDATE:time_local}\] "%{WORD:method} %{DATA:request_uri} %{DATA:http_version}" %{NUMBER:status} %{NUMBER:body_bytes_sent} "%{DATA:http_referer}" "%{DATA:http_user_agent}" %{NUMBER:request_time}'
+
+  - name: system-docker-to-sls
+    source:
+      type: docker
+      containers:
+        - uds-agent
+        - clickhouse
+        - redis
+        - ollama
+        - nginx
+    destination:
+      project: uds-agent-logs
+      logstore: system-logs
+    processing:
+      - type: grok
+        pattern: '%{TIMESTAMP_ISO8601:timestamp} %{LOGLEVEL:level} %{WORD:service}: %{GREEDYDATA:message}'
+
+# Alert Rules for Logs
+log_alerts:
+  - name: high-error-rate-log
+    log_store: uds-agent-error
+    query: 'level: ERROR | select count(*) as error_count'
+    condition: 'error_count > 10'
+    frequency: 300  # 5 minutes
+    notifications:
+      - type: dingTalk
+        webhook: "${DINGTALK_WEBHOOK_URL}"
+        template: |
+          {
+            "msgtype": "markdown",
+            "markdown": {
+              "title": "🚨 High Error Rate Detected",
+              "text": "### High Error Rate Alert\n\n**Error Count:** {{ .error_count }}\n**Time Range:** Last 5 minutes\n\nPlease check the error logs immediately.\n\n[View Logs](https://sls.console.aliyun.com/lognext/project/uds-agent-logs/logstore/uds-agent-error)"
+            },
+            "at": {
+              "isAtAll": true
+            }
+          }
+
+  - name: security-events
+    log_store: uds-agent-audit
+    query: 'event: user_login AND success: false | select count(*) as failed_logins'
+    condition: 'failed_logins > 5'
+    frequency: 600  # 10 minutes
+    notifications:
+      - type: email
+        contacts: ["security@example.com"]
+      - type: dingTalk
+        webhook: "${DINGTALK_WEBHOOK_URL}"
+
+# Data Transformation Rules
+data_transformations:
+  - name: enrich-application-logs
+    log_store: uds-agent-application
+    rule: |
+      # Add additional fields for better analysis
+      e_set("log_type", "application")
+      e_set("environment", "production")
+      if e_get("duration_ms") > 10000:
+        e_set("performance_issue", true)
+      else:
+        e_set("performance_issue", false)
+
+  - name: enrich-access-logs
+    log_store: uds-agent-access
+    rule: |
+      # Classify requests and add metadata
+      e_set("log_type", "access")
+      if e_get("status") >= 400:
+        e_set("error_request", true)
+      else:
+        e_set("error_request", false)
+
+      if e_get("request_time") > 10:
+        e_set("slow_request", true)
+      else:
+        e_set("slow_request", false)
+
+# Environment Variables (to be set in deployment)
+# DINGTALK_WEBHOOK_URL=https://oapi.dingtalk.com/robot/send?access_token=your-token

@@ -1,0 +1,328 @@
+{
+  "dashboard": {
+    "id": null,
+    "title": "UDS Agent Infrastructure",
+    "tags": ["uds-agent", "infrastructure", "system"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "CPU Usage",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "100 - (avg by(instance) (irate(node_cpu_seconds_total{mode=\"idle\"}[5m])) * 100)",
+            "legendFormat": "CPU Usage %"
+          },
+          {
+            "expr": "irate(node_cpu_seconds_total{mode=\"user\"}[5m]) * 100",
+            "legendFormat": "User CPU %"
+          },
+          {
+            "expr": "irate(node_cpu_seconds_total{mode=\"system\"}[5m]) * 100",
+            "legendFormat": "System CPU %"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 0
+        }
+      },
+      {
+        "id": 2,
+        "title": "Memory Usage",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100",
+            "legendFormat": "Memory Usage %"
+          },
+          {
+            "expr": "node_memory_MemTotal_bytes - node_memory_MemAvailable_bytes",
+            "legendFormat": "Used Memory"
+          },
+          {
+            "expr": "node_memory_MemAvailable_bytes",
+            "legendFormat": "Available Memory"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 0
+        }
+      },
+      {
+        "id": 3,
+        "title": "Disk Usage",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "(1 - node_filesystem_avail_bytes / node_filesystem_size_bytes) * 100",
+            "legendFormat": "{{ mountpoint }} Usage %"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 8
+        }
+      },
+      {
+        "id": 4,
+        "title": "Disk I/O",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(node_disk_reads_completed_total[5m])",
+            "legendFormat": "Read IOPS"
+          },
+          {
+            "expr": "rate(node_disk_writes_completed_total[5m])",
+            "legendFormat": "Write IOPS"
+          },
+          {
+            "expr": "rate(node_disk_read_bytes_total[5m]) / 1024 / 1024",
+            "legendFormat": "Read MB/s"
+          },
+          {
+            "expr": "rate(node_disk_written_bytes_total[5m]) / 1024 / 1024",
+            "legendFormat": "Write MB/s"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 8
+        }
+      },
+      {
+        "id": 5,
+        "title": "Network Traffic",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(node_network_receive_bytes_total[5m]) / 1024 / 1024",
+            "legendFormat": "{{ device }} Receive MB/s"
+          },
+          {
+            "expr": "rate(node_network_transmit_bytes_total[5m]) / 1024 / 1024",
+            "legendFormat": "{{ device }} Transmit MB/s"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 16
+        }
+      },
+      {
+        "id": 6,
+        "title": "Network Errors",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(node_network_receive_errs_total[5m])",
+            "legendFormat": "{{ device }} Receive Errors"
+          },
+          {
+            "expr": "rate(node_network_transmit_errs_total[5m])",
+            "legendFormat": "{{ device }} Transmit Errors"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 16
+        }
+      },
+      {
+        "id": 7,
+        "title": "Container CPU Usage",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(container_cpu_usage_seconds_total[5m]) * 100",
+            "legendFormat": "{{ container_name }}"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 24
+        }
+      },
+      {
+        "id": 8,
+        "title": "Container Memory Usage",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "container_memory_usage_bytes / 1024 / 1024",
+            "legendFormat": "{{ container_name }} MB"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 24
+        }
+      },
+      {
+        "id": 9,
+        "title": "Container Health Status",
+        "type": "table",
+        "targets": [
+          {
+            "expr": "container_health_status",
+            "legendFormat": "{{ container_name }}"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 32
+        }
+      },
+      {
+        "id": 10,
+        "title": "Container Restarts",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(container_restart_total[5m])",
+            "legendFormat": "{{ container_name }}"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 32
+        }
+      },
+      {
+        "id": 11,
+        "title": "System Load",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "node_load1",
+            "legendFormat": "Load 1"
+          },
+          {
+            "expr": "node_load5",
+            "legendFormat": "Load 5"
+          },
+          {
+            "expr": "node_load15",
+            "legendFormat": "Load 15"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 40
+        }
+      },
+      {
+        "id": 12,
+        "title": "System Uptime",
+        "type": "singlestat",
+        "targets": [
+          {
+            "expr": "node_time_seconds - node_boot_time_seconds",
+            "legendFormat": "Uptime"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 6,
+          "x": 12,
+          "y": 40
+        }
+      },
+      {
+        "id": 13,
+        "title": "Available Entropy",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "node_entropy_available_bits",
+            "legendFormat": "Available Entropy Bits"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 6,
+          "x": 18,
+          "y": 40
+        }
+      },
+      {
+        "id": 14,
+        "title": "File Descriptors",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "node_filefd_allocated",
+            "legendFormat": "Allocated FDs"
+          },
+          {
+            "expr": "node_filefd_maximum",
+            "legendFormat": "Maximum FDs"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 0,
+          "y": 48
+        }
+      },
+      {
+        "id": 15,
+        "title": "Context Switches",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(node_context_switches_total[5m])",
+            "legendFormat": "Context Switches/sec"
+          }
+        ],
+        "gridPos": {
+          "h": 8,
+          "w": 12,
+          "x": 12,
+          "y": 48
+        }
+      }
+    ],
+    "time": {
+      "from": "now-12h",
+      "to": "now"
+    },
+    "timepicker": {},
+    "templating": {
+      "list": []
+    },
+    "annotations": {
+      "list": []
+    },
+    "refresh": "1m",
+    "schemaVersion": 27,
+    "version": 0,
+    "links": []
+  }
+}

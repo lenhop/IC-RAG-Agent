@@ -6,6 +6,72 @@ An intelligent RAG system with automatic intent classification, supporting three
 
 ---
 
+## Project Status
+
+| Component | Status | Version | Last Updated |
+|-----------|--------|---------|--------------|
+| **UDS Agent** | Production Ready (pending manual testing) | 1.0.0 | 2026-03-06 |
+| IC-RAG (Intent + RAG) | Active | - | - |
+
+**UDS Agent:** Business Intelligence agent for Amazon seller data. 16 tools, REST API, 113 test frameworks. Ready for production deployment on Alibaba Cloud ECS pending manual test execution (`ssh len`).
+
+---
+
+## UDS Agent Quick Start
+
+### Prerequisites
+
+- Python 3.10+ (3.11 recommended)
+- ClickHouse (UDS data)
+- Ollama or remote LLM
+- Optional: Redis (caching)
+
+### Run Locally
+
+```bash
+# Install
+pip install -r requirements.txt
+
+# Configure (.env)
+# UDS_CH_HOST, UDS_CH_PORT, UDS_CH_USER, UDS_CH_PASSWORD, UDS_CH_DATABASE
+# UDS_LLM_PROVIDER=ollama, UDS_LLM_MODEL=qwen3:1.7b
+
+# Start API
+uvicorn src.uds.api:app --host 0.0.0.0 --port 8000
+
+# Test
+curl http://localhost:8000/health
+curl -X POST http://localhost:8000/api/v1/uds/query \
+  -H "Content-Type: application/json" \
+  -d '{"query": "What were total sales in October?"}'
+```
+
+### Run with Docker
+
+```bash
+cd docker
+docker compose -f docker-compose.uds.yml up -d
+```
+
+### Documentation
+
+**Essential Guides:**
+- [User Guide](docs/guides/UDS_USER_GUIDE.md) - 50+ query examples, best practices, FAQ
+- [Developer Guide](docs/guides/UDS_DEVELOPER_GUIDE.md) - Architecture, 16 tools, tool creation
+- [API Reference](docs/guides/UDS_API_REFERENCE.md) - 11 endpoints, schemas, examples
+- [Deployment Guide](docs/guides/UDS_DEPLOYMENT_GUIDE.md) - Local, Docker, Alibaba Cloud ECS
+- [Operations Guide](docs/guides/UDS_OPERATIONS_GUIDE.md) - Monitoring, troubleshooting, maintenance
+
+**Project & Operations:**
+- [Project Documentation](docs/PROJECT.md) - Complete project summary, metrics, architecture decisions
+- [Operations Manual](docs/OPERATIONS.md) - Daily ops, troubleshooting, incident response, launch checklist
+- [Business Glossary](docs/uds_business_glossary.md) - Amazon seller terminology
+- [API Spec](specs/UDS_API_SPEC.yaml) - OpenAPI specification
+
+**Historical:** See [docs/archive/](docs/archive/) for planning documents and historical references.
+
+---
+
 ## Features
 
 ### 🎯 Intelligent Intent Classification
@@ -27,6 +93,19 @@ An intelligent RAG system with automatic intent classification, supporting three
 - Parallel intent classification (4 methods simultaneously)
 - Configurable LLM providers (Ollama, Deepseek, Qwen, GLM)
 - Efficient vector search with ChromaDB
+- **Query caching** with Redis to reuse intents and results across requests
+- **Automatic schema caching** to minimize metadata lookups
+
+### 🛠️ Performance Improvements & Setup
+To further accelerate ClickHouse queries, two auxiliary tools are included:
+
+1. `db/uds/create_indexes.sql` – contains recommended **secondary index definitions** for the dataset. Run against the database during maintenance windows.
+2. `tools/optimize_queries.py` – a lightweight profiler that executes a list of example queries, reports execution times, and highlights slow statements.
+
+The agent itself instantiates a global `UDSCache` (Redis) and wires it into the
+client, intent classifier, and agent layers.  You can tune TTLs and prefixes in
+`src/uds/cache_config.py` or disable caching by passing `cache=None` when
+initializing the `UDSAgent`.
 
 ---
 
@@ -270,7 +349,7 @@ Prerequisites: `amazon_fqa.csv` at `RAG_FAQ_CSV` or `data/intent_classification/
 
 ```bash
 # Start FastAPI server
-python scripts/run_rag_api.sh
+./bin/run_rag_api.sh
 
 # Or directly
 uvicorn src.rag.rag_api:app --host 0.0.0.0 --port 8000
@@ -287,6 +366,25 @@ curl -X POST http://localhost:8000/query \
 
 ```
 IC-RAG-Agent/
+├── src/uds/                    # UDS Agent (Business Intelligence)
+│   ├── api.py                  # REST API (FastAPI)
+│   ├── uds_agent.py            # ReAct agent
+│   ├── uds_client.py           # ClickHouse client
+│   ├── intent_classifier.py    # Intent classification
+│   ├── task_planner.py         # Task planning
+│   ├── result_formatter.py     # Response formatting
+│   ├── cache.py                # Redis caching
+│   ├── tools/                  # 16 UDS tools
+│   └── query_templates/       # Query template library
+├── docker/                     # Docker & Compose
+│   ├── Dockerfile
+│   ├── docker-compose.uds.yml
+│   └── docker-compose.prod.yml
+├── monitoring/                 # Prometheus, Grafana, Alibaba CMS/SLS
+├── docs/                      # Documentation
+├── tests/                     # 113 test frameworks
+├── scripts/                   # Python launchers and utilities
+├── bin/                       # Shell entrypoints for ops/runtime
 ├── src/rag/
 │   ├── query_pipeline.py       # Main RAG pipeline
 │   ├── intent_methods.py       # Four classification methods
@@ -302,8 +400,11 @@ IC-RAG-Agent/
 │   ├── load_to_chroma.py            # documents, fqa, keywords, csv -> Chroma
 │   ├── query_rag.py                 # Query interface
 │   ├── run_evaluation.py            # E2E RAG evaluation (retrieval, generation, report)
-│   ├── run_rag_api.sh               # API launcher
-│   └── run_rag_gradio.sh             # Gradio UI launcher
+│   ├── run_gateway.py               # Unified gateway (route + dispatch)
+│   └── run_unified_chat.py          # Unified Gradio chat UI (RAG/UDS/SP-API)
+├── bin/
+│   ├── run_rag_api.sh               # RAG API launcher (backend)
+│   └── uds_ops.sh                   # deploy/rollback/status/logs/setup
 ├── tests/
 │   ├── test_intent_*.py        # Intent classification tests
 │   ├── test_hybrid_*.py        # Hybrid mode tests
@@ -652,9 +753,25 @@ def create_model(self, provider: str, ...):
 
 1. Fork the repository
 2. Create feature branch: `git checkout -b feature/amazing-feature`
-3. Commit changes: `git commit -m 'Add amazing feature'`
-4. Push to branch: `git push origin feature/amazing-feature`
-5. Open Pull Request
+3. Run tests: `pytest tests/ -v`
+4. Commit changes: `git commit -m 'Add amazing feature'`
+5. Push to branch: `git push origin feature/amazing-feature`
+6. Open Pull Request
+
+### Development Setup (UDS Agent)
+
+```bash
+pip install -r requirements.txt
+# Configure .env (ClickHouse, LLM)
+pytest tests/ -v
+uvicorn src.uds.api:app --reload
+```
+
+### Code Style
+
+- Python: PEP8, black, isort
+- Comments: English, >=10% of code volume
+- Docstrings: All public functions/classes
 
 ---
 
@@ -668,10 +785,16 @@ def create_model(self, provider: str, ...):
 
 ---
 
+## Support
+
+- **Documentation:** [docs/](docs/)
+- **UDS Agent:** [docs/UDS_USER_GUIDE.md](docs/UDS_USER_GUIDE.md), [docs/UDS_API_REFERENCE.md](docs/UDS_API_REFERENCE.md)
+- **Issues:** GitHub Issues
+
 ## Contact
 
 [Your Contact Information]
 
 ---
 
-**Built with ❤️ for secure and intelligent RAG systems**
+**Built for secure and intelligent RAG systems | UDS Agent v1.0.0**

@@ -1,0 +1,341 @@
+# Alibaba Cloud Cloud Monitor Service (CMS) Configuration
+# This file defines monitoring and alerting rules for UDS Agent on Alibaba Cloud ECS
+
+version: '1.0'
+metadata:
+  name: uds-agent-monitoring
+  description: "Comprehensive monitoring for UDS Agent production deployment"
+  region: cn-hangzhou
+  namespace: acs_ecs_dashboard
+
+# Cloud Monitor Alarms Configuration
+alarms:
+  # Application Performance Alarms
+  - name: uds-agent-high-error-rate
+    description: "UDS Agent error rate exceeds 1%"
+    metric:
+      namespace: acs_ecs_dashboard
+      metric_name: http_5xx_error_rate
+      dimensions:
+        - name: instanceId
+          value: "${ECS_INSTANCE_ID}"
+    condition:
+      comparison_operator: GreaterThanThreshold
+      threshold: 1.0
+      evaluation_periods: 2
+      period: 300
+    actions:
+      - type: email
+        contacts: ["admin@example.com"]
+      - type: dingTalk
+        webhook: "${DINGTALK_WEBHOOK_URL}"
+      - type: sms
+        contacts: ["+86-13800138000"]
+
+  - name: uds-agent-high-response-time
+    description: "UDS Agent P95 response time exceeds 15 seconds"
+    metric:
+      namespace: acs_ecs_dashboard
+      metric_name: http_response_time_p95
+      dimensions:
+        - name: instanceId
+          value: "${ECS_INSTANCE_ID}"
+    condition:
+      comparison_operator: GreaterThanThreshold
+      threshold: 15.0
+      evaluation_periods: 3
+      period: 300
+    actions:
+      - type: email
+        contacts: ["admin@example.com"]
+      - type: dingTalk
+        webhook: "${DINGTALK_WEBHOOK_URL}"
+
+  # Database Alarms
+  - name: clickhouse-connection-failures
+    description: "ClickHouse connection failures detected"
+    metric:
+      namespace: acs_rds_dashboard
+      metric_name: connection_failures
+      dimensions:
+        - name: instanceId
+          value: "${CLICKHOUSE_INSTANCE_ID}"
+    condition:
+      comparison_operator: GreaterThanThreshold
+      threshold: 5
+      evaluation_periods: 2
+      period: 300
+    actions:
+      - type: email
+        contacts: ["dba@example.com"]
+      - type: dingTalk
+        webhook: "${DINGTALK_WEBHOOK_URL}"
+      - type: sms
+        contacts: ["+86-13800138000"]
+
+  - name: clickhouse-slow-queries
+    description: "ClickHouse slow query rate exceeds threshold"
+    metric:
+      namespace: acs_rds_dashboard
+      metric_name: slow_query_count
+      dimensions:
+        - name: instanceId
+          value: "${CLICKHOUSE_INSTANCE_ID}"
+    condition:
+      comparison_operator: GreaterThanThreshold
+      threshold: 10
+      evaluation_periods: 3
+      period: 300
+    actions:
+      - type: email
+        contacts: ["dba@example.com"]
+      - type: dingTalk
+        webhook: "${DINGTALK_WEBHOOK_URL}"
+
+  # LLM Service Alarms
+  - name: llm-api-failures
+    description: "LLM API call failures exceed threshold"
+    metric:
+      namespace: acs_ecs_dashboard
+      metric_name: llm_api_errors
+      dimensions:
+        - name: instanceId
+          value: "${ECS_INSTANCE_ID}"
+    condition:
+      comparison_operator: GreaterThanThreshold
+      threshold: 5
+      evaluation_periods: 2
+      period: 300
+    actions:
+      - type: email
+        contacts: ["admin@example.com"]
+      - type: dingTalk
+        webhook: "${DINGTALK_WEBHOOK_URL}"
+
+  # Infrastructure Alarms
+  - name: high-memory-usage
+    description: "ECS instance memory usage exceeds 80%"
+    metric:
+      namespace: acs_ecs_dashboard
+      metric_name: memory_usedutilization
+      dimensions:
+        - name: instanceId
+          value: "${ECS_INSTANCE_ID}"
+    condition:
+      comparison_operator: GreaterThanThreshold
+      threshold: 80.0
+      evaluation_periods: 3
+      period: 300
+    actions:
+      - type: email
+        contacts: ["admin@example.com"]
+      - type: dingTalk
+        webhook: "${DINGTALK_WEBHOOK_URL}"
+
+  - name: high-cpu-usage
+    description: "ECS instance CPU usage exceeds 80%"
+    metric:
+      namespace: acs_ecs_dashboard
+      metric_name: CPUUtilization
+      dimensions:
+        - name: instanceId
+          value: "${ECS_INSTANCE_ID}"
+    condition:
+      comparison_operator: GreaterThanThreshold
+      threshold: 80.0
+      evaluation_periods: 3
+      period: 300
+    actions:
+      - type: email
+        contacts: ["admin@example.com"]
+      - type: dingTalk
+        webhook: "${DINGTALK_WEBHOOK_URL}"
+
+  - name: disk-space-low
+    description: "Disk space usage exceeds 85%"
+    metric:
+      namespace: acs_ecs_dashboard
+      metric_name: DiskUtilization
+      dimensions:
+        - name: instanceId
+          value: "${ECS_INSTANCE_ID}"
+        - name: device
+          value: "/dev/vda1"
+    condition:
+      comparison_operator: GreaterThanThreshold
+      threshold: 85.0
+      evaluation_periods: 2
+      period: 300
+    actions:
+      - type: email
+        contacts: ["admin@example.com"]
+      - type: dingTalk
+        webhook: "${DINGTALK_WEBHOOK_URL}"
+
+  - name: network-errors
+    description: "Network interface errors detected"
+    metric:
+      namespace: acs_ecs_dashboard
+      metric_name: network_errors
+      dimensions:
+        - name: instanceId
+          value: "${ECS_INSTANCE_ID}"
+    condition:
+      comparison_operator: GreaterThanThreshold
+      threshold: 100
+      evaluation_periods: 2
+      period: 300
+    actions:
+      - type: email
+        contacts: ["admin@example.com"]
+
+  # Container Health Alarms
+  - name: container-unhealthy
+    description: "Docker container is unhealthy"
+    metric:
+      namespace: acs_ecs_dashboard
+      metric_name: container_health_status
+      dimensions:
+        - name: instanceId
+          value: "${ECS_INSTANCE_ID}"
+        - name: container_name
+          value: "uds-agent"
+    condition:
+      comparison_operator: LessThanThreshold
+      threshold: 1
+      evaluation_periods: 2
+      period: 60
+    actions:
+      - type: email
+        contacts: ["admin@example.com"]
+      - type: dingTalk
+        webhook: "${DINGTALK_WEBHOOK_URL}"
+      - type: sms
+        contacts: ["+86-13800138000"]
+
+  - name: container-restarts
+    description: "Container restarting frequently"
+    metric:
+      namespace: acs_ecs_dashboard
+      metric_name: container_restart_count
+      dimensions:
+        - name: instanceId
+          value: "${ECS_INSTANCE_ID}"
+    condition:
+      comparison_operator: GreaterThanThreshold
+      threshold: 5
+      evaluation_periods: 3
+      period: 300
+    actions:
+      - type: email
+        contacts: ["admin@example.com"]
+      - type: dingTalk
+        webhook: "${DINGTALK_WEBHOOK_URL}"
+
+# Notification Templates
+notification_templates:
+  email_template: |
+    Subject: [UDS Agent Alert] {{ .AlarmName }}
+
+    Alert Details:
+    - Name: {{ .AlarmName }}
+    - Description: {{ .AlarmDescription }}
+    - Instance: {{ .InstanceId }}
+    - Metric: {{ .MetricName }}
+    - Value: {{ .MetricValue }}
+    - Threshold: {{ .Threshold }}
+    - Time: {{ .Timestamp }}
+
+    Please check the system immediately.
+
+    Best regards,
+    UDS Agent Monitoring System
+
+  dingTalk_template: |
+    {
+      "msgtype": "markdown",
+      "markdown": {
+        "title": "🚨 UDS Agent Alert",
+        "text": "### {{ .AlarmName }}\n\n**Description:** {{ .AlarmDescription }}\n\n**Instance:** {{ .InstanceId }}\n**Metric:** {{ .MetricName }}\n**Value:** {{ .MetricValue }}\n**Threshold:** {{ .Threshold }}\n**Time:** {{ .Timestamp }}\n\n@所有人 请立即检查系统！"
+      },
+      "at": {
+        "isAtAll": true
+      }
+    }
+
+  sms_template: |
+    UDS Agent Alert: {{ .AlarmName }} - {{ .AlarmDescription }}. Value: {{ .MetricValue }}, Threshold: {{ .Threshold }}. Check immediately!
+
+# Contact Groups
+contact_groups:
+  - name: uds-admin-group
+    description: "UDS Agent administrators"
+    contacts:
+      - name: "Admin User"
+        email: "admin@example.com"
+        phone: "+86-13800138000"
+      - name: "DevOps Lead"
+        email: "devops@example.com"
+        phone: "+86-13800138001"
+
+  - name: uds-dba-group
+    description: "Database administrators"
+    contacts:
+      - name: "DBA Lead"
+        email: "dba@example.com"
+        phone: "+86-13800138002"
+
+# Dashboard Configuration
+dashboards:
+  - name: uds-agent-main-dashboard
+    description: "Main UDS Agent monitoring dashboard"
+    charts:
+      - title: "Request Rate"
+        type: "line"
+        metrics:
+          - namespace: acs_ecs_dashboard
+            metric_name: http_requests_total
+            dimensions:
+              - name: instanceId
+                value: "${ECS_INSTANCE_ID}"
+
+      - title: "Error Rate"
+        type: "line"
+        metrics:
+          - namespace: acs_ecs_dashboard
+            metric_name: http_5xx_error_rate
+            dimensions:
+              - name: instanceId
+                value: "${ECS_INSTANCE_ID}"
+
+      - title: "Response Time P95"
+        type: "line"
+        metrics:
+          - namespace: acs_ecs_dashboard
+            metric_name: http_response_time_p95
+            dimensions:
+              - name: instanceId
+                value: "${ECS_INSTANCE_ID}"
+
+      - title: "CPU Usage"
+        type: "line"
+        metrics:
+          - namespace: acs_ecs_dashboard
+            metric_name: CPUUtilization
+            dimensions:
+              - name: instanceId
+                value: "${ECS_INSTANCE_ID}"
+
+      - title: "Memory Usage"
+        type: "line"
+        metrics:
+          - namespace: acs_ecs_dashboard
+            metric_name: memory_usedutilization
+            dimensions:
+              - name: instanceId
+                value: "${ECS_INSTANCE_ID}"
+
+# Environment Variables (to be set in deployment)
+# ECS_INSTANCE_ID=your-ecs-instance-id
+# CLICKHOUSE_INSTANCE_ID=your-clickhouse-instance-id
+# DINGTALK_WEBHOOK_URL=https://oapi.dingtalk.com/robot/send?access_token=your-token
