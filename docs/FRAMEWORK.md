@@ -20,54 +20,44 @@ IC-RAG-Agent is an **Intent Classification + Retrieval-Augmented Generation** sy
 - **Client** – Unified Gradio Chat UI calling the gateway
 
 ```mermaid
+%%{init: {'themeVariables': {'fontSize': '11px'}}}%%
 flowchart TB
     subgraph Client["Client Layer"]
-        UI[Unified Chat UI<br/>Gradio :7862]
+        UI[Unified Chat UI<br/>Gradio]
     end
 
-    subgraph Gateway["Unified Gateway :8000"]
-        API[FastAPI<br/>POST /api/v1/query]
-        subgraph RouteLLM["Route LLM (Planning)"]
-            Rewrite[Query Rewriting<br/>rewriters.py]
-            Classify[Task Classification<br/>router.py, route_llm.py]
-        end
-        subgraph Dispatcher["Dispatcher (Supervisor Agent)<br/>Execute in Parallel"]
-            Orch[Orchestrator<br/>api.py]
-            Invoke[Invoke Backends<br/>services.py]
-        end
+    subgraph Gateway["Unified Gateway"]
+        API[FastAPI]
+        RouteLLM[Route LLM: Query rewriting, intent classification, task planning]
+        Dispatcher[Dispatcher: Orchestrator, invoke backends, merge results]
     end
 
     subgraph Backends["Worker Agents"]
-        RAG[RAG Pipeline :8002<br/>src/rag/]
-        UDS[UDS Agent :8001<br/>src/uds/]
-        SP[SP-API Agent :8003<br/>src/sp_api/]
-    end
-
-    subgraph Agents["Agent Layer"]
-        UDS_A[UDS Agent<br/>ReAct + 16 Tools]
-        RAG_P[RAG Pipeline<br/>4 Intent Methods]
-        SP_A[SP-API Agent<br/>ReAct + 10 Tools]
+        RAG[RAG Pipeline]
+        UDS[UDS Agent]
+        SP[SP-API Agent]
     end
 
     subgraph Data["Data Layer"]
-        CH[(ClickHouse)]
         Chroma[(ChromaDB)]
         Redis[(Redis)]
+        CH[(ClickHouse)]
         SPAPI_EXT[Amazon SP-API]
     end
 
-    UI -->|POST /api/v1/query| API
+    UI -->|POST| API
     API --> RouteLLM
     RouteLLM --> Dispatcher
     Dispatcher -->|general / amazon_docs / ic_docs| RAG
     Dispatcher -->|uds| UDS
     Dispatcher -->|sp_api| SP
 
-    RAG --> RAG_P --> Chroma
-    UDS --> UDS_A --> CH
-    UDS_A --> Redis
-    SP --> SP_A --> SPAPI_EXT
-    SP_A --> Chroma
+    RAG --> Chroma
+    RAG --> Redis
+    UDS --> CH
+    UDS --> Redis
+    SP --> SPAPI_EXT
+    SP --> Redis
 ```
 
 ---
