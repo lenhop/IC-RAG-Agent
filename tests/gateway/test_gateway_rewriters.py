@@ -13,9 +13,11 @@ import pytest
 import requests
 
 from src.gateway.rewriters import (
+    INTENT_CLASSIFICATION_PROMPT,
     REWRITE_PROMPT,
     REWRITE_PLANNER_PROMPT,
     parse_rewrite_plan_text,
+    rewrite_intents_only,
     rewrite_with_ollama,
     rewrite_with_deepseek,
 )
@@ -241,6 +243,70 @@ def test_parse_rewrite_plan_text_invalid_json_falls_back_to_single_task():
     task = plan.task_groups[0].tasks[0]
     assert task.workflow == "general"
     assert task.query == "total sales by month"
+
+
+def test_parse_rewrite_plan_text_intents_only_format():
+    """Phase 1 intents-only JSON should produce RewritePlan with extracted_intents."""
+    raw = '{"intents": ["what is FBA", "get order 123", "which table stores referral fee data"]}'
+    plan = parse_rewrite_plan_text(raw, "fallback query")
+    assert plan is not None
+    assert plan.extracted_intents == [
+        "what is FBA",
+        "get order 123",
+        "which table stores referral fee data",
+    ]
+    # task_groups gets fallback single task when empty; build_execution_plan uses intents
+    assert plan.task_groups
+
+
+def test_parse_rewrite_plan_text_intents_only_with_markdown_fences():
+    """Intents-only with markdown code fences should be stripped and parsed."""
+    raw = '```json\n{"intents": ["q1", "q2"]}\n```'
+    plan = parse_rewrite_plan_text(raw, "fallback")
+    assert plan is not None
+    assert plan.extracted_intents == ["q1", "q2"]
+
+
+def test_parse_rewrite_plan_text_intents_only_empty_list_falls_back():
+    """Intents-only with empty intents list should fall back to single task."""
+    raw = '{"intents": []}'
+    plan = parse_rewrite_plan_text(raw, "my fallback query")
+    assert plan is not None
+    assert plan.extracted_intents != [] or len(plan.task_groups) >= 1
+
+
+@patch("src.gateway.rewriters.requests.post")
+def test_rewrite_intents_only_ollama_success(mock_post):
+    """rewrite_intents_only returns parsed intents when Ollama returns valid JSON."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "response": '{"intents": ["what is FBA", "get order 112-9876543-12"]}'
+    }
+    mock_post.return_value = mock_resp
+
+    result = rewrite_intents_only("what is FBA get order 112-9876543-12", backend="ollama")
+
+    assert result is not None
+    assert result.get("intents") == ["what is FBA", "get order 112-9876543-12"]
+    call_kwargs = mock_post.call_args[1]
+    assert INTENT_CLASSIFICATION_PROMPT in call_kwargs["json"]["prompt"]
+
+
+@patch("src.gateway.rewriters.requests.post")
+def test_rewrite_intents_only_ollama_failure_returns_none(mock_post):
+    """rewrite_intents_only returns None when Ollama fails."""
+    mock_post.side_effect = requests.ConnectionError("Connection refused")
+
+    result = rewrite_intents_only("my query", backend="ollama")
+
+    assert result is None
+
+
+def test_rewrite_intents_only_empty_query_returns_none():
+    """rewrite_intents_only returns None for empty query."""
+    assert rewrite_intents_only("") is None
+    assert rewrite_intents_only("   ") is None
 
 
 @patch.dict("os.environ", {"GATEWAY_REWRITE_PLANNER_MAX_TASKS": "1"})

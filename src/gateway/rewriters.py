@@ -33,8 +33,22 @@ REWRITE_PROMPT = (
     "Output a single line, no explanation."
 )
 
+# Phase 1: Intent classification only. Lists distinct sub-questions; no task building.
+# Used when GATEWAY_REWRITE_PLANNER_ENABLED to avoid LLM merging intents.
+INTENT_CLASSIFICATION_PROMPT = (
+    "List each distinct sub-question from the user query. Output JSON only: {\"intents\": [\"...\", \"...\"]}. "
+    "CRITICAL: Do NOT merge multiple questions into one. Each sub-question must be a separate item. "
+    "Preserve ASINs, order IDs, dates exactly. "
+    "Example 1: \"what is FBA get order 123 which table\" -> "
+    "{\"intents\": [\"what is FBA\", \"get order 123\", \"which table stores referral fee data\"]}. "
+    "Example 2: \"what is FBA vs FBM, get order 112-123, which table stores fee, show storage trend\" -> "
+    "{\"intents\": [\"what is the difference between FBA and FBM\", \"get order status for 112-123\", "
+    "\"which ClickHouse table stores referral fee breakdown\", \"show me month over month trend of storage fees\"]}"
+)
+
 # Planner-style rewrite prompt for hybrid task decomposition.
 # Enabled via GATEWAY_REWRITE_PLANNER_ENABLED to avoid changing default behavior.
+# When two-phase flow is used, this is bypassed in favor of INTENT_CLASSIFICATION_PROMPT.
 REWRITE_PLANNER_PROMPT = (
     "You are a query rewriting and task planning engine for a multi-agent gateway. "
     "Your task is to split a complex user query into executable subtasks. "
@@ -42,8 +56,11 @@ REWRITE_PLANNER_PROMPT = (
     "Preserve all entities, dates, metrics, ASINs, and constraints from user text. "
     "Do not answer the user question. "
     "Output JSON only. No markdown, no extra text. "
+    "Process: Step 1) List each distinct sub-question in extracted_intents (one per item). "
+    "Step 2) Create exactly one task per extracted intent in task_groups. "
     "JSON schema: "
     "{"
+    '"extracted_intents":["sub-question 1","sub-question 2",...],'
     '"plan_type":"single_domain|hybrid",'
     '"merge_strategy":"none|concat|compare|synthesize",'
     '"task_groups":[{'
@@ -52,7 +69,7 @@ REWRITE_PLANNER_PROMPT = (
     '"tasks":[{'
     '"task_id":"t1",'
     '"workflow":"general|amazon_docs|ic_docs|sp_api|uds",'
-    '"query":"agent-ready query",'
+    '"query":"agent-ready query (must match one extracted_intents item)",'
     '"depends_on":["task_id_optional"],'
     '"reason":"short routing reason optional"'
     "}]"
@@ -65,10 +82,14 @@ REWRITE_PLANNER_PROMPT = (
     "D) uds is historical (daily loaded) and should handle trend/aggregate/by-period/table analytics; "
     "E) sp_api must not be used for policy/business-rule explanation tasks. "
     "Constraints: "
-    "1) keep task_groups ordered by dependency stage; "
-    "2) each task must have non-empty query; "
-    "3) use hybrid when more than one workflow is required; "
-    "4) default merge_strategy to concat unless explicit compare/synthesize intent."
+    "1) extracted_intents must list every distinct sub-question point by point; do not merge. "
+    "2) Each task query must match exactly one extracted_intents item. "
+    "3) keep task_groups ordered by dependency stage; "
+    "4) each task must have non-empty query; "
+    "5) use hybrid when more than one workflow is required; "
+    "6) default merge_strategy to concat unless explicit compare/synthesize intent. "
+    "Example: user asks 'what does FBA removal policy say check ASIN B07 active listings which table stores fee data' -> "
+    "extracted_intents: [\"what does Amazon FBA removal policy say\", \"check if ASIN B07 has any active listings\", \"which table stores referral fee data\"]."
 )
 
 # Environment defaults
@@ -109,6 +130,139 @@ def _planner_max_tasks() -> int:
         return max(1, int(os.getenv("GATEWAY_REWRITE_PLANNER_MAX_TASKS", str(DEFAULT_MAX_PLANNER_TASKS))))
     except ValueError:
         return DEFAULT_MAX_PLANNER_TASKS
+
+
+def rewrite_intents_only(query: str, backend: Optional[str] = None) -> Optional[dict]:
+    """
+    Phase 1 intent classification: call LLM to list distinct sub-questions only.
+
+    Returns {"intents": ["...", "..."]} on success, None on failure.
+    Uses same backends as rewrite (ollama/deepseek) and env for URL/model.
+    """
+    if not query or not query.strip():
+        return None
+
+    effective_backend = (backend or "").strip().lower() or os.getenv(
+        "GATEWAY_REWRITE_BACKEND", "ollama"
+    ).strip().lower()
+
+    if effective_backend == "ollama":
+        text = _call_intents_ollama(query.strip())
+    elif effective_backend == "deepseek":
+        text = _call_intents_deepseek(query.strip())
+    else:
+        logger.warning("rewrite_intents_only: unknown backend %s; skipping", effective_backend)
+        return None
+
+    if not text or not text.strip():
+        return None
+
+    raw = _strip_markdown_fences(text)
+    parsed = None
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        candidate = _extract_first_json_object(raw)
+        if candidate:
+            try:
+                parsed = json.loads(candidate)
+            except ValueError:
+                parsed = None
+
+    if not isinstance(parsed, dict):
+        return None
+
+    # Accept "intents", "extracted_intents", or extract from task_groups.
+    intents = parsed.get("intents") or parsed.get("extracted_intents")
+    if not isinstance(intents, list) or not intents:
+        # Fallback: collect queries from task_groups if LLM returned full planner format.
+        groups = parsed.get("task_groups") or []
+        intents = []
+        for g in groups:
+            if isinstance(g, dict):
+                for t in (g.get("tasks") or []):
+                    if isinstance(t, dict) and isinstance(t.get("query"), str):
+                        intents.append((t.get("query") or "").strip())
+    if not isinstance(intents, list) or not intents:
+        return None
+
+    # Normalize: filter empty, strip, dedupe
+    seen = set()
+    normalized = []
+    for item in intents:
+        if not isinstance(item, str):
+            continue
+        s = (item or "").strip()
+        if not s:
+            continue
+        key = s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(s)
+
+    if not normalized:
+        return None
+
+    return {"intents": normalized}
+
+
+def _call_intents_ollama(query: str) -> str:
+    """Call Ollama with intent classification prompt; return raw response text."""
+    url = os.getenv("GATEWAY_REWRITE_OLLAMA_URL", DEFAULT_OLLAMA_URL)
+    mdl = os.getenv("GATEWAY_REWRITE_OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
+    timeout = _get_rewrite_timeout()
+    payload = {
+        "model": mdl,
+        "prompt": f"{INTENT_CLASSIFICATION_PROMPT}\n\nUser question: {query}",
+        "stream": False,
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=timeout)
+    except (requests.ConnectionError, requests.Timeout, requests.RequestException) as exc:
+        logger.warning("Ollama intent classification failed: %s", exc)
+        return ""
+    if resp.status_code != 200:
+        logger.warning("Ollama intent classification HTTP %s", resp.status_code)
+        return ""
+    try:
+        data = resp.json()
+        return (data.get("response") or "").strip()
+    except (ValueError, TypeError):
+        return ""
+
+
+def _call_intents_deepseek(query: str) -> str:
+    """Call DeepSeek with intent classification prompt; return raw response text."""
+    api_key = os.getenv("DEEPSEEK_API_KEY")
+    if not api_key or not api_key.strip():
+        logger.warning("DEEPSEEK_API_KEY not set; cannot call DeepSeek intent classification")
+        return ""
+    mdl = os.getenv("GATEWAY_REWRITE_DEEPSEEK_MODEL", DEFAULT_DEEPSEEK_MODEL)
+    timeout = _get_rewrite_timeout()
+    try:
+        from openai import OpenAI
+    except ImportError:
+        logger.warning("openai client not installed; cannot call DeepSeek intent classification")
+        return ""
+    client = OpenAI(api_key=api_key, base_url=DEEPSEEK_BASE_URL, timeout=timeout)
+    messages = [
+        {"role": "system", "content": INTENT_CLASSIFICATION_PROMPT},
+        {"role": "user", "content": query},
+    ]
+    try:
+        response = client.chat.completions.create(
+            model=mdl,
+            messages=messages,
+            max_tokens=256,
+            temperature=0.3,
+        )
+        choice = response.choices[0] if response.choices else None
+        if choice and choice.message and choice.message.content:
+            return (choice.message.content or "").strip()
+    except Exception as exc:
+        logger.warning("DeepSeek intent classification failed: %s", exc)
+    return ""
 
 
 def _strip_markdown_fences(text: str) -> str:
@@ -224,12 +378,17 @@ def _normalize_plan(plan: RewritePlan, fallback_query: str) -> Optional[RewriteP
         plan_type=plan_type,
         merge_strategy=merge_strategy,
         task_groups=normalized_groups,
+        extracted_intents=plan.extracted_intents,
     )
 
 
 def parse_rewrite_plan_text(text: str, fallback_query: str) -> Optional[RewritePlan]:
     """
     Parse LLM planner output into RewritePlan with robust fallback.
+
+    Handles:
+    - Full planner JSON: task_groups, extracted_intents, etc.
+    - Phase 1 intents-only: {"intents": ["...", "..."]} -> RewritePlan(extracted_intents=..., task_groups=[]).
 
     Returns None only when neither planner output nor fallback query is usable.
     """
@@ -251,6 +410,26 @@ def parse_rewrite_plan_text(text: str, fallback_query: str) -> Optional[RewriteP
     if not isinstance(parsed_data, dict):
         logger.warning("Planner rewrite output is not valid JSON; falling back to single-task plan.")
         return _normalize_plan(RewritePlan(task_groups=[]), fallback_query)
+
+    # Phase 1 intents-only format: {"intents": [...]} without task_groups.
+    intents_raw = parsed_data.get("intents")
+    if isinstance(intents_raw, list) and not parsed_data.get("task_groups"):
+        normalized_intents = []
+        seen = set()
+        for item in intents_raw:
+            if isinstance(item, str):
+                s = (item or "").strip()
+                if s and s.lower() not in seen:
+                    seen.add(s.lower())
+                    normalized_intents.append(s)
+        if normalized_intents:
+            plan = RewritePlan(
+                plan_type="hybrid" if len(normalized_intents) > 1 else "single_domain",
+                merge_strategy="concat",
+                task_groups=[],
+                extracted_intents=normalized_intents,
+            )
+            return _normalize_plan(plan, fallback_query)
 
     try:
         plan = RewritePlan.model_validate(parsed_data)
@@ -388,10 +567,12 @@ def rewrite_with_deepseek(query: str, model: Optional[str] = None) -> str:
 
 
 __all__ = [
+    "INTENT_CLASSIFICATION_PROMPT",
     "REWRITE_PROMPT",
     "REWRITE_PLANNER_PROMPT",
     "planner_rewrite_enabled",
     "parse_rewrite_plan_text",
+    "rewrite_intents_only",
     "rewrite_with_ollama",
     "rewrite_with_deepseek",
 ]

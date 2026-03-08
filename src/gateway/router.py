@@ -17,7 +17,11 @@ import os
 import re
 from typing import List, Tuple, Optional
 
-from .rewriters import parse_rewrite_plan_text, planner_rewrite_enabled
+from .rewriters import (
+    parse_rewrite_plan_text,
+    planner_rewrite_enabled,
+    rewrite_intents_only,
+)
 from .schemas import QueryRequest, RewritePlan, TaskGroup, TaskItem
 
 logger = logging.getLogger(__name__)
@@ -86,8 +90,26 @@ def _split_multi_intent_clauses(query: str) -> List[str]:
     text = _normalize(query)
     if not text:
         return []
-    # Keep simple deterministic splitting for comma/semicolon mixed queries.
-    parts = re.split(r"[,;]\s*", text)
+    # First try granular split on question-starter patterns (get order, which table, show me, etc.).
+    # This handles "what is X get order Y which table Z show me W" -> 4 clauses.
+    granular_raw = re.split(
+        r" (?=how many |what is |what's |what does |which |what table |show me |get |get order |check )",
+        text,
+        flags=re.I,
+    )
+    granular = []
+    for p in granular_raw:
+        trimmed = p.removesuffix(" and") if p.endswith(" and") else p
+        norm = _normalize(trimmed)
+        if norm:
+            granular.append(norm)
+    if len(granular) >= 2:
+        parts = granular
+    else:
+        # Fallback: split by comma, semicolon, or " and " before question words.
+        parts = re.split(
+            r"[,;]\s*|\s+and\s+(?=how|what|which|when|show|get|check)", text, flags=re.I
+        )
     clauses = []
     seen = set()
     for raw in parts:
@@ -100,6 +122,54 @@ def _split_multi_intent_clauses(query: str) -> List[str]:
         seen.add(key)
         clauses.append(clause)
     return clauses
+
+
+def _build_plan_from_extracted_intents(intents: List[str]) -> RewritePlan:
+    """
+    Build execution plan from extracted_intents when LLM merges tasks.
+    Routes each intent via heuristic and creates one task per intent.
+    """
+    tasks: List[TaskItem] = []
+    for idx, intent in enumerate(intents, start=1):
+        q = (intent or "").strip()
+        if not q:
+            continue
+        wf, _ = _route_workflow_heuristic(q)
+        wf = _apply_docs_preference(q, wf)
+        tasks.append(
+            TaskItem(
+                task_id=f"t{idx}",
+                workflow=wf,
+                query=q,
+                depends_on=[],
+                reason="extracted_intents_fallback",
+            )
+        )
+    if not tasks:
+        return RewritePlan(
+            plan_type="single_domain",
+            merge_strategy="concat",
+            task_groups=[
+                TaskGroup(
+                    group_id="g1",
+                    parallel=True,
+                    tasks=[
+                        TaskItem(
+                            task_id="t1",
+                            workflow="general",
+                            query=(intents[0] if intents else "unable to extract intents").strip() or "unable to extract intents",
+                            depends_on=[],
+                            reason="empty_intents_fallback",
+                        )
+                    ],
+                )
+            ],
+        )
+    return RewritePlan(
+        plan_type="hybrid" if len({t.workflow for t in tasks}) > 1 else "single_domain",
+        merge_strategy="concat",
+        task_groups=[TaskGroup(group_id="g1", parallel=True, tasks=tasks)],
+    )
 
 
 def _build_multi_task_plan_from_query(query: str) -> Optional[RewritePlan]:
@@ -139,7 +209,10 @@ def rewrite_query(request: QueryRequest) -> str:
     1. Always normalize (trim, collapse whitespace).
     2. If rewrite_enable:
        - Resolve backend from request.rewrite_backend or GATEWAY_REWRITE_BACKEND (default "ollama").
-       - If backend in ("ollama", "deepseek"): call rewriter; return result or normalized on failure.
+       - If planner enabled: Phase 1 intent classification via rewrite_intents_only.
+         On success: return JSON {"intents": [...]} for build_execution_plan.
+         On failure: return normalized query; build_execution_plan uses heuristic fallback.
+       - Else if backend in ("ollama", "deepseek"): call rewriter; return result or normalized.
        - Else: return normalized query.
     3. Else: return normalized query.
 
@@ -159,6 +232,15 @@ def rewrite_query(request: QueryRequest) -> str:
         or os.getenv("GATEWAY_REWRITE_BACKEND", "ollama").strip().lower()
     )
 
+    # Two-phase flow: planner uses intent classification only (Phase 1).
+    if planner_rewrite_enabled():
+        import json
+        result = rewrite_intents_only(normalized, backend=backend)
+        if result and result.get("intents"):
+            return json.dumps(result)
+        # Fallback: return normalized; build_execution_plan uses heuristic multi-intent split.
+        return normalized
+
     if backend == "ollama":
         from .rewriters import rewrite_with_ollama
         return rewrite_with_ollama(normalized)
@@ -167,6 +249,54 @@ def rewrite_query(request: QueryRequest) -> str:
         return rewrite_with_deepseek(normalized)
 
     return normalized
+
+
+def _expand_merged_tasks(plan: RewritePlan) -> RewritePlan:
+    """
+    Split any task whose query contains multiple distinct sub-queries into
+    separate tasks. Ensures each sub-question is a separate plan item (Option B).
+    """
+    expanded_groups = []
+    for group in plan.task_groups or []:
+        expanded_tasks: List[TaskItem] = []
+        next_id = 1
+        for task in group.tasks or []:
+            q = (task.query or "").strip()
+            if not q:
+                continue
+            clauses = _split_multi_intent_clauses(q)
+            if len(clauses) < 2:
+                expanded_tasks.append(task)
+                next_id += 1
+                continue
+            for clause in clauses:
+                wf, _ = _route_workflow_heuristic(clause)
+                wf = _apply_docs_preference(clause, wf)
+                expanded_tasks.append(
+                    TaskItem(
+                        task_id=f"t{next_id}",
+                        workflow=wf,
+                        query=clause,
+                        depends_on=task.depends_on or [],
+                        reason=(task.reason or "") + "_expanded" if task.reason else "merged_split",
+                    )
+                )
+                next_id += 1
+        if expanded_tasks:
+            expanded_groups.append(
+                TaskGroup(
+                    group_id=group.group_id,
+                    parallel=group.parallel,
+                    tasks=expanded_tasks,
+                )
+            )
+    if not expanded_groups:
+        return plan
+    return RewritePlan(
+        plan_type="hybrid" if len({t.workflow for g in expanded_groups for t in g.tasks}) > 1 else plan.plan_type,
+        merge_strategy=plan.merge_strategy,
+        task_groups=expanded_groups,
+    )
 
 
 def _correct_plan_workflows(plan: RewritePlan) -> RewritePlan:
@@ -243,8 +373,35 @@ def build_execution_plan(request: QueryRequest, rewritten_query: str) -> Rewrite
             text=rewritten_query or "",
             fallback_query=normalized_query,
         )
-        if parsed_plan and parsed_plan.task_groups:
-            return _correct_plan_workflows(parsed_plan)
+        if parsed_plan:
+            task_count = sum(len(g.tasks) for g in (parsed_plan.task_groups or []))
+            intents = parsed_plan.extracted_intents or []
+            # When extracted_intents has more items than tasks (or no tasks), use intents.
+            if intents and (len(intents) > task_count or task_count == 0):
+                logger.info(
+                    "Planner merged or empty tasks (%d tasks vs %d extracted_intents); "
+                    "rebuilding from extracted_intents.",
+                    task_count,
+                    len(intents),
+                )
+                return _correct_plan_workflows(_build_plan_from_extracted_intents(intents))
+            if parsed_plan.task_groups:
+                # When LLM returns single task but query has multiple clauses, use heuristic.
+                clauses = _split_multi_intent_clauses(rewritten_query or normalized_query)
+                if task_count == 1 and len(clauses) >= 2:
+                    logger.info(
+                        "Planner returned single task for multi-clause query (%d clauses); "
+                        "using heuristic multi-task fallback.",
+                        len(clauses),
+                    )
+                    multi_task_plan = _build_multi_task_plan_from_query(
+                        rewritten_query or normalized_query
+                    )
+                    if multi_task_plan:
+                        return _correct_plan_workflows(multi_task_plan)
+                # Expand any merged tasks (e.g. "how many X how many Y" -> two tasks).
+                expanded = _expand_merged_tasks(parsed_plan)
+                return _correct_plan_workflows(expanded)
 
     multi_task_plan = _build_multi_task_plan_from_query(rewritten_query or normalized_query)
     if multi_task_plan is not None:
@@ -284,9 +441,23 @@ def _route_workflow_heuristic(query: str) -> Tuple[str, float]:
             "verify seller account",
             "request a detailed financial",
             "request a settlement report",
+            "removal order",
+            "create a removal order",
+            "stranded inventory",
         ]
     ):
         return "sp_api", 0.92
+
+    # UDS workflow: ASIN-level data retrieval (financial summary, fees, revenue from warehouse).
+    if any(
+        k in q_lower
+        for k in [
+            "financial summary for asin",
+            "financial summary for",
+            "get financial summary",
+        ]
+    ):
+        return "uds", 0.92
 
     # UDS workflow: high-confidence analytical aggregations (top N, by X).
     if any(
@@ -305,20 +476,32 @@ def _route_workflow_heuristic(query: str) -> Tuple[str, float]:
     ):
         return "uds", 0.92
 
+    # UDS workflow: strong table/schema cues (inclined to UDS agent).
+    if any(
+        k in q_lower
+        for k in [
+            "clickhouse table",
+            "data table",
+            "uds table",
+            "which table",
+            "what table",
+            "table stores",
+            "clickhouse",
+            "uds",
+        ]
+    ):
+        return "uds", 0.92
+
     # UDS workflow (analytical/table/schema cues).
     if any(
         k in q_lower
         for k in [
-            "which table",
-            "what table",
-            "table stores",
             "what columns",
             "column",
             "schema",
             "dataset",
-            "clickhouse",
-            "uds",
             "last month",
+            "last 30 days",
             "last quarter",
             "by month",
             "trend",
@@ -384,6 +567,7 @@ def _route_workflow_heuristic(query: str) -> Tuple[str, float]:
             "sales",
             "revenue",
             "orders",
+            "orders sold",
             "table",
             "dataset",
             "clickhouse",

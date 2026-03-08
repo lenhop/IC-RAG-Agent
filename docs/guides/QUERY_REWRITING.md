@@ -1,7 +1,7 @@
 # Query Rewriting Guide
 
-**Version:** 1.0.0  
-**Last Updated:** 2026-03-06
+**Version:** 1.1.0  
+**Last Updated:** 2026-03-08
 
 ---
 
@@ -16,6 +16,20 @@ On failure (connection, timeout, API error), the gateway returns the normalized 
 
 ---
 
+## Planner Mode and Multi-Intent Split
+
+When `GATEWAY_REWRITE_PLANNER_ENABLED=true` (set by `bin/project_stack.sh` for the gateway), the gateway uses a **two-phase flow** to handle complex queries with multiple sub-questions:
+
+1. **Phase 1 – Intent classification:** The LLM is asked to list each distinct sub-question. Expected output: `{"intents": ["...", "..."]}`. Implemented in `rewrite_intents_only()` in `src/gateway/rewriters.py`.
+
+2. **Phase 2 – Task building:** For each intent, the heuristic router assigns a workflow (ic_docs, sp_api, uds, etc.). One task is created per intent.
+
+**Heuristic split fallback:** When Phase 1 fails (LLM returns invalid format or error), `_split_multi_intent_clauses()` in `src/gateway/router.py` splits the query by question-starter patterns: `get order`, `which`, `show me`, `what is`, `what table`, `check`, etc.
+
+Example: `"what is FBA get order 112-123 which table stores fee show me trend"` → 4 tasks (ic_docs, sp_api, uds, uds).
+
+---
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -25,6 +39,7 @@ On failure (connection, timeout, API error), the gateway returns the normalized 
 | **GATEWAY_REWRITE_OLLAMA_MODEL** | qwen2.5:1.5b | Model used for local rewriting. |
 | **GATEWAY_REWRITE_DEEPSEEK_MODEL** | deepseek-chat | Model used for DeepSeek API. |
 | **GATEWAY_REWRITE_TIMEOUT** | 10 | Timeout in seconds for LLM calls. |
+| **GATEWAY_REWRITE_PLANNER_ENABLED** | true (gateway) | When true, uses two-phase intent classification for multi-question queries. |
 | **DEEPSEEK_API_KEY** | (from .env) | Required for DeepSeek backend. |
 
 **Precedence:** If the client sends `rewrite_backend` in the request, it overrides `GATEWAY_REWRITE_BACKEND`.
@@ -120,5 +135,6 @@ When calling `POST /api/v1/query` directly:
 
 ## Related Documentation
 
+- [FRAMEWORK.md](../FRAMEWORK.md) - Section 5.2 Multi-Task Execution Flow (Two-Phase Intent Split)
+- [tasks/IMPROVEMENT.md](../../tasks/IMPROVEMENT.md) - Section 5.3 Multi-Intent Split Logic
 - [OPERATIONS.md](../OPERATIONS.md) - Production operations
-- [tasks/rewriting/PLAN.md](../../tasks/rewriting/PLAN.md) - Query rewriting plan and architecture

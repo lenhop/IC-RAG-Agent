@@ -321,7 +321,9 @@ flowchart TD
 
 | Component | File | Description |
 |-----------|------|--------------|
-| Rewrite prompts | `src/gateway/rewriters.py` | `REWRITE_PROMPT`, `REWRITE_PLANNER_PROMPT` |
+| Rewrite prompts | `src/gateway/rewriters.py` | `REWRITE_PROMPT`, `REWRITE_PLANNER_PROMPT`, `INTENT_CLASSIFICATION_PROMPT` |
+| Intent classification | `src/gateway/rewriters.py` | `rewrite_intents_only()` – Phase 1 of two-phase flow |
+| Heuristic split | `src/gateway/router.py` | `_split_multi_intent_clauses()` – fallback when LLM fails |
 | Heuristic routing | `src/gateway/router.py` | `_route_workflow_heuristic()` |
 | Plan correction | `src/gateway/router.py` | `_correct_plan_workflows()` |
 | Route LLM prompt | `src/gateway/route_llm.py` | `ROUTE_LLM_SYSTEM_PROMPT` |
@@ -344,12 +346,24 @@ flowchart TD
 | sp_api | 0.85 | sp-api, fba, shipment, catalog, seller api |
 | general | 0.7 | fallback when no keyword match |
 
-### 5.2 Multi-Task Execution Flow
+### 5.2 Multi-Task Execution Flow (Two-Phase Intent Split)
+
+When `GATEWAY_REWRITE_PLANNER_ENABLED=true`, the gateway uses a two-phase flow to avoid LLM merging multiple sub-questions into one task:
+
+1. **Phase 1 – Intent classification:** `rewrite_intents_only()` calls the LLM to list distinct sub-questions. Output: `{"intents": ["...", "..."]}`. On success, tasks are built from intents. On failure, heuristic split is used.
+
+2. **Phase 2 – Task building:** For each intent, `_route_workflow_heuristic()` assigns a workflow. One task per intent.
+
+**Heuristic split fallback:** When Phase 1 fails, `_split_multi_intent_clauses()` splits the query by question-starter patterns (`get order`, `which`, `show me`, `what is`, etc.). Example: `"what is FBA get order 123 which table show me trend"` → 4 clauses → 4 tasks.
 
 ```mermaid
 flowchart TB
-    Q[User Query] --> REW[Query Rewriter\nOllama / DeepSeek]
-    REW --> PLAN[Planner\nJSON parse or heuristic split]
+    Q[User Query] --> PH1{Phase 1:\nIntent Classification}
+    PH1 -->|LLM success| INT[Parse intents JSON]
+    PH1 -->|LLM fail| HEUR[Heuristic split\n_split_multi_intent_clauses]
+    INT --> ROUTE[Route each intent\n_route_workflow_heuristic]
+    HEUR --> ROUTE
+    ROUTE --> PLAN[Planner\nTask groups]
     PLAN --> CORR[Plan Correction\nHeuristic override]
     CORR --> SPLIT{Split into Tasks}
     
@@ -367,7 +381,7 @@ flowchart TB
 
     M --> R[Final Response to User]
 
-    style REW fill:#f9f,stroke:#333
+    style PH1 fill:#f9f,stroke:#333
     style PLAN fill:#f9f,stroke:#333
     style CORR fill:#ff9,stroke:#333
     style M fill:#9ff,stroke:#333

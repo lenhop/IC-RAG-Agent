@@ -18,16 +18,60 @@ from src.gateway.router import (
 from src.gateway.schemas import QueryRequest, RewritePlan, TaskGroup, TaskItem
 
 
-def test_rewrite_query_strips_and_collapses_whitespace():
+@patch("src.gateway.router.rewrite_intents_only")
+def test_rewrite_query_planner_uses_intents_only(mock_intents):
+    """When planner enabled, rewrite_query uses Phase 1 intent classification."""
+    mock_intents.return_value = {
+        "intents": ["what is FBA", "get order 112-9876543-12", "which table stores fee data"],
+    }
+    with patch("src.gateway.router.planner_rewrite_enabled", return_value=True):
+        req = QueryRequest(
+            query="what is FBA get order 112-9876543-12 which table stores fee data",
+            workflow="auto",
+            rewrite_enable=True,
+            session_id=None,
+            stream=False,
+        )
+        rewritten = rewrite_query(req)
+    import json
+    parsed = json.loads(rewritten)
+    assert parsed.get("intents") == [
+        "what is FBA",
+        "get order 112-9876543-12",
+        "which table stores fee data",
+    ]
+    mock_intents.assert_called_once()
+
+
+@patch("src.gateway.router.rewrite_intents_only", return_value=None)
+def test_rewrite_query_planner_fallback_when_intents_fail(mock_intents):
+    """When planner enabled but rewrite_intents_only fails, return normalized query."""
+    with patch("src.gateway.router.planner_rewrite_enabled", return_value=True):
+        req = QueryRequest(
+            query="  what   is   FBA   get   order   123  ",
+            workflow="auto",
+            rewrite_enable=True,
+            session_id=None,
+            stream=False,
+        )
+        rewritten = rewrite_query(req)
+    assert rewritten == "what is FBA get order 123"
+    mock_intents.assert_called_once()
+
+
+@patch("src.gateway.rewriters.rewrite_with_ollama", return_value="what are my sales this month?")
+def test_rewrite_query_strips_and_collapses_whitespace(mock_ollama):
     """rewrite_query should trim and collapse internal whitespace."""
-    req = QueryRequest(
-        query="  what   are   my   sales   \n  this month?  ",
-        workflow="auto",
-        rewrite_enable=True,
-        session_id=None,
-        stream=False,
-    )
-    rewritten = rewrite_query(req)
+    with patch("src.gateway.router.planner_rewrite_enabled", return_value=False):
+        req = QueryRequest(
+            query="  what   are   my   sales   \n  this month?  ",
+            workflow="auto",
+            rewrite_enable=True,
+            rewrite_backend="ollama",
+            session_id=None,
+            stream=False,
+        )
+        rewritten = rewrite_query(req)
     assert rewritten == "what are my sales this month?"
 
 
@@ -130,7 +174,7 @@ def test_route_workflow_table_storage_query_prefers_uds():
     )
     wf, conf, src, backend, llm_conf = route_workflow(req.query.lower(), req)
     assert wf == "uds"
-    assert conf == 0.85
+    assert conf >= 0.85  # Strong UDS table cues use 0.92
 
 
 def test_route_workflow_historical_fee_query_prefers_uds():
@@ -172,6 +216,20 @@ def test_route_workflow_order_status_prefers_sp_api():
     assert conf2 >= 0.9
 
 
+def test_route_workflow_removal_order_prefers_sp_api():
+    """Removal order and stranded inventory queries should route to SP-API."""
+    req = QueryRequest(
+        query="create a removal order for stranded inventory",
+        workflow="auto",
+        rewrite_enable=True,
+        session_id=None,
+        stream=False,
+    )
+    wf, conf, _, _, _ = route_workflow(req.query.lower(), req)
+    assert wf == "sp_api"
+    assert conf >= 0.9
+
+
 def test_route_workflow_inventory_buybox_account_prefers_sp_api():
     """Inventory health, buy box status, and seller account queries should route to SP-API."""
     sp_api_queries = [
@@ -194,6 +252,20 @@ def test_route_workflow_inventory_buybox_account_prefers_sp_api():
         wf, conf, _, _, _ = route_workflow(req.query.lower(), req)
         assert wf == "sp_api", f"Expected sp_api for: {q[:50]!r}"
         assert conf >= 0.9
+
+
+def test_route_workflow_financial_summary_for_asin_prefers_uds():
+    """Financial summary for ASIN (data retrieval) should route to UDS."""
+    req = QueryRequest(
+        query="get financial summary for ASIN B07ABC5678 including fees and revenue",
+        workflow="auto",
+        rewrite_enable=True,
+        session_id=None,
+        stream=False,
+    )
+    wf, conf, _, _, _ = route_workflow(req.query.lower(), req)
+    assert wf == "uds"
+    assert conf >= 0.9
 
 
 def test_route_workflow_top_products_by_refund_prefers_uds():
@@ -414,6 +486,28 @@ def test_build_execution_plan_explicit_workflow_creates_single_task():
     task = plan.task_groups[0].tasks[0]
     assert task.workflow == "uds"
     assert task.query == "sales by month"
+
+
+@patch("src.gateway.router.planner_rewrite_enabled", return_value=True)
+def test_build_execution_plan_uses_intents_only_when_phase1_succeeds(mock_planner):
+    """Two-phase flow: intents-only JSON should produce one task per intent via heuristics."""
+    req = QueryRequest(
+        query="what is FBA get order 112-9876543-12 which table stores fee data",
+        workflow="auto",
+        rewrite_enable=True,
+        session_id=None,
+        stream=False,
+    )
+    rewritten = '{"intents": ["what is FBA", "get order 112-9876543-12", "which table stores fee data"]}'
+    plan = build_execution_plan(req, rewritten)
+    assert plan.plan_type == "hybrid"
+    assert len(plan.task_groups) == 1
+    tasks = plan.task_groups[0].tasks
+    assert len(tasks) == 3
+    workflows = {t.workflow for t in tasks}
+    assert "ic_docs" in workflows or "general" in workflows  # "what is FBA"
+    assert "sp_api" in workflows  # "get order ..."
+    assert "uds" in workflows  # "which table stores..."
 
 
 @patch("src.gateway.router.planner_rewrite_enabled", return_value=True)

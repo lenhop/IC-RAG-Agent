@@ -124,9 +124,9 @@ service_start_cmd() {
       local uds_url="${UDS_API_URL:-http://127.0.0.1:8001}"
       local sp_url="${SP_API_URL:-http://127.0.0.1:8003}"
       if [[ "${REWRITE_ONLY_MODE}" == "true" ]]; then
-        echo "RAG_API_URL=${rag_url} UDS_API_URL=${uds_url} SP_API_URL=${sp_url} GATEWAY_REWRITE_ONLY_MODE=true GATEWAY_REWRITE_PLANNER_ENABLED=true GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
+        echo "RAG_API_URL=${rag_url} UDS_API_URL=${uds_url} SP_API_URL=${sp_url} GATEWAY_REWRITE_ONLY_MODE=true GATEWAY_REWRITE_PLANNER_ENABLED=true GATEWAY_REWRITE_BACKEND=deepseek GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
       else
-        echo "RAG_API_URL=${rag_url} UDS_API_URL=${uds_url} SP_API_URL=${sp_url} GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
+        echo "RAG_API_URL=${rag_url} UDS_API_URL=${uds_url} SP_API_URL=${sp_url} GATEWAY_REWRITE_PLANNER_ENABLED=true GATEWAY_REWRITE_BACKEND=deepseek GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
       fi
       ;;
     uds)
@@ -141,7 +141,7 @@ service_start_cmd() {
       ;;
     ui)
       if [[ "${REWRITE_ONLY_MODE}" == "true" ]]; then
-        echo "GATEWAY_API_URL=http://127.0.0.1:8000 GATEWAY_MOCK=false UNIFIED_CHAT_REWRITE_ONLY_MODE=true UNIFIED_CHAT_REWRITE_ENABLE=true CLIENT_GRADIO_PORT=7862 ${PYTHON_BIN} scripts/run_unified_chat.py"
+        echo "GATEWAY_API_URL=http://127.0.0.1:8000 GATEWAY_MOCK=false UNIFIED_CHAT_REWRITE_ONLY_MODE=true UNIFIED_CHAT_REWRITE_ENABLE=true UNIFIED_CHAT_REWRITE_BACKEND=deepseek CLIENT_GRADIO_PORT=7862 ${PYTHON_BIN} scripts/run_unified_chat.py"
       else
         echo "GATEWAY_API_URL=http://127.0.0.1:8000 GATEWAY_MOCK=false CLIENT_GRADIO_PORT=7862 ${PYTHON_BIN} scripts/run_unified_chat.py"
       fi
