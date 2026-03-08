@@ -1,10 +1,11 @@
 """
-Route LLM: LLM-based workflow classifier for the gateway.
+Route LLM (Planning): LLM-based workflow classifier.
 
 Classifies each query into one of: general, amazon_docs, ic_docs, sp_api, uds,
-with a confidence score in [0.0, 1.0]. Supports Ollama (local) and DeepSeek (remote).
-On any error (timeout, HTTP, invalid JSON, invalid label), returns a safe default
-("general", 0.0) and logs; never raises.
+with confidence in [0.0, 1.0]. Used for single-task routing when planner is
+disabled or returns one task. Supports Ollama and DeepSeek.
+
+On error: returns safe default ("general", 0.0), logs; never raises.
 """
 
 from __future__ import annotations

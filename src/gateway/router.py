@@ -1,10 +1,13 @@
 """
-Rule-based routing and query rewriting for the gateway.
+Route LLM (Planning): routing and query rewriting for the gateway.
 
-This module provides:
-- rewrite_query: normalizes and optionally rewrites the query via LLM (Ollama/DeepSeek).
-- route_workflow: chooses a workflow and confidence score (Route LLM when enabled,
-  else heuristic keyword rules).
+Provides:
+- rewrite_query: normalize and optionally rewrite via LLM (Ollama/DeepSeek).
+- build_execution_plan: parse planner JSON or heuristic multi-task fallback.
+- route_workflow: single-task workflow classification (Route LLM or heuristic).
+- _correct_plan_workflows: heuristic override for LLM misclassifications.
+
+Output: RewritePlan (task_groups with workflow + query per task) for the Dispatcher.
 """
 
 from __future__ import annotations
@@ -279,6 +282,8 @@ def _route_workflow_heuristic(query: str) -> Tuple[str, float]:
             "seller account verification",
             "verify my seller",
             "verify seller account",
+            "request a detailed financial",
+            "request a settlement report",
         ]
     ):
         return "sp_api", 0.92

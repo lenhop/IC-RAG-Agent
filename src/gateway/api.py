@@ -1,12 +1,14 @@
 """
-Gateway FastAPI application.
+Gateway FastAPI application (Dispatcher / Supervisor Agent).
 
-Exposes a minimal REST API for the unified query gateway:
-- POST /api/v1/query: accept QueryRequest, return QueryResponse (stubbed routing)
-- GET /health: basic health check endpoint
+Exposes REST API for the unified query gateway:
+- POST /api/v1/query: accept QueryRequest, return QueryResponse
+- POST /api/v1/rewrite: rewrite-only endpoint (no execution)
+- GET /health: health check
 
-Routing and backend integration will be implemented in later tasks; this
-module focuses on the HTTP contract and app wiring.
+Architecture: Route LLM (rewriters, router, route_llm) produces an execution plan.
+This module (Dispatcher) receives the plan, executes tasks in parallel within groups,
+invokes worker agents (RAG, Amazon docs RAG, SP-API Agent, UDS Agent), and merges results.
 """
 
 from __future__ import annotations
@@ -71,7 +73,7 @@ async def health() -> dict[str, Any]:
 
 
 def _call_workflow_backend(workflow: str, query_text: str, session_id: str | None) -> Dict[str, Any]:
-    """Dispatch one task to the target backend and return normalized dict."""
+    """Dispatcher: invoke one worker agent (RAG/UDS/SP-API) and return normalized dict."""
     workflow_lower = (workflow or "general").strip().lower()
     if workflow_lower == "general":
         return call_general(query_text, session_id)
@@ -131,7 +133,7 @@ def _execute_task(task: TaskItem, request: QueryRequest) -> TaskExecutionResult:
 
 
 def _execute_task_group(group: TaskGroup, request: QueryRequest) -> List[TaskExecutionResult]:
-    """Execute one task group, parallelizing tasks when group.parallel is true."""
+    """Execute one task group; tasks run in parallel when group.parallel is True (Dispatcher)."""
     if not group.tasks:
         return []
     if not group.parallel or len(group.tasks) == 1:
@@ -167,7 +169,7 @@ def _execute_task_group(group: TaskGroup, request: QueryRequest) -> List[TaskExe
 
 
 def _execute_plan(plan: RewritePlan, request: QueryRequest) -> List[TaskExecutionResult]:
-    """Execute plan groups sequentially and tasks within each group per group.parallel."""
+    """Dispatcher: execute plan; groups sequential, tasks within group in parallel."""
     all_results: List[TaskExecutionResult] = []
     for group in plan.task_groups:
         all_results.extend(_execute_task_group(group, request))
@@ -291,18 +293,18 @@ async def rewrite(request: QueryRequest) -> RewriteResponse:
 )
 async def query(request: QueryRequest) -> QueryResponse:
     """
-    Handle unified gateway query with rewriting and routing.
+    Handle unified gateway query: Route LLM (planning) + Dispatcher (execution).
 
     Steps:
-        1) Rewrite query (placeholder for future LLM).
-        2) Route to a workflow with confidence score.
-        3) Call services layer (currently stubbed) for execution.
+        1) Route LLM: rewrite query, build execution plan (task classification).
+        2) Dispatcher: execute tasks in parallel within groups, invoke worker agents.
+        3) Merge task results and return QueryResponse.
 
     Args:
         request: Parsed QueryRequest from the client.
 
     Returns:
-        QueryResponse with answer from the selected workflow.
+        QueryResponse with answer, plan, task_results, merged_answer.
     """
     request_id = str(uuid.uuid4())
     original_query = (request.query or "").strip()
@@ -316,7 +318,7 @@ async def query(request: QueryRequest) -> QueryResponse:
     route_input_query = rewritten_query
 
     try:
-        # Step 1: rewrite query
+        # Route LLM (Planning): rewrite + task classification -> execution_plan
         rewrite_started = time.perf_counter()
         rewritten_query = rewrite_query(request)
         rewrite_time_ms = int((time.perf_counter() - rewrite_started) * 1000)
@@ -344,7 +346,7 @@ async def query(request: QueryRequest) -> QueryResponse:
                 debug=debug_trace,
             )
 
-        # Step 2: route workflow (returns metadata for logging)
+        # Route metadata for logging (single-task path uses route_workflow)
         planned_task_count = sum(len(group.tasks) for group in execution_plan.task_groups)
         if planned_task_count > 1:
             route_source = "planner"
@@ -364,7 +366,7 @@ async def query(request: QueryRequest) -> QueryResponse:
             if execution_plan.task_groups and execution_plan.task_groups[0].tasks:
                 execution_plan.task_groups[0].tasks[0].workflow = workflow
 
-        # Step 3: execute planned tasks.
+        # Dispatcher (Execution): execute tasks in parallel, invoke worker agents
         task_results = _execute_plan(execution_plan, request)
         merged_answer = _merge_task_answers(execution_plan, task_results)
         workflow = _derive_workflow(execution_plan, task_results, fallback=workflow)

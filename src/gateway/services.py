@@ -1,13 +1,12 @@
 """
-Gateway services layer.
+Gateway services layer (Dispatcher invokes worker agents).
 
-Provides thin client wrappers for backend services used by the gateway:
-- General / docs workflows -> RAG API
-- SP-API workflow -> Seller Operations API
-- UDS workflow -> UDS Agent API
+Provides HTTP client wrappers for worker agent backends:
+- General / amazon_docs / ic_docs -> RAG API (port 8002)
+- sp_api -> SP-API Agent (port 8003)
+- uds -> UDS Agent (port 8001)
 
-Each function returns a normalized dict that can be mapped into
-the gateway's QueryResponse schema.
+Each function returns a normalized dict for the gateway's QueryResponse schema.
 """
 
 from __future__ import annotations

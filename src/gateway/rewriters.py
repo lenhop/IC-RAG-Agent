@@ -1,12 +1,14 @@
 """
-Gateway query rewriters.
+Route LLM (Planning): query rewriters.
 
-LLM-based query rewriting for the unified gateway. Supports two backends:
+LLM-based query rewriting for the gateway. Supports:
 - Ollama (local): HTTP POST to Ollama /api/generate
 - DeepSeek (remote): OpenAI-compatible chat completions API
 
-On failure (connection, timeout, API error): returns original query, logs error,
-and does not raise. This ensures graceful fallback for downstream routing.
+Planner mode (GATEWAY_REWRITE_PLANNER_ENABLED): outputs JSON task decomposition
+for hybrid queries. Otherwise: simple rewrite.
+
+On failure: returns original query, logs error, does not raise.
 """
 
 from __future__ import annotations

@@ -1,7 +1,7 @@
 # IC-RAG-Agent System Framework
 
-**Version:** 2.0.0  
-**Last Updated:** 2026-03-07
+**Version:** 2.1.0  
+**Last Updated:** 2026-03-08
 
 This document describes the system framework for the IC-RAG-Agent project using Mermaid diagrams.
 
@@ -13,7 +13,7 @@ This document describes the system framework for the IC-RAG-Agent project using 
 
 IC-RAG-Agent is an **Intent Classification + Retrieval-Augmented Generation** system with a **Unified Gateway** routing queries to five backend workflows:
 
-- **Gateway** – Single entry point with query rewriting, LLM-based routing, and workflow dispatch
+- **Gateway** – Single entry point with Route LLM (rewriting + task classification) and Dispatcher (supervisor agent; executes worker agents in parallel)
 - **UDS Agent** – Business Intelligence for Amazon seller data (ClickHouse + ReAct)
 - **RAG Pipeline** – Document retrieval and hybrid generation with four parallel intent methods
 - **SP-API Agent** – Seller Operations via Amazon SP-API (ReAct + LangGraph workflow)
@@ -27,12 +27,17 @@ flowchart TB
 
     subgraph Gateway["Unified Gateway :8000"]
         API[FastAPI<br/>POST /api/v1/query]
-        Rewrite[Query Rewriting<br/>Ollama / DeepSeek]
-        Router[Route LLM / Heuristic<br/>router.py]
-        Dispatch[Workflow Dispatch<br/>services.py]
+        subgraph RouteLLM["Route LLM (Planning)"]
+            Rewrite[Query Rewriting<br/>rewriters.py]
+            Classify[Task Classification<br/>router.py, route_llm.py]
+        end
+        subgraph Dispatcher["Dispatcher (Supervisor Agent)<br/>Execute in Parallel"]
+            Orch[Orchestrator<br/>api.py]
+            Invoke[Invoke Backends<br/>services.py]
+        end
     end
 
-    subgraph Backends["Backend Services"]
+    subgraph Backends["Worker Agents"]
         RAG[RAG Pipeline :8002<br/>src/rag/]
         UDS[UDS Agent :8001<br/>src/uds/]
         SP[SP-API Agent :8003<br/>src/sp_api/]
@@ -52,10 +57,11 @@ flowchart TB
     end
 
     UI -->|POST /api/v1/query| API
-    API --> Rewrite --> Router --> Dispatch
-    Dispatch -->|general / amazon_docs / ic_docs| RAG
-    Dispatch -->|uds| UDS
-    Dispatch -->|sp_api| SP
+    API --> RouteLLM
+    RouteLLM --> Dispatcher
+    Dispatcher -->|general / amazon_docs / ic_docs| RAG
+    Dispatcher -->|uds| UDS
+    Dispatcher -->|sp_api| SP
 
     RAG --> RAG_P --> Chroma
     UDS --> UDS_A --> CH
@@ -78,6 +84,19 @@ flowchart TB
 
 > **IC docs:** Not ready yet — Chroma not populated. Gateway returns a friendly message; set `IC_DOCS_ENABLED=true` once populated.
 
+### 1.2 Gateway Grouping: Route LLM vs Dispatcher
+
+The gateway is organized into two conceptual groups:
+
+| Group | Responsibility | Modules | Description |
+|-------|----------------|---------|-------------|
+| **Route LLM** | Planning | `rewriters.py`, `router.py`, `route_llm.py` | Query rewriting and task classification. Produces an execution plan (what to do). |
+| **Dispatcher** | Execution | `api.py`, `services.py` | Supervisor agent; invokes worker agents (General RAG, Amazon docs RAG, SP-API Agent, UDS Agent) and executes tasks in parallel within groups, merges results. |
+
+**Route LLM** outputs: rewritten query, execution plan (task_groups with workflow + query per task).
+
+**Dispatcher** inputs: execution plan. Outputs: task_results, merged_answer, aggregated sources.
+
 ---
 
 ## 2. Architecture Layers
@@ -91,9 +110,15 @@ flowchart TB
 
     subgraph L1["Gateway Layer"]
         GatewayAPI[FastAPI Gateway]
-        Rewriters[Query Rewriters<br/>Ollama / DeepSeek]
-        RouteLLM[Route LLM<br/>+ Heuristic Fallback]
-        Services[Service Dispatch]
+        subgraph RL["Route LLM (Planning)"]
+            Rewriters[Query Rewriters<br/>Ollama / DeepSeek]
+            Planner[Planner + Correction]
+            RouteLLMMod[Route LLM / Heuristic]
+        end
+        subgraph Disp["Dispatcher (Execution)"]
+            Orch[Orchestrator<br/>api.py]
+            Services[Service Dispatch<br/>services.py]
+        end
         LogUtils[Logging Utils]
     end
 
@@ -139,11 +164,15 @@ flowchart TB
 flowchart LR
     subgraph src["src/"]
         subgraph gateway["gateway/"]
-            gw_api[api.py]
-            gw_router[router.py]
-            gw_rewriters[rewriters.py]
-            gw_route_llm[route_llm.py]
-            gw_services[services.py]
+            subgraph route_llm["Route LLM"]
+                gw_router[router.py]
+                gw_rewriters[rewriters.py]
+                gw_route_llm[route_llm.py]
+            end
+            subgraph dispatcher["Dispatcher"]
+                gw_api[api.py]
+                gw_services[services.py]
+            end
             gw_schemas[schemas.py]
             gw_log[logging_utils.py]
         end
@@ -227,28 +256,30 @@ sequenceDiagram
     participant User
     participant ChatUI as Gradio Chat UI
     participant GW as Gateway API
-    participant Rewrite as Query Rewriter
-    participant Router as Route LLM / Heuristic
-    participant Backend as Backend Service
+    participant RouteLLM as Route LLM
+    participant Dispatcher as Dispatcher
+    participant Backend as Backend Services
 
     User->>ChatUI: Type question
     ChatUI->>GW: POST /api/v1/query<br/>{query, workflow, rewrite_enable, session_id}
-    GW->>Rewrite: Normalize + optional LLM rewrite
-    Rewrite-->>GW: rewritten_query
-    GW->>Router: Classify workflow
-    
-    alt Route LLM enabled & confident
-        Router-->>GW: workflow + confidence (LLM)
-    else Heuristic fallback
-        Router-->>GW: workflow + confidence (keywords)
-    end
+    GW->>RouteLLM: raw_query
 
-    GW->>Backend: Dispatch to RAG/UDS/SP-API
-    Backend-->>GW: {answer, sources}
-    GW-->>ChatUI: QueryResponse
+    Note over RouteLLM: Rewriting + Task Classification
+    RouteLLM->>RouteLLM: Normalize, LLM rewrite, plan/correct
+    RouteLLM-->>GW: execution_plan (rewritten_query, task_groups)
+
+    GW->>Dispatcher: execution_plan
+
+    Note over Dispatcher: Supervise + Invoke
+    Dispatcher->>Backend: Execute tasks (parallel/sequential)
+    Backend-->>Dispatcher: task_results
+    Dispatcher->>Dispatcher: Merge answers
+    Dispatcher-->>GW: merged_answer, task_results
+
+    GW-->>ChatUI: QueryResponse (answer, plan, task_results)
     ChatUI-->>User: Display answer
 
-    Note over GW: Logs: request_id, raw_query,<br/>rewritten_query, workflow,<br/>confidence, route_source
+    Note over GW: Route LLM = planning. Dispatcher = execution.
 ```
 
 ---
@@ -260,21 +291,86 @@ flowchart TD
     Q[User Query] --> WF{workflow field?}
     
     WF -->|explicit: general/uds/sp_api/...| MANUAL[Manual Override<br/>confidence=1.0]
-    WF -->|auto| AUTO{Route LLM<br/>enabled?}
+    WF -->|auto| AUTO{Planner enabled?}
     
-    AUTO -->|No| HEUR[Keyword Heuristic<br/>_route_workflow_heuristic]
-    AUTO -->|Yes| LLM[Route LLM<br/>Ollama / DeepSeek]
+    AUTO -->|Yes| PLAN[Parse planner JSON<br/>or heuristic multi-task]
+    AUTO -->|No| ROUTE{Route LLM<br/>enabled?}
+    
+    PLAN --> CORRECT[Plan Correction<br/>heuristic override ≥0.9]
+    CORRECT --> EXEC[Execute plan]
+    
+    ROUTE -->|No| HEUR[Keyword Heuristic]
+    ROUTE -->|Yes| LLM[Route LLM<br/>Ollama / DeepSeek]
     
     LLM --> CONF{confidence ≥<br/>threshold?}
     CONF -->|Yes| USE_LLM[Use LLM result]
     CONF -->|No| HEUR
     
-    HEUR --> L2{Level 2 Keywords}
-    L2 -->|amazon docs, seller central| W2[amazon_docs 0.9]
-    L2 -->|ic-rag-agent, ic docs| W3[ic_docs 0.9]
-    L2 -->|sp-api, fba, shipment| W4[sp_api 0.85]
-    L2 -->|sales, revenue, orders| W5[uds 0.85]
-    L2 -->|no match| W1[general 0.7]
+    HEUR --> PRIORITY[Priority-ordered keyword blocks]
+    PRIORITY -->|sp_api 0.92| SP_H[order status, inventory health, buy box, etc.]
+    PRIORITY -->|uds 0.92| UD_H[top 5, products by, by refund, etc.]
+    PRIORITY -->|uds 0.85| UD_M[table, schema, trend, total, etc.]
+    PRIORITY -->|amazon_docs 0.9| AM[policy, fees, guidelines, etc.]
+    PRIORITY -->|sp_api 0.85| SP_M[sp-api, fba, shipment, catalog]
+    PRIORITY -->|no match| W1[general 0.7]
+```
+
+### 5.1 Query Rewriting and Routing Rules
+
+**File locations:**
+
+| Component | File | Description |
+|-----------|------|--------------|
+| Rewrite prompts | `src/gateway/rewriters.py` | `REWRITE_PROMPT`, `REWRITE_PLANNER_PROMPT` |
+| Heuristic routing | `src/gateway/router.py` | `_route_workflow_heuristic()` |
+| Plan correction | `src/gateway/router.py` | `_correct_plan_workflows()` |
+| Route LLM prompt | `src/gateway/route_llm.py` | `ROUTE_LLM_SYSTEM_PROMPT` |
+
+**Planner routing policy (rewriters.py):**
+
+- **amazon_docs:** Amazon business rules, policies, requirements, fee definitions
+- **uds:** Analytical/historical questions; prefer UDS when data is in warehouse snapshots
+- **sp_api:** Real-time/current-state data only; SP-API has rate limits
+- **sp_api must not** handle policy/business-rule explanation
+
+**Heuristic keywords (router.py, priority order):**
+
+| Workflow | Confidence | Keywords (examples) |
+|----------|------------|---------------------|
+| sp_api | 0.92 | order status, check order, inventory placement, inventory health, buy box status, check if asin, verify my seller |
+| uds | 0.92 | top 5, top 10, products by, by refund, by product, refund count |
+| uds | 0.85 | which table, schema, dataset, clickhouse, last month, trend, total, average, compare, breakdown, historical |
+| amazon_docs | 0.9 | policy, requirements, fees, fee structure, guidelines, what does amazon |
+| sp_api | 0.85 | sp-api, fba, shipment, catalog, seller api |
+| general | 0.7 | fallback when no keyword match |
+
+### 5.2 Multi-Task Execution Flow
+
+```mermaid
+flowchart TB
+    Q[User Query] --> REW[Query Rewriter\nOllama / DeepSeek]
+    REW --> PLAN[Planner\nJSON parse or heuristic split]
+    PLAN --> CORR[Plan Correction\nHeuristic override]
+    CORR --> SPLIT{Split into Tasks}
+    
+    SPLIT -->|general| G[General RAG\nRemote LLM]
+    SPLIT -->|amazon_docs| A[Amazon Docs RAG\nChromaDB]
+    SPLIT -->|ic_docs| IC[IC Docs RAG\nChromaDB]
+    SPLIT -->|sp_api| SP[SP-API Agent\nAmazon API]
+    SPLIT -->|uds| U[UDS Agent\nClickHouse]
+
+    G -->|answer| M[Merge Answers\nconcat / compare / synthesize]
+    A -->|answer| M
+    IC -->|answer| M
+    SP -->|answer| M
+    U -->|answer| M
+
+    M --> R[Final Response to User]
+
+    style REW fill:#f9f,stroke:#333
+    style PLAN fill:#f9f,stroke:#333
+    style CORR fill:#ff9,stroke:#333
+    style M fill:#9ff,stroke:#333
 ```
 
 ---
@@ -727,9 +823,10 @@ IC-RAG-Agent/
 | From | To | Method | Purpose |
 |------|----|--------|---------|
 | Chat UI | Gateway | HTTP POST | Unified entry point for all queries |
-| Gateway | RAG API | HTTP POST `/query` | General, Amazon docs, IC docs workflows |
-| Gateway | UDS API | HTTP POST `/api/v1/uds/query` | BI analytics queries |
-| Gateway | SP-API | HTTP POST `/api/v1/seller/query` | Seller operations |
+| Gateway (Route LLM) | Gateway (Dispatcher) | Function call | Pass execution_plan (planning -> execution) |
+| Dispatcher | RAG API | HTTP POST `/query` | General, Amazon docs, IC docs workflows |
+| Dispatcher | UDS API | HTTP POST `/api/v1/uds/query` | BI analytics queries |
+| Dispatcher | SP-API | HTTP POST `/api/v1/seller/query` | Seller operations |
 | Gateway Router | Route LLM | Function call | LLM-based workflow classification |
 | Gateway Router | Heuristic | Function call | Keyword-based fallback routing |
 | Gateway Rewriter | Ollama/DeepSeek | HTTP | Query rewriting before routing |
@@ -785,9 +882,14 @@ Content-Type: application/json
   "routing_confidence": 0.96,
   "sources": [{"type": "table", "name": "amz_order"}],
   "request_id": "req-uuid",
-  "error": null
+  "error": null,
+  "plan": {"plan_type": "hybrid", "task_groups": [...]},
+  "task_results": [{"workflow": "uds", "status": "completed", "answer": "..."}],
+  "merged_answer": "- [uds] Your total Amazon sales..."
 }
 ```
+
+When `GATEWAY_REWRITE_PLANNER_ENABLED=true`, the response includes `plan`, `task_results`, and `merged_answer` for multi-task execution.
 
 ---
 
@@ -800,34 +902,4 @@ Content-Type: application/json
 - [guides/QUERY_REWRITING.md](guides/QUERY_REWRITING.md) – Query rewriting guide
 - [archive/ARCHITECTURE_DECISIONS.md](archive/ARCHITECTURE_DECISIONS.md) – ADRs
 - [archive/ANSWER_MODEL_IDENTITY.md](archive/ANSWER_MODEL_IDENTITY.md) – Answer model identity notes
-
-
-
-```mermaid
-flowchart TB
-    Q[User Query] --> P[Query Processor\nRewrite + Classify\nSingle LLM Call]
-    P --> Split{Split into Tasks}
-    
-    Split -->|general| G[General RAG\nRemote LLM]
-    Split -->|amazon_docs| A[Amazon Docs RAG\nChromaDB]
-    Split -->|ic_docs| IC[IC Docs RAG\nChromaDB]
-    Split -->|sp_api| SP[SP-API Agent\nAmazon API]
-    Split -->|uds| U[UDS Agent\nClickHouse]
-
-    G -->|answer| M[Merge Answers]
-    A -->|answer| M
-    IC -->|answer| M
-    SP -->|answer| M
-    U -->|answer| M
-
-    M --> R[Final Response to User]
-
-    style P fill:#f9f,stroke:#333
-    style M fill:#9ff,stroke:#333
-```
-
-
-```mermaid
-
-```
 

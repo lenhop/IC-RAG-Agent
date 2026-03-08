@@ -1,7 +1,8 @@
 """
 Gateway API package.
 
-Provides FastAPI app and Pydantic schemas for the unified query gateway.
+Unified query gateway: Route LLM (planning) + Dispatcher (supervisor agent).
+Worker agents: RAG, Amazon docs RAG, SP-API Agent, UDS Agent.
 """
 
 from .schemas import QueryRequest, QueryResponse
