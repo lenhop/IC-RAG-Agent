@@ -242,3 +242,37 @@ def test_valid_workflows_constant():
     assert "ic_docs" in VALID_WORKFLOWS
     assert "sp_api" in VALID_WORKFLOWS
     assert "uds" in VALID_WORKFLOWS
+
+
+def test_rewrite_sync_200_returns_rewrite_payload(client):
+    """rewrite_sync returns parsed payload on HTTP 200."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "original_query": "q",
+        "rewritten_query": "q rewritten",
+        "rewrite_enabled": True,
+        "rewrite_backend": "ollama",
+        "rewrite_time_ms": 9,
+    }
+    mock_resp.raise_for_status = MagicMock()
+
+    with patch("src.client.api_client.requests.post", return_value=mock_resp) as mock_post:
+        result = client.rewrite_sync("q", rewrite_enable=True, rewrite_backend="ollama")
+
+    assert result["rewritten_query"] == "q rewritten"
+    payload = mock_post.call_args[1]["json"]
+    assert payload["query"] == "q"
+    assert payload["rewrite_enable"] is True
+    assert payload["rewrite_backend"] == "ollama"
+
+
+def test_rewrite_sync_mock_mode_returns_immediate_payload():
+    """rewrite_sync in mock mode returns deterministic local payload."""
+    client = GatewayClient(base_url="")
+    with patch("src.client.api_client.requests.post") as mock_post:
+        result = client.rewrite_sync("hello", rewrite_enable=True, rewrite_backend="deepseek")
+    mock_post.assert_not_called()
+    assert result["original_query"] == "hello"
+    assert result["rewritten_query"] == "hello"
+    assert result["rewrite_backend"] == "deepseek"

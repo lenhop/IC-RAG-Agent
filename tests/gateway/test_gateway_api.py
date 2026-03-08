@@ -9,6 +9,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from src.gateway.api import app
+from src.gateway.schemas import RewritePlan, TaskGroup, TaskItem
 
 
 client = TestClient(app)
@@ -22,6 +23,44 @@ def _base_payload() -> dict:
         "session_id": "sess-1",
         "stream": False,
     }
+
+
+def _assert_debug_payload(data: dict) -> None:
+    """Assert gateway response includes rewrite/routing debug trace."""
+    assert "debug" in data
+    debug = data["debug"]
+    assert isinstance(debug, dict)
+    assert "original_query" in debug
+    assert "rewritten_query" in debug
+    assert "rewrite_enabled" in debug
+    assert "rewrite_backend" in debug
+    assert "rewrite_time_ms" in debug
+    assert "route_input_query" in debug
+    assert "route_source" in debug
+    assert "route_backend" in debug
+    assert "route_llm_confidence" in debug
+
+
+@patch("src.gateway.api.rewrite_query", return_value="rewritten only")
+def test_rewrite_endpoint_returns_rewrite_metadata(mock_rewrite):
+    """Rewrite endpoint returns rewritten query and timing metadata."""
+    payload = {
+        "query": "raw query",
+        "workflow": "auto",
+        "rewrite_enable": True,
+        "rewrite_backend": "ollama",
+        "session_id": None,
+        "stream": False,
+    }
+    resp = client.post("/api/v1/rewrite", json=payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["original_query"] == "raw query"
+    assert data["rewritten_query"] == "rewritten only"
+    assert data["rewrite_enabled"] is True
+    assert data["rewrite_backend"] == "ollama"
+    assert isinstance(data["rewrite_time_ms"], int)
+    assert data["rewrite_time_ms"] >= 0
 
 
 @patch("src.gateway.api.call_general", return_value={"answer": "general answer", "sources": []})
@@ -39,6 +78,13 @@ def test_query_general_success(mock_rewrite, mock_route, mock_call):
     assert data["routing_confidence"] == 0.95
     assert data["answer"] == "general answer"
     assert data["error"] is None
+    _assert_debug_payload(data)
+    assert data["debug"]["rewritten_query"] == "rewritten general query"
+    assert data["debug"]["route_input_query"] == "rewritten general query"
+    assert data["debug"]["rewrite_enabled"] is True
+    assert data["debug"]["rewrite_backend"] in ("ollama", "deepseek")
+    assert isinstance(data["debug"]["rewrite_time_ms"], int)
+    assert data["debug"]["rewrite_time_ms"] >= 0
     mock_call.assert_called_once()
 
 
@@ -208,6 +254,11 @@ def test_query_rewrite_disabled_no_rewriter_call(mock_route, mock_call, mock_dee
     assert resp.status_code == 200
     data = resp.json()
     assert data["answer"] == "ok"
+    _assert_debug_payload(data)
+    assert data["debug"]["rewritten_query"] == "test query"
+    assert data["debug"]["route_input_query"] == "test query"
+    assert data["debug"]["rewrite_enabled"] is False
+    assert data["debug"]["rewrite_backend"] is None
     mock_ollama.assert_not_called()
     mock_deepseek.assert_not_called()
     mock_call.assert_called_once_with("test query", "s1")
@@ -299,6 +350,37 @@ def test_query_explicit_workflow_ignores_route_backend(mock_rewrite, mock_route,
     mock_call_ic.assert_called_once()
 
 
+@patch("src.gateway.api.call_general")
+@patch("src.gateway.api.route_workflow")
+@patch("src.gateway.api.rewrite_query", return_value="rewritten quick query")
+def test_query_rewrite_only_mode_skips_route_and_downstream(
+    mock_rewrite, mock_route, mock_call_general, monkeypatch
+):
+    """When rewrite-only mode is on, /query returns rewritten text without routing."""
+    monkeypatch.setenv("GATEWAY_REWRITE_ONLY_MODE", "true")
+    payload = {
+        "query": "quick test",
+        "workflow": "auto",
+        "rewrite_enable": True,
+        "rewrite_backend": "ollama",
+        "session_id": "s1",
+        "stream": False,
+    }
+    resp = client.post("/api/v1/query", json=payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["workflow"] == "rewrite_only"
+    assert data["answer"] == "rewritten quick query"
+    assert data["routing_confidence"] == 1.0
+    assert data["error"] is None
+    _assert_debug_payload(data)
+    assert data["debug"]["route_source"] == "rewrite_only"
+    assert data["debug"]["route_backend"] is None
+    assert data["debug"]["route_llm_confidence"] is None
+    mock_route.assert_not_called()
+    mock_call_general.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # IC docs skip when IC_DOCS_ENABLED is false (no RAG call)
 # ---------------------------------------------------------------------------
@@ -329,4 +411,97 @@ def test_query_ic_docs_disabled_returns_friendly_message_no_rag_call(
     assert "not ready" in data["answer"].lower()
     assert "Amazon docs" in data["answer"] or "general knowledge" in data["answer"].lower()
     mock_ic_enabled.assert_called()
+
+
+@patch(
+    "src.gateway.api.build_execution_plan",
+    return_value=RewritePlan(
+        plan_type="hybrid",
+        merge_strategy="concat",
+        task_groups=[
+            TaskGroup(
+                group_id="g1",
+                parallel=True,
+                tasks=[
+                    TaskItem(task_id="t1", workflow="general", query="what is FBA", depends_on=[], reason=None),
+                    TaskItem(task_id="t2", workflow="sp_api", query="FBA fee for ASIN B074KF7RKS", depends_on=[], reason=None),
+                ],
+            )
+        ],
+    ),
+)
+@patch("src.gateway.api.route_workflow")
+@patch("src.gateway.api.call_sp_api", return_value={"answer": "ASIN fee is $2.10", "sources": []})
+@patch("src.gateway.api.call_general", return_value={"answer": "FBA is Fulfillment by Amazon", "sources": []})
+@patch("src.gateway.api.rewrite_query", return_value='{"plan_type":"hybrid"}')
+def test_query_planner_multi_task_returns_structured_response(
+    mock_rewrite, mock_call_general, mock_call_sp_api, mock_route, mock_plan
+):
+    """Planner multi-task flow should execute grouped tasks and return merged structured output."""
+    payload = {
+        "query": "what is fba and fba fee for asin B074KF7RKS",
+        "workflow": "auto",
+        "rewrite_enable": True,
+        "session_id": "s1",
+        "stream": False,
+    }
+    resp = client.post("/api/v1/query", json=payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["workflow"] == "hybrid"
+    assert data["error"] is None
+    assert data["merged_answer"]
+    assert data["answer"] == data["merged_answer"]
+    assert len(data["task_results"]) == 2
+    assert data["task_results"][0]["status"] == "completed"
+    assert data["task_results"][1]["status"] == "completed"
+    assert data["plan"]["plan_type"] == "hybrid"
+    mock_route.assert_not_called()
+    mock_call_general.assert_called_once()
+    mock_call_sp_api.assert_called_once()
+
+
+@patch(
+    "src.gateway.api.build_execution_plan",
+    return_value=RewritePlan(
+        plan_type="hybrid",
+        merge_strategy="concat",
+        task_groups=[
+            TaskGroup(
+                group_id="g1",
+                parallel=True,
+                tasks=[
+                    TaskItem(task_id="t1", workflow="general", query="what is FBA", depends_on=[], reason=None),
+                    TaskItem(task_id="t2", workflow="uds", query="last month fba fee total", depends_on=[], reason=None),
+                ],
+            )
+        ],
+    ),
+)
+@patch("src.gateway.api.route_workflow")
+@patch("src.gateway.api.call_uds", return_value={"answer": "Last month FBA fee total is $1,245", "sources": []})
+@patch("src.gateway.api.call_general", return_value={"error": "backend unavailable", "error_type": "ConnectionError"})
+@patch("src.gateway.api.rewrite_query", return_value='{"plan_type":"hybrid"}')
+def test_query_planner_partial_failure_surfaces_task_error(
+    mock_rewrite, mock_call_general, mock_call_uds, mock_route, mock_plan
+):
+    """Partial task failure should keep merged answer and expose top-level partial error."""
+    payload = {
+        "query": "what is fba and last month fba fee",
+        "workflow": "auto",
+        "rewrite_enable": True,
+        "session_id": "s1",
+        "stream": False,
+    }
+    resp = client.post("/api/v1/query", json=payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["workflow"] == "hybrid"
+    assert data["answer"] == "Last month FBA fee total is $1,245"
+    assert data["error"] == "1 planned task(s) failed."
+    assert len(data["task_results"]) == 2
+    statuses = {item["task_id"]: item["status"] for item in data["task_results"]}
+    assert statuses["t1"] == "failed"
+    assert statuses["t2"] == "completed"
+    mock_route.assert_not_called()
 

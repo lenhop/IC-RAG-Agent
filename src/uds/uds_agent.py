@@ -10,6 +10,7 @@ Extends ReActAgent with UDS-specific capabilities including:
 """
 
 import json
+import os
 from typing import Dict, Any, List, Optional
 from src.uds.cache import UDSCache  # for type hints
 from src.agent.react_agent import ReActAgent
@@ -86,6 +87,12 @@ class UDSAgent(ReActAgent):
     def _register_tools(self):
         """Register all UDS tools."""
         for tool in UDSToolRegistry.get_query_tools():
+            # Some tools (e.g., GenerateSQLTool) require an LLM instance injected at runtime.
+            if hasattr(tool, "set_llm"):
+                try:
+                    tool.set_llm(self._llm)
+                except Exception:
+                    pass
             self.register_tool(tool)
 
     def get_tool(self, tool_name: str):
@@ -158,8 +165,20 @@ class UDSAgent(ReActAgent):
             }
         
         try:
+            # Keep UDS response time bounded for API callers.
+            configured_iterations = int(
+                os.getenv("UDS_AGENT_MAX_ITERATIONS", str(max_iterations))
+            )
+            bounded_iterations = max(1, min(configured_iterations, 5))
+            previous_max_iterations = self._max_iterations
+            self._max_iterations = bounded_iterations
             result = self.run(query)
+            self._max_iterations = previous_max_iterations
         except Exception as e:
+            try:
+                self._max_iterations = previous_max_iterations
+            except Exception:
+                pass
             error = handle_llm_error(e)
             return {
                 'success': False,

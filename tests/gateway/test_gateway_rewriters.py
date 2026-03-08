@@ -14,6 +14,8 @@ import requests
 
 from src.gateway.rewriters import (
     REWRITE_PROMPT,
+    REWRITE_PLANNER_PROMPT,
+    parse_rewrite_plan_text,
     rewrite_with_ollama,
     rewrite_with_deepseek,
 )
@@ -43,6 +45,22 @@ def test_rewrite_with_ollama_success(mock_post):
     assert REWRITE_PROMPT in call_kwargs["json"]["prompt"]
     assert "What were my sales in October 2024?" in call_kwargs["json"]["prompt"]
     assert call_kwargs["json"]["stream"] is False
+
+
+@patch("src.gateway.rewriters.requests.post")
+@patch.dict("os.environ", {"GATEWAY_REWRITE_PLANNER_ENABLED": "true"})
+def test_rewrite_with_ollama_uses_planner_prompt_when_enabled(mock_post):
+    """Planner prompt is used when planner rewrite mode is enabled."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"response": "PlanType: hybrid; TaskGroups: ..."}
+    mock_post.return_value = mock_resp
+
+    result = rewrite_with_ollama("compare policy and my recent shipment delays")
+
+    assert result == "PlanType: hybrid; TaskGroups: ..."
+    call_kwargs = mock_post.call_args[1]
+    assert REWRITE_PLANNER_PROMPT in call_kwargs["json"]["prompt"]
 
 
 @patch("src.gateway.rewriters.requests.post")
@@ -135,6 +153,30 @@ def test_rewrite_with_deepseek_success(mock_openai_class):
 
 
 @patch("openai.OpenAI")
+@patch.dict(
+    "os.environ",
+    {
+        "DEEPSEEK_API_KEY": "test-key-123",
+        "GATEWAY_REWRITE_PLANNER_ENABLED": "true",
+    },
+)
+def test_rewrite_with_deepseek_uses_planner_prompt_when_enabled(mock_openai_class):
+    """Planner prompt is injected for DeepSeek when planner rewrite mode is enabled."""
+    mock_client = MagicMock()
+    mock_openai_class.return_value = mock_client
+
+    mock_choice = MagicMock()
+    mock_choice.message.content = "PlanType: single-domain; TaskGroups: [T1:general:define term]"
+    mock_client.chat.completions.create.return_value = MagicMock(choices=[mock_choice])
+
+    result = rewrite_with_deepseek("what is FBA and shipment status impact")
+
+    assert "PlanType:" in result
+    call_kwargs = mock_client.chat.completions.create.call_args[1]
+    assert REWRITE_PLANNER_PROMPT in call_kwargs["messages"][0]["content"]
+
+
+@patch("openai.OpenAI")
 @patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test-key"})
 def test_rewrite_with_deepseek_api_error_returns_original(mock_openai_class):
     """On API exception, rewrite_with_deepseek returns original query."""
@@ -161,3 +203,67 @@ def test_rewrite_with_deepseek_empty_query_returns_as_is():
     with patch.dict("os.environ", {"DEEPSEEK_API_KEY": "key"}):
         assert rewrite_with_deepseek("") == ""
         assert rewrite_with_deepseek("   ") == "   "
+
+
+def test_parse_rewrite_plan_text_valid_json():
+    """Planner parser should return structured plan for valid JSON output."""
+    raw = """
+    {
+      "plan_type": "hybrid",
+      "merge_strategy": "concat",
+      "task_groups": [
+        {
+          "group_id": "g1",
+          "parallel": true,
+          "tasks": [
+            {"task_id": "t1", "workflow": "general", "query": "what is fba", "depends_on": [], "reason": "definition"},
+            {"task_id": "t2", "workflow": "sp_api", "query": "fba fee for ASIN B074KF7RKS", "depends_on": [], "reason": "metrics"}
+          ]
+        }
+      ]
+    }
+    """
+    plan = parse_rewrite_plan_text(raw, "fallback query")
+    assert plan is not None
+    assert plan.plan_type == "hybrid"
+    assert len(plan.task_groups) == 1
+    assert len(plan.task_groups[0].tasks) == 2
+    assert plan.task_groups[0].tasks[0].workflow == "general"
+    assert plan.task_groups[0].tasks[1].workflow == "sp_api"
+
+
+def test_parse_rewrite_plan_text_invalid_json_falls_back_to_single_task():
+    """Invalid planner text should degrade to one fallback task."""
+    plan = parse_rewrite_plan_text("PlanType: hybrid; TaskGroups: ...", "total sales by month")
+    assert plan is not None
+    assert len(plan.task_groups) == 1
+    assert len(plan.task_groups[0].tasks) == 1
+    task = plan.task_groups[0].tasks[0]
+    assert task.workflow == "general"
+    assert task.query == "total sales by month"
+
+
+@patch.dict("os.environ", {"GATEWAY_REWRITE_PLANNER_MAX_TASKS": "1"})
+def test_parse_rewrite_plan_text_honors_max_tasks_guard():
+    """Planner parser should trim tasks based on max task guard."""
+    raw = """
+    {
+      "plan_type": "hybrid",
+      "merge_strategy": "concat",
+      "task_groups": [
+        {
+          "group_id": "g1",
+          "parallel": true,
+          "tasks": [
+            {"task_id": "t1", "workflow": "general", "query": "q1"},
+            {"task_id": "t2", "workflow": "uds", "query": "q2"}
+          ]
+        }
+      ]
+    }
+    """
+    plan = parse_rewrite_plan_text(raw, "fallback")
+    assert plan is not None
+    assert len(plan.task_groups) == 1
+    assert len(plan.task_groups[0].tasks) == 1
+    assert plan.task_groups[0].tasks[0].query == "q1"

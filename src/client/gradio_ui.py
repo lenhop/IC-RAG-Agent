@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import os
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+import time
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 from uuid import uuid4
 
 import gradio as gr
@@ -23,6 +25,16 @@ logger = logging.getLogger(__name__)
 GATEWAY_API_URL = os.environ.get("GATEWAY_API_URL", "").rstrip("/")
 GATEWAY_MOCK = os.environ.get("GATEWAY_MOCK", "").lower() in ("true", "1", "yes")
 GRADIO_PORT = int(os.environ.get("UNIFIED_CHAT_GRADIO_PORT", "7862"))
+REWRITE_ENABLE_DEFAULT = os.environ.get(
+    "UNIFIED_CHAT_REWRITE_ENABLE", "true"
+).lower() in ("true", "1", "yes")
+REWRITE_BACKEND_DEFAULT = (
+    os.environ.get("UNIFIED_CHAT_REWRITE_BACKEND", "ollama").strip().lower()
+)
+REWRITE_ONLY_TEST_MODE = (
+    os.environ.get("UNIFIED_CHAT_REWRITE_ONLY_MODE", "").lower() in ("true", "1", "yes")
+    or os.environ.get("GATEWAY_REWRITE_ONLY_MODE", "").lower() in ("true", "1", "yes")
+)
 
 # Workflow options: (label, value) for Radio
 WORKFLOW_CHOICES = [
@@ -39,7 +51,25 @@ def _get_gateway_status() -> str:
     """Return human-readable gateway status for sidebar."""
     if not GATEWAY_API_URL or GATEWAY_MOCK:
         return "**Status:** Mock mode (no gateway)"
+    if REWRITE_ONLY_TEST_MODE:
+        return f"**Status:** Gateway at {GATEWAY_API_URL} (rewrite-only test mode)"
     return f"**Status:** Gateway at {GATEWAY_API_URL}"
+
+
+def _normalize_rewrite_backend(value: str) -> str:
+    """
+    Normalize rewrite backend from env/UI.
+
+    Args:
+        value: Candidate backend value.
+
+    Returns:
+        Valid backend value: "ollama" or "deepseek".
+    """
+    normalized = (value or "").strip().lower()
+    if normalized in ("ollama", "deepseek"):
+        return normalized
+    return "ollama"
 
 
 def _chat_handler(
@@ -49,9 +79,9 @@ def _chat_handler(
     rewrite_enable: bool,
     rewrite_backend: str,
     session_id: str,
-) -> str:
+) -> Union[str, Iterator[str]]:
     """
-    Chat callback: call GatewayClient.query_sync and return answer or error.
+    Chat callback: stream rewrite progress and final answer.
 
     Args:
         message: User message.
@@ -62,28 +92,109 @@ def _chat_handler(
         session_id: Session UUID for multi-turn context.
 
     Returns:
-        Answer text or error message string.
+        Iterator yielding intermediate/final messages, or a plain string for
+        immediate validation errors.
     """
     if not message or not message.strip():
-        return "Please enter a question."
+        yield "Please enter a question."
+        return
 
     client = GatewayClient(base_url=GATEWAY_API_URL or None)
-    result: Dict[str, Any] = client.query_sync(
-        query=message.strip(),
-        workflow=workflow or "auto",
-        rewrite_enable=bool(rewrite_enable),
-        rewrite_backend=(rewrite_backend or "").strip() or None,
-        session_id=session_id or None,
-    )
+    raw_query = message.strip()
+    routed_query = raw_query
+    rewrite_ms: Optional[int] = None
+    rewrite_backend_value = "none"
+    rewrite_message: Optional[str] = None
 
-    if "error" in result:
-        return f"Error: {result['error']}"
+    if rewrite_enable:
+        rewrite_result = client.rewrite_sync(
+            query=raw_query,
+            rewrite_enable=True,
+            rewrite_backend=(rewrite_backend or "").strip() or None,
+        )
+        rewrite_error = rewrite_result.get("error")
+        if rewrite_error:
+            yield (
+                "Rewrite failed; continuing with original query.\n"
+                f"Error: {rewrite_error}"
+            )
+        else:
+            routed_query = str(rewrite_result.get("rewritten_query") or raw_query).strip()
+            rewrite_ms = int(rewrite_result.get("rewrite_time_ms") or 0)
+            rewrite_backend_value = str(
+                rewrite_result.get("rewrite_backend")
+                or (rewrite_backend or "ollama")
+            )
+            rewrite_message = (
+                "Rewrite completed.\n\n"
+                f"- Rewritten Query: `{routed_query}`\n"
+                f"- Rewrite Backend: `{rewrite_backend_value}`\n"
+                f"- Rewrite Time: `{rewrite_ms} ms`"
+            )
+            yield rewrite_message
+
+    if REWRITE_ONLY_TEST_MODE:
+        # Quick-test mode: stop after rewriting and skip all routing/downstream calls.
+        if rewrite_message:
+            yield (
+                f"{rewrite_message}\n\n"
+                "Rewrite-only test mode enabled. Route LLM and downstream services are skipped."
+            )
+        else:
+            yield (
+                "Rewrite-only test mode enabled, but rewriting is disabled.\n"
+                "No route/downstream call was executed."
+            )
+        return
+
+    # Query using rewritten text; disable rewrite to avoid double rewriting.
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            client.query_sync,
+            query=routed_query,
+            workflow=workflow or "auto",
+            rewrite_enable=False,
+            rewrite_backend=None,
+            session_id=session_id or None,
+        )
+        elapsed_seconds = 0
+        while not future.done():
+            time.sleep(1)
+            elapsed_seconds += 1
+            if elapsed_seconds == 1 or elapsed_seconds % 10 == 0:
+                if rewrite_message:
+                    yield (
+                        f"{rewrite_message}\n\n"
+                        f"Processing routed query... `{elapsed_seconds}s` elapsed."
+                    )
+                else:
+                    yield f"Processing query... `{elapsed_seconds}s` elapsed."
+
+        result: Dict[str, Any] = future.result()
+
+    backend_error = result.get("error")
+    if backend_error:
+        yield f"Error: {backend_error}"
+        return
 
     answer = result.get("answer", "")
     if not answer:
-        return "No response from gateway."
+        yield "No response from gateway."
+        return
 
-    return answer
+    debug = result.get("debug") or {}
+    route_source = str(debug.get("route_source") or "unknown")
+    route_conf = result.get("routing_confidence")
+
+    trace_lines = [
+        "",
+        "---",
+        "Trace",
+        f"- Routed Input: `{routed_query}`",
+        f"- Rewrite: `{rewrite_backend_value}` in `{rewrite_ms if rewrite_ms is not None else 0} ms`",
+        f"- Route Source: `{route_source}` | Confidence: `{route_conf}`",
+    ]
+    yield f"{answer}\n" + "\n".join(trace_lines)
 
 
 def create_demo() -> gr.Blocks:
@@ -114,15 +225,16 @@ def create_demo() -> gr.Blocks:
             info="auto|general|amazon_docs|ic_docs|sp_api|uds",
         )
         rewrite_checkbox = gr.Checkbox(
-            value=True,
+            value=REWRITE_ENABLE_DEFAULT,
             label="Rewriting Enable",
             info="Enable query rewriting",
         )
         rewrite_backend_dropdown = gr.Dropdown(
             choices=[("Local (Ollama)", "ollama"), ("DeepSeek", "deepseek")],
-            value="ollama",
+            value=_normalize_rewrite_backend(REWRITE_BACKEND_DEFAULT),
             label="Rewrite backend",
             info="Local (Ollama) or DeepSeek when rewriting enabled",
+            interactive=REWRITE_ENABLE_DEFAULT,
         )
 
         with gr.Row():
@@ -161,6 +273,13 @@ def create_demo() -> gr.Blocks:
         clear_btn.click(
             fn=on_clear_session,
             outputs=[session_id_state, session_display],
+        )
+
+        # Keep backend selector disabled when rewriting is disabled.
+        rewrite_checkbox.change(
+            fn=lambda enabled: gr.update(interactive=bool(enabled)),
+            inputs=[rewrite_checkbox],
+            outputs=[rewrite_backend_dropdown],
         )
 
     return demo

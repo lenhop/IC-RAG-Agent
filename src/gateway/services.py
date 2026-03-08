@@ -32,6 +32,8 @@ IC_DOCS_NOT_READY_MESSAGE = (
 
 # Shared timeout for backend HTTP calls (seconds)
 BACKEND_TIMEOUT = int(os.getenv("GATEWAY_BACKEND_TIMEOUT", "120"))
+# UDS queries can be heavier than other backends; allow separate timeout.
+UDS_BACKEND_TIMEOUT = int(os.getenv("GATEWAY_UDS_BACKEND_TIMEOUT", "300"))
 
 
 def _has_backend_error(data: Dict[str, Any]) -> bool:
@@ -48,7 +50,39 @@ def _has_backend_error(data: Dict[str, Any]) -> bool:
     return True
 
 
-def _http_post(url: str, json_payload: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_error_envelope(data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Ensure backend error payload has a consistent gateway envelope.
+
+    Normalized keys:
+    - error: non-empty message when backend failure is present.
+    - error_type: stable machine-friendly category.
+    """
+    if not isinstance(data, dict):
+        return {
+            "error": "Invalid backend payload type",
+            "error_type": "InvalidPayload",
+        }
+    err = data.get("error")
+    status = str(data.get("status", "")).strip().lower()
+    if _has_backend_error(data):
+        normalized = dict(data)
+        normalized["error"] = str(err).strip() if err is not None else "Unknown backend error"
+        normalized["error_type"] = str(data.get("error_type") or "BackendError")
+        return normalized
+    if status == "failed":
+        return {
+            "error": "Backend reported failed status",
+            "error_type": "BackendFailedStatus",
+        }
+    return data
+
+
+def _http_post(
+    url: str,
+    json_payload: Dict[str, Any],
+    timeout_seconds: Optional[int] = None,
+) -> Dict[str, Any]:
     """
     Helper to POST JSON and return parsed JSON or error dict.
 
@@ -59,15 +93,16 @@ def _http_post(url: str, json_payload: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Dict with either response JSON or an \"error\" key.
     """
+    effective_timeout = timeout_seconds or BACKEND_TIMEOUT
     try:
-        resp = requests.post(url, json=json_payload, timeout=BACKEND_TIMEOUT)
+        resp = requests.post(url, json=json_payload, timeout=effective_timeout)
     except requests.ConnectionError as exc:
         logger.warning("Backend connection failed (%s): %s", url, exc)
         return {"error": f"Cannot connect to backend at {url}", "error_type": "ConnectionError"}
     except requests.Timeout as exc:
         logger.warning("Backend request timed out (%s): %s", url, exc)
         return {
-            "error": f"Backend request to {url} timed out after {BACKEND_TIMEOUT}s",
+            "error": f"Backend request to {url} timed out after {effective_timeout}s",
             "error_type": "Timeout",
         }
     except requests.RequestException as exc:
@@ -86,7 +121,7 @@ def _http_post(url: str, json_payload: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     try:
-        return resp.json()
+        return _normalize_error_envelope(resp.json())
     except ValueError as exc:
         logger.warning("Invalid JSON from backend %s: %s", url, exc)
         return {
@@ -116,7 +151,7 @@ def call_general(query: str, session_id: Optional[str]) -> Dict[str, Any]:
     payload = {"question": query, "mode": "general"}
     data = _http_post(url, payload)
     if _has_backend_error(data):
-        return data
+        return _normalize_error_envelope(data)
 
     answer = data.get("answer", "")
     sources = data.get("sources") or []
@@ -141,7 +176,7 @@ def call_amazon_docs(query: str, session_id: Optional[str]) -> Dict[str, Any]:
     payload = {"question": biased_query, "mode": "documents"}
     data = _http_post(url, payload)
     if _has_backend_error(data):
-        return data
+        return _normalize_error_envelope(data)
 
     answer = data.get("answer", "")
     sources = data.get("sources") or []
@@ -174,7 +209,7 @@ def call_ic_docs(query: str, session_id: Optional[str]) -> Dict[str, Any]:
     payload = {"question": biased_query, "mode": "documents"}
     data = _http_post(url, payload)
     if _has_backend_error(data):
-        return data
+        return _normalize_error_envelope(data)
 
     answer = data.get("answer", "")
     sources = data.get("sources") or []
@@ -196,10 +231,13 @@ def call_sp_api(query: str, session_id: Optional[str]) -> Dict[str, Any]:
         }
 
     url = f"{SP_API_URL}/api/v1/seller/query"
-    payload = {"query": query, "session_id": session_id}
+    payload = {"query": query}
+    # SP-API backend validates session_id as string; omit when unavailable.
+    if session_id is not None and str(session_id).strip():
+        payload["session_id"] = str(session_id).strip()
     data = _http_post(url, payload)
     if _has_backend_error(data):
-        return data
+        return _normalize_error_envelope(data)
 
     # SP-API QueryResponse has 'response' as main text field.
     answer = data.get("response", "")
@@ -225,8 +263,9 @@ def call_uds(query: str, session_id: Optional[str]) -> Dict[str, Any]:
     payload = {"query": query}
     data = _http_post(url, payload)
     if _has_backend_error(data):
+        data = _normalize_error_envelope(data)
         status = str(data.get("status", "")).strip().lower()
-        if status == "failed" and not data.get("error_type"):
+        if status == "failed":
             data["error_type"] = "UDSQueryFailed"
         return data
 

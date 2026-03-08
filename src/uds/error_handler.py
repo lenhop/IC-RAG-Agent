@@ -269,10 +269,31 @@ def handle_llm_error(error: Exception) -> dict:
             'error': 'LLM authentication failed. Check API key.',
             'error_type': 'authentication'
         }
-    else:
+    elif (
+        "connection refused" in error_str
+        or "failed to connect" in error_str
+        or "couldn't connect" in error_str
+        or "max retries exceeded" in error_str
+    ):
         return {
             'success': False,
-            'error': 'LLM request failed.',
+            'error': 'Local LLM is unavailable. Start Ollama (ollama serve) or configure remote LLM API key.',
+            'error_type': 'connection'
+        }
+    elif "model" in error_str and "not found" in error_str:
+        return {
+            'success': False,
+            'error': 'LLM model is not available locally. Pull it with: ollama pull qwen3:1.7b',
+            'error_type': 'model_not_found'
+        }
+    else:
+        # Include concise detail so users can self-diagnose provider/auth/network issues.
+        detail = str(error).strip()
+        if len(detail) > 240:
+            detail = detail[:240] + "..."
+        return {
+            'success': False,
+            'error': f'LLM request failed: {detail}' if detail else 'LLM request failed.',
             'error_type': 'llm'
         }
 

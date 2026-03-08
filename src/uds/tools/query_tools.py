@@ -193,7 +193,7 @@ ORDER BY total_quantity DESC;
 
             # Generate SQL using LLM
             response = self.llm.invoke(prompt)
-            sql = response.content.strip()
+            sql = (response.content if hasattr(response, "content") else str(response)).strip()
 
             # Clean up SQL (remove markdown code blocks if present)
             if sql.startswith('```sql'):

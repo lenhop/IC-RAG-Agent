@@ -90,14 +90,20 @@ def _create_llm():
     """Create LLM for UDS Agent (Ollama or env-configured)."""
     import os
 
-    provider = (
-        os.getenv("UDS_LLM_PROVIDER")
-        or os.getenv("RAG_LLM_PROVIDER", "ollama")
-    ).lower()
-    model = (
-        os.getenv("UDS_LLM_MODEL")
-        or os.getenv("RAG_LLM_MODEL", "qwen3:1.7b")
-    )
+    provider = (os.getenv("UDS_LLM_PROVIDER", "ollama") or "ollama").lower()
+    if provider == "ollama":
+        # Keep UDS local by default and avoid inheriting remote model names
+        # (e.g. deepseek-chat) that do not exist in local Ollama.
+        model = (
+            os.getenv("UDS_LLM_MODEL")
+            or os.getenv("UDS_OLLAMA_MODEL")
+            or "qwen3:1.7b"
+        )
+    else:
+        model = (
+            os.getenv("UDS_LLM_MODEL")
+            or os.getenv("RAG_LLM_MODEL", "deepseek-chat")
+        )
 
     if provider == "ollama":
         from langchain_ollama import OllamaLLM
@@ -107,7 +113,30 @@ def _create_llm():
             temperature=0.1,
             num_predict=2048,
         )
-    # Remote provider via ModelManager
+    # Remote provider via ModelManager. If API key is missing, fall back to local
+    # Ollama so UDS remains available even when remote auth is not configured.
+    provider_api_key_map = {
+        "deepseek": "DEEPSEEK_API_KEY",
+        "qwen": "QWEN_API_KEY",
+        "glm": "GLM_API_KEY",
+    }
+    required_api_key = provider_api_key_map.get(provider)
+    if required_api_key and not os.getenv(required_api_key, "").strip():
+        logger.warning(
+            "UDS provider '%s' requires %s but it is not set. "
+            "Falling back to local Ollama for UDS.",
+            provider,
+            required_api_key,
+        )
+        from langchain_ollama import OllamaLLM
+
+        fallback_model = os.getenv("UDS_LLM_FALLBACK_MODEL", "qwen3:1.7b")
+        return OllamaLLM(
+            model=fallback_model,
+            temperature=0.1,
+            num_predict=2048,
+        )
+
     try:
         from ai_toolkit.models import ModelManager
 

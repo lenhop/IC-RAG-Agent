@@ -103,6 +103,48 @@ class GatewayClient:
             return self._mock_response(query, wf, rewrite_enable, rewrite_backend, session_id)
 
         url = f"{self._base_url}/api/v1/query"
+        return self._post_json(url, payload)
+
+    def rewrite_sync(
+        self,
+        query: str,
+        rewrite_enable: bool = True,
+        rewrite_backend: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Call rewrite-only endpoint for immediate UI feedback.
+
+        Args:
+            query: User query string.
+            rewrite_enable: Whether to enable rewriting.
+            rewrite_backend: Optional backend ("ollama" or "deepseek").
+
+        Returns:
+            Dict with rewritten query metadata, or error dict.
+        """
+        if self._mock_mode:
+            return {
+                "original_query": query,
+                "rewritten_query": query,
+                "rewrite_enabled": rewrite_enable,
+                "rewrite_backend": rewrite_backend or "mock",
+                "rewrite_time_ms": 0,
+            }
+
+        payload: Dict[str, Any] = {
+            "query": query,
+            "workflow": "auto",
+            "rewrite_enable": rewrite_enable,
+            "session_id": None,
+        }
+        if rewrite_enable and rewrite_backend:
+            payload["rewrite_backend"] = (rewrite_backend or "").strip().lower()
+
+        url = f"{self._base_url}/api/v1/rewrite"
+        return self._post_json(url, payload)
+
+    def _post_json(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """POST JSON payload and return parsed response or normalized error dict."""
         try:
             resp = requests.post(
                 url,

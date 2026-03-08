@@ -13,6 +13,7 @@ import pytest
 from src.gateway.services import (
     IC_DOCS_NOT_READY_MESSAGE,
     call_ic_docs,
+    call_sp_api,
     call_uds,
 )
 
@@ -112,3 +113,15 @@ def test_call_uds_error_null_is_not_treated_as_failure(mock_post):
     assert result["sources"] == []
     assert "error" not in result
     mock_post.assert_called_once()
+
+
+@patch("src.gateway.services._http_post", return_value={"response": "ok"})
+def test_call_sp_api_omits_none_session_id(mock_post):
+    """call_sp_api should not send session_id when it is None."""
+    result = call_sp_api("fee query", None)
+    assert result["answer"] == "ok"
+    assert result["sources"] == []
+    mock_post.assert_called_once()
+    _url, payload = mock_post.call_args[0]
+    assert payload["query"] == "fee query"
+    assert "session_id" not in payload

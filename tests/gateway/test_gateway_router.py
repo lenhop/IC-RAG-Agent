@@ -9,8 +9,13 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from src.gateway.router import rewrite_query, route_workflow
-from src.gateway.schemas import QueryRequest
+from src.gateway.router import (
+    _correct_plan_workflows,
+    build_execution_plan,
+    rewrite_query,
+    route_workflow,
+)
+from src.gateway.schemas import QueryRequest, RewritePlan, TaskGroup, TaskItem
 
 
 def test_rewrite_query_strips_and_collapses_whitespace():
@@ -84,6 +89,125 @@ def test_route_workflow_sp_api_keywords():
     wf, conf, src, backend, llm_conf = route_workflow(req.query.lower(), req)
     assert wf == "sp_api"
     assert conf == 0.85
+
+
+def test_route_workflow_policy_query_prefers_amazon_docs():
+    """Amazon policy/business-rule style query should route to amazon_docs."""
+    req = QueryRequest(
+        query="what does Amazon's FBA removal policy say?",
+        workflow="auto",
+        rewrite_enable=True,
+        session_id=None,
+        stream=False,
+    )
+    wf, conf, src, backend, llm_conf = route_workflow(req.query.lower(), req)
+    assert wf == "amazon_docs"
+    assert conf == 0.9
+
+
+def test_route_workflow_fee_definition_prefers_amazon_docs():
+    """Fee-definition questions should route to amazon_docs, not sp_api."""
+    req = QueryRequest(
+        query="what are the differences between FBA standard and oversize fees?",
+        workflow="auto",
+        rewrite_enable=True,
+        session_id=None,
+        stream=False,
+    )
+    wf, conf, src, backend, llm_conf = route_workflow(req.query.lower(), req)
+    assert wf == "amazon_docs"
+    assert conf == 0.9
+
+
+def test_route_workflow_table_storage_query_prefers_uds():
+    """Table/schema-style fee data lookup should route to UDS."""
+    req = QueryRequest(
+        query="which table stores referral fee data",
+        workflow="auto",
+        rewrite_enable=True,
+        session_id=None,
+        stream=False,
+    )
+    wf, conf, src, backend, llm_conf = route_workflow(req.query.lower(), req)
+    assert wf == "uds"
+    assert conf == 0.85
+
+
+def test_route_workflow_historical_fee_query_prefers_uds():
+    """Historical aggregate fee queries should route to UDS."""
+    req = QueryRequest(
+        query="what was the total referral fee for last quarter?",
+        workflow="auto",
+        rewrite_enable=True,
+        session_id=None,
+        stream=False,
+    )
+    wf, conf, src, backend, llm_conf = route_workflow(req.query.lower(), req)
+    assert wf == "uds"
+    assert conf == 0.85
+
+
+def test_route_workflow_order_status_prefers_sp_api():
+    """Order status and inventory placement queries should route to SP-API."""
+    req = QueryRequest(
+        query="get order status for 112-9876543-1234567",
+        workflow="auto",
+        rewrite_enable=True,
+        session_id=None,
+        stream=False,
+    )
+    wf, conf, src, backend, llm_conf = route_workflow(req.query.lower(), req)
+    assert wf == "sp_api"
+    assert conf >= 0.9
+
+    req2 = QueryRequest(
+        query="request an inventory placement",
+        workflow="auto",
+        rewrite_enable=True,
+        session_id=None,
+        stream=False,
+    )
+    wf2, conf2, _, _, _ = route_workflow(req2.query.lower(), req2)
+    assert wf2 == "sp_api"
+    assert conf2 >= 0.9
+
+
+def test_route_workflow_inventory_buybox_account_prefers_sp_api():
+    """Inventory health, buy box status, and seller account queries should route to SP-API."""
+    sp_api_queries = [
+        "check if ASIN B07JKL7890 has any active suppressed listings",
+        "request a detailed inventory health report",
+        "check if ASIN B08N5WRWNW is currently buy-box eligible",
+        "get my current inventory health summary",
+        "request a detailed financial report for my account",
+        "get real-time buy box status for ASIN B09XYZ",
+        "verify my seller account verification status",
+    ]
+    for q in sp_api_queries:
+        req = QueryRequest(
+            query=q,
+            workflow="auto",
+            rewrite_enable=True,
+            session_id=None,
+            stream=False,
+        )
+        wf, conf, _, _, _ = route_workflow(req.query.lower(), req)
+        assert wf == "sp_api", f"Expected sp_api for: {q[:50]!r}"
+        assert conf >= 0.9
+
+
+def test_route_workflow_top_products_by_refund_prefers_uds():
+    """Top N products by X analytical queries should route to UDS."""
+    req = QueryRequest(
+        query="show me top 5 products by refund count",
+        workflow="auto",
+        rewrite_enable=True,
+        session_id=None,
+        stream=False,
+    )
+    wf, conf, src, backend, llm_conf = route_workflow(req.query.lower(), req)
+    assert wf == "uds"
+    assert conf >= 0.9
 
 
 def test_route_workflow_definition_fba_prefers_ic_docs():
@@ -207,9 +331,9 @@ def test_route_workflow_llm_safe_default_falls_back_to_heuristic(mock_route_llm,
         stream=False,
     )
     wf, conf, src, backend, llm_conf = route_workflow("tell me about FBA fees", req)
-    # Heuristic matches FBA -> sp_api or amazon_docs; keyword list has "fba" -> sp_api
-    assert wf == "sp_api"
-    assert conf == 0.85
+    # Heuristic should prefer amazon_docs for fee/policy style FBA question.
+    assert wf == "amazon_docs"
+    assert conf == 0.9
     assert src == "heuristic"
     assert backend is None
     assert llm_conf is None
@@ -273,4 +397,126 @@ def test_route_workflow_explicit_workflow_bypasses_llm(mock_route_llm, mock_enab
     assert backend is None
     assert llm_conf is None
     mock_route_llm.assert_not_called()
+
+
+def test_build_execution_plan_explicit_workflow_creates_single_task():
+    """Explicit workflow should bypass planner and create one task plan."""
+    req = QueryRequest(
+        query="show sales",
+        workflow="uds",
+        rewrite_enable=True,
+        session_id=None,
+        stream=False,
+    )
+    plan = build_execution_plan(req, "sales by month")
+    assert len(plan.task_groups) == 1
+    assert len(plan.task_groups[0].tasks) == 1
+    task = plan.task_groups[0].tasks[0]
+    assert task.workflow == "uds"
+    assert task.query == "sales by month"
+
+
+@patch("src.gateway.router.planner_rewrite_enabled", return_value=True)
+@patch("src.gateway.router.parse_rewrite_plan_text")
+def test_build_execution_plan_uses_planner_output_when_available(mock_parse, mock_planner):
+    """Planner-enabled auto mode should use parsed planner execution plan."""
+    req = QueryRequest(
+        query="what is fba and sales trend",
+        workflow="auto",
+        rewrite_enable=True,
+        session_id=None,
+        stream=False,
+    )
+    mock_parse.return_value = build_execution_plan(
+        QueryRequest(query="fallback", workflow="general", rewrite_enable=True, session_id=None, stream=False),
+        "fallback query",
+    )
+    plan = build_execution_plan(req, '{"plan_type":"hybrid"}')
+    assert plan.task_groups
+    mock_parse.assert_called_once()
+
+
+@patch("src.gateway.router.planner_rewrite_enabled", return_value=True)
+@patch("src.gateway.router.parse_rewrite_plan_text", return_value=None)
+@patch("src.gateway.router.route_workflow", return_value=("sp_api", 0.85, "heuristic", None, None))
+def test_build_execution_plan_falls_back_to_routing_when_planner_invalid(
+    mock_route, mock_parse, mock_planner
+):
+    """Invalid planner output should fall back to routed single-task plan."""
+    req = QueryRequest(
+        query="fba fee details",
+        workflow="auto",
+        rewrite_enable=True,
+        session_id=None,
+        stream=False,
+    )
+    plan = build_execution_plan(req, "fba fee details")
+    assert len(plan.task_groups) == 1
+    assert len(plan.task_groups[0].tasks) == 1
+    assert plan.task_groups[0].tasks[0].workflow == "sp_api"
+    mock_parse.assert_called_once()
+    mock_route.assert_called_once()
+
+
+def test_build_execution_plan_mixed_query_creates_multi_task_fallback():
+    """Mixed clause query should be decomposed into multiple tasks as fallback."""
+    req = QueryRequest(
+        query=(
+            "whats the weather today, what is the FBA and Storage fee, "
+            "how many FBA fee for ASIN B074KF7RKS, which table can I get ASIN FBA fee"
+        ),
+        workflow="auto",
+        rewrite_enable=True,
+        session_id=None,
+        stream=False,
+    )
+    plan = build_execution_plan(req, req.query)
+    assert plan.plan_type == "hybrid"
+    assert len(plan.task_groups) == 1
+    assert len(plan.task_groups[0].tasks) >= 2
+    workflows = {task.workflow for task in plan.task_groups[0].tasks}
+    assert "general" in workflows
+    assert "amazon_docs" in workflows or "sp_api" in workflows
+
+
+def test_correct_plan_workflows_overrides_misclassified_tasks():
+    """Plan correction should fix LLM misclassifications via heuristic override."""
+    plan = RewritePlan(
+        plan_type="hybrid",
+        merge_strategy="concat",
+        task_groups=[
+            TaskGroup(
+                group_id="g1",
+                parallel=True,
+                tasks=[
+                    TaskItem(
+                        task_id="t1",
+                        workflow="general",
+                        query="get order status for 112-9876543-12",
+                        depends_on=[],
+                        reason="",
+                    ),
+                    TaskItem(
+                        task_id="t2",
+                        workflow="general",
+                        query="show me top 5 products by refund count",
+                        depends_on=[],
+                        reason="",
+                    ),
+                    TaskItem(
+                        task_id="t3",
+                        workflow="general",
+                        query="request an inventory placement",
+                        depends_on=[],
+                        reason="",
+                    ),
+                ],
+            )
+        ],
+    )
+    corrected = _correct_plan_workflows(plan)
+    tasks = corrected.task_groups[0].tasks
+    assert tasks[0].workflow == "sp_api"
+    assert tasks[1].workflow == "uds"
+    assert tasks[2].workflow == "sp_api"
 

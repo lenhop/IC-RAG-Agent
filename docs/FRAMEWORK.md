@@ -800,3 +800,34 @@ Content-Type: application/json
 - [guides/QUERY_REWRITING.md](guides/QUERY_REWRITING.md) – Query rewriting guide
 - [archive/ARCHITECTURE_DECISIONS.md](archive/ARCHITECTURE_DECISIONS.md) – ADRs
 - [archive/ANSWER_MODEL_IDENTITY.md](archive/ANSWER_MODEL_IDENTITY.md) – Answer model identity notes
+
+
+
+```mermaid
+flowchart TB
+    Q[User Query] --> P[Query Processor\nRewrite + Classify\nSingle LLM Call]
+    P --> Split{Split into Tasks}
+    
+    Split -->|general| G[General RAG\nRemote LLM]
+    Split -->|amazon_docs| A[Amazon Docs RAG\nChromaDB]
+    Split -->|ic_docs| IC[IC Docs RAG\nChromaDB]
+    Split -->|sp_api| SP[SP-API Agent\nAmazon API]
+    Split -->|uds| U[UDS Agent\nClickHouse]
+
+    G -->|answer| M[Merge Answers]
+    A -->|answer| M
+    IC -->|answer| M
+    SP -->|answer| M
+    U -->|answer| M
+
+    M --> R[Final Response to User]
+
+    style P fill:#f9f,stroke:#333
+    style M fill:#9ff,stroke:#333
+```
+
+
+```mermaid
+
+```
+

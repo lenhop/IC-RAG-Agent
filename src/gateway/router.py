@@ -12,9 +12,10 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Tuple, Optional
+from typing import List, Tuple, Optional
 
-from .schemas import QueryRequest
+from .rewriters import parse_rewrite_plan_text, planner_rewrite_enabled
+from .schemas import QueryRequest, RewritePlan, TaskGroup, TaskItem
 
 logger = logging.getLogger(__name__)
 
@@ -69,8 +70,62 @@ def _apply_docs_preference(query: str, workflow: str) -> str:
     from being routed to operational SP-API workflow.
     """
     if workflow == "sp_api" and _is_definition_query(query) and _is_fba_term_query(query):
+        q = (query or "").lower()
+        # Fee-policy style definitions should use Amazon docs rather than IC docs.
+        if any(k in q for k in ("storage fee", "fba fee", "fees", "cost", "price")):
+            return "amazon_docs"
         return "ic_docs"
     return workflow
+
+
+def _split_multi_intent_clauses(query: str) -> List[str]:
+    """Split a potentially mixed query into normalized clause candidates."""
+    text = _normalize(query)
+    if not text:
+        return []
+    # Keep simple deterministic splitting for comma/semicolon mixed queries.
+    parts = re.split(r"[,;]\s*", text)
+    clauses = []
+    seen = set()
+    for raw in parts:
+        clause = _normalize(raw)
+        if not clause:
+            continue
+        key = clause.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        clauses.append(clause)
+    return clauses
+
+
+def _build_multi_task_plan_from_query(query: str) -> Optional[RewritePlan]:
+    """
+    Build a heuristic multi-task plan from comma/semicolon separated mixed query.
+
+    This is used as a robust fallback when planner JSON is unavailable.
+    """
+    clauses = _split_multi_intent_clauses(query)
+    if len(clauses) < 2:
+        return None
+    tasks: List[TaskItem] = []
+    for idx, clause in enumerate(clauses, start=1):
+        workflow, _ = _route_workflow_heuristic(clause)
+        workflow = _apply_docs_preference(clause, workflow)
+        tasks.append(
+            TaskItem(
+                task_id=f"t{idx}",
+                workflow=workflow,
+                query=clause,
+                depends_on=[],
+                reason="heuristic_multi_intent_fallback",
+            )
+        )
+    return RewritePlan(
+        plan_type="hybrid",
+        merge_strategy="concat",
+        task_groups=[TaskGroup(group_id="g1", parallel=True, tasks=tasks)],
+    )
 
 
 def rewrite_query(request: QueryRequest) -> str:
@@ -111,6 +166,92 @@ def rewrite_query(request: QueryRequest) -> str:
     return normalized
 
 
+def _correct_plan_workflows(plan: RewritePlan) -> RewritePlan:
+    """
+    Apply heuristic-based workflow correction to fix LLM misclassifications.
+
+    When the heuristic returns a different workflow with confidence >= 0.9,
+    override the task's workflow to correct obvious routing errors.
+    """
+    HEURISTIC_OVERRIDE_CONF = 0.9
+    for group in plan.task_groups or []:
+        for task in group.tasks or []:
+            q = (task.query or "").strip()
+            if not q:
+                continue
+            h_wf, h_conf = _route_workflow_heuristic(q)
+            h_wf = _apply_docs_preference(q, h_wf)
+            current = (task.workflow or "").strip().lower()
+            if h_wf != current and h_conf >= HEURISTIC_OVERRIDE_CONF:
+                logger.debug(
+                    "Plan correction: task %s workflow %s -> %s (heuristic conf=%.2f)",
+                    task.task_id,
+                    current,
+                    h_wf,
+                    h_conf,
+                )
+                task.workflow = h_wf
+    return plan
+
+
+def _build_single_task_plan(query: str, workflow: str) -> RewritePlan:
+    """Build a single-task execution plan for legacy/fallback flow."""
+    task_query = (query or "").strip()
+    task_workflow = (workflow or "general").strip().lower() or "general"
+    return RewritePlan(
+        plan_type="single_domain",
+        merge_strategy="concat",
+        task_groups=[
+            TaskGroup(
+                group_id="g1",
+                parallel=True,
+                tasks=[
+                    TaskItem(
+                        task_id="t1",
+                        workflow=task_workflow,
+                        query=task_query,
+                        depends_on=[],
+                        reason="single_task_fallback",
+                    )
+                ],
+            )
+        ],
+    )
+
+
+def build_execution_plan(request: QueryRequest, rewritten_query: str) -> RewritePlan:
+    """
+    Build a validated execution plan for query orchestration.
+
+    Behavior:
+    - Explicit workflow (non-auto): synthesize one task with that workflow.
+    - Planner mode enabled (auto): parse structured planner output from rewritten text.
+    - Fallback: route once and synthesize one task from routed workflow.
+    """
+    explicit = (request.workflow or "auto").strip().lower() or "auto"
+    normalized_query = _normalize(request.query or "")
+
+    if explicit != "auto":
+        task_query = (rewritten_query or normalized_query).strip() or normalized_query
+        return _build_single_task_plan(task_query, explicit)
+
+    if planner_rewrite_enabled():
+        parsed_plan = parse_rewrite_plan_text(
+            text=rewritten_query or "",
+            fallback_query=normalized_query,
+        )
+        if parsed_plan and parsed_plan.task_groups:
+            return _correct_plan_workflows(parsed_plan)
+
+    multi_task_plan = _build_multi_task_plan_from_query(rewritten_query or normalized_query)
+    if multi_task_plan is not None:
+        return multi_task_plan
+
+    workflow, _, _, _, _ = route_workflow((rewritten_query or normalized_query).strip(), request)
+    task_query = (rewritten_query or normalized_query).strip() or normalized_query
+    return _build_single_task_plan(task_query, workflow)
+
+
 def _route_workflow_heuristic(query: str) -> Tuple[str, float]:
     """
     Rule-based workflow selection from query keywords.
@@ -119,6 +260,94 @@ def _route_workflow_heuristic(query: str) -> Tuple[str, float]:
     LLM confidence is below threshold. Returns (workflow, confidence).
     """
     q_lower = (query or "").lower()
+
+    # SP-API workflow: real-time operations (order status, inventory, buy box, etc.).
+    if any(
+        k in q_lower
+        for k in [
+            "order status",
+            "check order",
+            "get order",
+            "inventory placement",
+            "request an inventory placement",
+            "request inventory placement",
+            "inventory health",
+            "buy box status",
+            "buy box",
+            "check if asin",
+            "has any active",
+            "seller account verification",
+            "verify my seller",
+            "verify seller account",
+        ]
+    ):
+        return "sp_api", 0.92
+
+    # UDS workflow: high-confidence analytical aggregations (top N, by X).
+    if any(
+        k in q_lower
+        for k in [
+            "top 5 ",
+            "top 10 ",
+            "top 20 ",
+            "products by ",
+            "by refund",
+            "by product",
+            "by category",
+            "refund count",
+            "refund rate",
+        ]
+    ):
+        return "uds", 0.92
+
+    # UDS workflow (analytical/table/schema cues).
+    if any(
+        k in q_lower
+        for k in [
+            "which table",
+            "what table",
+            "table stores",
+            "what columns",
+            "column",
+            "schema",
+            "dataset",
+            "clickhouse",
+            "uds",
+            "last month",
+            "last quarter",
+            "by month",
+            "trend",
+            "total ",
+            "average ",
+            "compare ",
+            "breakdown",
+            "historical",
+            "financial report",
+            "settlement report",            
+        ]
+    ):
+        return "uds", 0.85
+
+    # Amazon docs: explicit business rules/policies/requirements/fee definitions.
+    if any(
+        k in q_lower
+        for k in [
+            "policy",
+            "policies",
+            "requirements",
+            "business rule",
+            "business rules",
+            "what does amazon",
+            "fees",
+            "fee structure",
+            "fba removal",
+            "oversize fee",
+            "storage fee",
+            "referral fee",
+            "guidelines",
+        ]
+    ):
+        return "amazon_docs", 0.9
 
     # Amazon docs: product / seller / API documentation questions.
     if any(k in q_lower for k in ["amazon docs", "seller central", "sp-api docs", "aws docs"]):
@@ -143,7 +372,7 @@ def _route_workflow_heuristic(query: str) -> Tuple[str, float]:
     ):
         return "sp_api", 0.85
 
-    # UDS workflow: analytical questions over structured data / tables.
+    # UDS workflow: additional analytical fallback cues.
     if any(
         k in q_lower
         for k in [
@@ -222,5 +451,5 @@ def route_workflow(
     return wf2, conf2, "heuristic", None, None
 
 
-__all__ = ["rewrite_query", "route_workflow"]
+__all__ = ["rewrite_query", "route_workflow", "build_execution_plan"]
 

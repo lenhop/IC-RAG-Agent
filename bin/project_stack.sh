@@ -34,6 +34,7 @@ PID_DIR="${PROJECT_ROOT}/.runtime"
 mkdir -p "${LOG_DIR}" "${PID_DIR}"
 
 WITH_UI="false"
+REWRITE_ONLY_MODE="false"
 
 print_usage() {
   cat <<'EOF'
@@ -47,16 +48,28 @@ Commands:
 
 Options:
   --with-ui          Also run unified chat UI on port 7862
+  --rewrite-only     Start quick rewrite-only test environment
+                     (gateway + optional ui, skip uds/rag/sp_api)
 
 Examples:
   ./bin/project_stack.sh start
   ./bin/project_stack.sh restart --with-ui
+  ./bin/project_stack.sh start --with-ui --rewrite-only
   ./bin/project_stack.sh status
 EOF
 }
 
 services() {
   # Space-delimited list for bash 3 compatibility.
+  if [[ "${REWRITE_ONLY_MODE}" == "true" ]]; then
+    if [[ "${WITH_UI}" == "true" ]]; then
+      echo "gateway ui"
+    else
+      echo "gateway"
+    fi
+    return 0
+  fi
+
   if [[ "${WITH_UI}" == "true" ]]; then
     echo "gateway uds rag sp_api ui"
   else
@@ -107,10 +120,17 @@ service_health_url() {
 service_start_cmd() {
   case "$1" in
     gateway)
-      echo "GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
+      local rag_url="${RAG_API_URL:-http://127.0.0.1:8002}"
+      local uds_url="${UDS_API_URL:-http://127.0.0.1:8001}"
+      local sp_url="${SP_API_URL:-http://127.0.0.1:8003}"
+      if [[ "${REWRITE_ONLY_MODE}" == "true" ]]; then
+        echo "RAG_API_URL=${rag_url} UDS_API_URL=${uds_url} SP_API_URL=${sp_url} GATEWAY_REWRITE_ONLY_MODE=true GATEWAY_REWRITE_PLANNER_ENABLED=true GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
+      else
+        echo "RAG_API_URL=${rag_url} UDS_API_URL=${uds_url} SP_API_URL=${sp_url} GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
+      fi
       ;;
     uds)
-      echo "${PYTHON_BIN} -m uvicorn src.uds.api:app --host 0.0.0.0 --port 8001"
+      echo "UDS_LLM_PROVIDER=${UDS_LLM_PROVIDER:-ollama} ${PYTHON_BIN} -m uvicorn src.uds.api:app --host 0.0.0.0 --port 8001"
       ;;
     rag)
       # Force RAG to 8002 to avoid collision with gateway on 8000.
@@ -120,7 +140,11 @@ service_start_cmd() {
       echo "${PYTHON_BIN} -m uvicorn src.sp_api.fast_api:app --host 0.0.0.0 --port 8003"
       ;;
     ui)
-      echo "GATEWAY_API_URL=http://127.0.0.1:8000 GATEWAY_MOCK=false CLIENT_GRADIO_PORT=7862 ${PYTHON_BIN} scripts/run_unified_chat.py"
+      if [[ "${REWRITE_ONLY_MODE}" == "true" ]]; then
+        echo "GATEWAY_API_URL=http://127.0.0.1:8000 GATEWAY_MOCK=false UNIFIED_CHAT_REWRITE_ONLY_MODE=true UNIFIED_CHAT_REWRITE_ENABLE=true CLIENT_GRADIO_PORT=7862 ${PYTHON_BIN} scripts/run_unified_chat.py"
+      else
+        echo "GATEWAY_API_URL=http://127.0.0.1:8000 GATEWAY_MOCK=false CLIENT_GRADIO_PORT=7862 ${PYTHON_BIN} scripts/run_unified_chat.py"
+      fi
       ;;
     *)
       echo ""
@@ -333,6 +357,9 @@ main() {
     case "$1" in
       --with-ui)
         WITH_UI="true"
+        ;;
+      --rewrite-only)
+        REWRITE_ONLY_MODE="true"
         ;;
       --help|-h)
         print_usage
