@@ -20,7 +20,7 @@ IC-RAG-Agent is an **Intent Classification + Retrieval-Augmented Generation** sy
 - **Client** – Unified Gradio Chat UI calling the gateway
 
 ```mermaid
-%%{init: {'themeVariables': {'fontSize': '11px'}}}%%
+%%{init: {'themeVariables': {'fontSize': '11px'}, 'flowchart': {'curve': 'linear'}}}%%
 flowchart TB
     subgraph Client["Client Layer"]
         UI[Unified Chat UI<br/>Gradio]
@@ -45,6 +45,11 @@ flowchart TB
         SPAPI_EXT[Amazon SP-API]
     end
 
+    subgraph Observability["Observability"]
+        Monitor[Monitor System<br/>Grafana]
+        Log[Log System<br/>Query Logs]
+    end
+
     UI -->|POST| API
     API --> RouteLLM
     RouteLLM --> Dispatcher
@@ -54,10 +59,16 @@ flowchart TB
 
     RAG --> Chroma
     RAG --> Redis
+    RAG -->|logs| CH
     UDS --> CH
     UDS --> Redis
     SP --> SPAPI_EXT
     SP --> Redis
+    SP -->|logs| CH
+
+    API -->|logs| Log
+    Log -->|write| CH
+    Monitor -->|read| CH
 ```
 
 ---
@@ -86,6 +97,15 @@ The gateway is organized into two conceptual groups:
 **Route LLM** outputs: rewritten query, execution plan (task_groups with workflow + query per task).
 
 **Dispatcher** inputs: execution plan. Outputs: task_results, merged_answer, aggregated sources.
+
+### 1.3 Memory Strategy
+
+| Layer | Store | Purpose |
+|-------|-------|---------|
+| **Short-term** | Redis | Session-scoped conversation history, multi-turn context. TTL-based expiration (e.g., 24h). Fast access for real-time follow-up questions. |
+| **Long-term** | ClickHouse | Query logs, audit trails, analytics. Historical retention for dashboards, evaluation, debugging. |
+
+**Usage:** RAG Pipeline, UDS Agent, and SP-API Agent use Redis for short-term memory (session history, cache). Query logs and long-term analytics are stored in ClickHouse.
 
 ---
 
