@@ -255,8 +255,8 @@ def test_parse_rewrite_plan_text_intents_only_format():
         "get order 123",
         "which table stores referral fee data",
     ]
-    # task_groups gets fallback single task when empty; build_execution_plan uses intents
-    assert plan.task_groups
+    # task_groups stays empty when extracted_intents present; build_execution_plan uses intents
+    assert plan.task_groups == []
 
 
 def test_parse_rewrite_plan_text_intents_only_with_markdown_fences():

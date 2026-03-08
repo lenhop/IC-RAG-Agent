@@ -1,6 +1,6 @@
 # IC-RAG-Agent System Framework
 
-**Version:** 2.1.0  
+**Version:** 2.2.0  
 **Last Updated:** 2026-03-08
 
 This document describes the system framework for the IC-RAG-Agent project using Mermaid diagrams.
@@ -13,7 +13,7 @@ This document describes the system framework for the IC-RAG-Agent project using 
 
 IC-RAG-Agent is an **Intent Classification + Retrieval-Augmented Generation** system with a **Unified Gateway** routing queries to five backend workflows:
 
-- **Gateway** – Single entry point with Route LLM (rewriting + task classification) and Dispatcher (supervisor agent; executes worker agents in parallel)
+- **Gateway** – Single entry point with clarification (optional), Route LLM (rewriting + task classification), and Dispatcher (supervisor agent; executes worker agents in parallel)
 - **UDS Agent** – Business Intelligence for Amazon seller data (ClickHouse + ReAct)
 - **RAG Pipeline** – Document retrieval and hybrid generation with four parallel intent methods
 - **SP-API Agent** – Seller Operations via Amazon SP-API (ReAct + LangGraph workflow)
@@ -28,7 +28,7 @@ flowchart TB
 
     subgraph Gateway["Unified Gateway"]
         API[FastAPI]
-        RouteLLM[Route LLM: Query rewriting, intent classification, task planning]
+        RouteLLM[Route LLM: Clarification, rewriting, intent classification, task planning]
         Dispatcher[Dispatcher: Orchestrator, invoke backends, merge results]
     end
 
@@ -91,7 +91,7 @@ The gateway is organized into two conceptual groups:
 
 | Group | Responsibility | Modules | Description |
 |-------|----------------|---------|-------------|
-| **Route LLM** | Planning | `rewriters.py`, `router.py`, `route_llm.py` | Query rewriting and task classification. Produces an execution plan (what to do). |
+| **Route LLM** | Planning | `clarification.py`, `rewriters.py`, `router.py`, `route_llm.py` | Clarification (optional), query rewriting, and task classification. Produces an execution plan (what to do). |
 | **Dispatcher** | Execution | `api.py`, `services.py` | Supervisor agent; invokes worker agents (General RAG, Amazon docs RAG, SP-API Agent, UDS Agent) and executes tasks in parallel within groups, merges results. |
 
 **Route LLM** outputs: rewritten query, execution plan (task_groups with workflow + query per task).
@@ -121,6 +121,7 @@ flowchart TB
     subgraph L1["Gateway Layer"]
         GatewayAPI[FastAPI Gateway]
         subgraph RL["Route LLM (Planning)"]
+            Clarify[Clarification<br/>check_ambiguity]
             Rewriters[Query Rewriters<br/>Ollama / DeepSeek]
             Planner[Planner + Correction]
             RouteLLMMod[Route LLM / Heuristic]
@@ -175,6 +176,7 @@ flowchart LR
     subgraph src["src/"]
         subgraph gateway["gateway/"]
             subgraph route_llm["Route LLM"]
+                gw_clarify[clarification.py]
                 gw_router[router.py]
                 gw_rewriters[rewriters.py]
                 gw_route_llm[route_llm.py]
@@ -266,13 +268,25 @@ sequenceDiagram
     participant User
     participant ChatUI as Gradio Chat UI
     participant GW as Gateway API
+    participant Clarify as Clarification
     participant RouteLLM as Route LLM
     participant Dispatcher as Dispatcher
     participant Backend as Backend Services
 
     User->>ChatUI: Type question
     ChatUI->>GW: POST /api/v1/query<br/>{query, workflow, rewrite_enable, session_id}
-    GW->>RouteLLM: raw_query
+    GW->>Clarify: raw_query
+
+    alt GATEWAY_CLARIFICATION_ENABLED and query ambiguous
+        Clarify->>Clarify: check_ambiguity (LLM)
+        Clarify-->>GW: needs_clarification, clarification_question
+        GW-->>ChatUI: QueryResponse (clarification_required, pending_query)
+        ChatUI-->>User: Display clarification question
+        User->>ChatUI: Follow-up answer
+        ChatUI->>GW: POST (merged: pending_query + follow-up)
+    end
+
+    GW->>RouteLLM: raw_query (or merged)
 
     Note over RouteLLM: Rewriting + Task Classification
     RouteLLM->>RouteLLM: Normalize, LLM rewrite, plan/correct
@@ -289,7 +303,7 @@ sequenceDiagram
     GW-->>ChatUI: QueryResponse (answer, plan, task_results)
     ChatUI-->>User: Display answer
 
-    Note over GW: Route LLM = planning. Dispatcher = execution.
+    Note over GW: Clarification (before rewrite). Route LLM = planning. Dispatcher = execution.
 ```
 
 ---
@@ -298,9 +312,13 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    Q[User Query] --> WF{workflow field?}
+    Q[User Query] --> CLARIFY{GATEWAY_CLARIFICATION_ENABLED?}
+    CLARIFY -->|No| WF
+    CLARIFY -->|Yes| AMBIG{check_ambiguity<br/>LLM}
+    AMBIG -->|needs_clarification| ASK[Return clarification_question<br/>pending_query; user follows up]
+    AMBIG -->|clear| WF
     
-    WF -->|explicit: general/uds/sp_api/...| MANUAL[Manual Override<br/>confidence=1.0]
+    WF[workflow field?] -->|explicit: general/uds/sp_api/...| MANUAL[Manual Override<br/>confidence=1.0]
     WF -->|auto| AUTO{Planner enabled?}
     
     AUTO -->|Yes| PLAN[Parse planner JSON<br/>or heuristic multi-task]
@@ -325,12 +343,19 @@ flowchart TD
     PRIORITY -->|no match| W1[general 0.7]
 ```
 
-### 5.1 Query Rewriting and Routing Rules
+### 5.1 Clarification (Question User)
+
+When `GATEWAY_CLARIFICATION_ENABLED=true`, the gateway runs a clarification check **before** rewriting. The LLM (`check_ambiguity`) detects ambiguous queries (e.g. "Show me the fees" without specifying fee type or period) and returns a clarification question. The client stores `pending_query` and merges the user's follow-up with it on the next turn. If the query is clear, the flow proceeds to rewriting and execution.
+
+**Example:** User asks "Show me the fees" → Gateway returns "Which type of fees do you mean? FBA, storage, or referral?" → User replies "FBA fees for last month" → Client sends merged query "Show me the fees FBA fees for last month" → Gateway proceeds to rewrite and route.
+
+### 5.2 Query Rewriting and Routing Rules
 
 **File locations:**
 
 | Component | File | Description |
 |-----------|------|--------------|
+| Clarification | `src/gateway/clarification.py` | `check_ambiguity()` – LLM detects ambiguous queries before rewrite; asks user for clarification. Enabled via `GATEWAY_CLARIFICATION_ENABLED`. |
 | Rewrite prompts | `src/gateway/rewriters.py` | `REWRITE_PROMPT`, `REWRITE_PLANNER_PROMPT`, `INTENT_CLASSIFICATION_PROMPT` |
 | Intent classification | `src/gateway/rewriters.py` | `rewrite_intents_only()` – Phase 1 of two-phase flow |
 | Heuristic split | `src/gateway/router.py` | `_split_multi_intent_clauses()` – fallback when LLM fails |
@@ -356,7 +381,7 @@ flowchart TD
 | sp_api | 0.85 | sp-api, fba, shipment, catalog, seller api |
 | general | 0.7 | fallback when no keyword match |
 
-### 5.2 Multi-Task Execution Flow (Two-Phase Intent Split)
+### 5.3 Multi-Task Execution Flow (Two-Phase Intent Split)
 
 When `GATEWAY_REWRITE_PLANNER_ENABLED=true`, the gateway uses a two-phase flow to avoid LLM merging multiple sub-questions into one task:
 
@@ -735,6 +760,7 @@ IC-RAG-Agent/
 ├── src/
 │   ├── gateway/        # Unified gateway (routing, rewriting, dispatch)
 │   │   ├── api.py            # FastAPI app, POST /api/v1/query
+│   │   ├── clarification.py  # check_ambiguity – question user when query ambiguous
 │   │   ├── router.py         # Route LLM + heuristic fallback
 │   │   ├── rewriters.py      # Ollama / DeepSeek query rewriting
 │   │   ├── route_llm.py      # LLM-based workflow classifier

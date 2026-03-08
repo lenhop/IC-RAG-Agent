@@ -147,6 +147,18 @@ class QueryResponse(BaseModel):
         default=None,
         description="Merged final answer assembled from successful task results.",
     )
+    clarification_required: bool = Field(
+        default=False,
+        description="True when query is ambiguous; answer contains clarification question.",
+    )
+    clarification_question: Optional[str] = Field(
+        default=None,
+        description="Question to ask user for clarification.",
+    )
+    pending_query: Optional[str] = Field(
+        default=None,
+        description="Original query when clarification is needed; client merges with follow-up.",
+    )
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -284,6 +296,13 @@ class RewritePlan(BaseModel):
     merge_strategy: str = Field(
         default="concat",
         description="How task outputs should be merged (none|concat|compare|synthesize).",
+    )
+    extracted_intents: Optional[List[str]] = Field(
+        default=None,
+        description=(
+            "Optional list of distinct sub-questions extracted from user query. "
+            "Used when LLM merges tasks: fallback builds one task per intent."
+        ),
     )
 
 

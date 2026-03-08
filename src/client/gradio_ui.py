@@ -1,15 +1,17 @@
 """
 Gradio chat UI for unified gateway client.
 
-Layout: chat (scale 3) left, sidebar (scale 1) right.
-Sidebar: workflow Radio, Rewriting Enable checkbox, session state, health status.
+Layout: controls (scale 1) left, chat (scale 3) right.
+Left column: Workflow, Rewriting Enable, Rewrite backend, Session, Status.
+Right column: ChatInterface with fill_height and autoscroll.
 Uses GatewayClient.query_sync with mock mode when gateway unavailable.
 """
 
 from __future__ import annotations
 
-import os
 import logging
+import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
@@ -20,6 +22,33 @@ import gradio as gr
 from .api_client import GatewayClient
 
 logger = logging.getLogger(__name__)
+
+# Session-scoped pending query for clarification follow-up (client-side merge).
+# Key: session_id, Value: pending_query. Cleared when user provides follow-up or clears session.
+_pending_queries: Dict[str, str] = {}
+_pending_lock = threading.Lock()
+
+
+def _get_pending_query(session_id: Optional[str]) -> Optional[str]:
+    """Return and remove pending query for session if any."""
+    if not session_id or not str(session_id).strip():
+        return None
+    with _pending_lock:
+        return _pending_queries.pop(session_id.strip(), None)
+
+
+def _set_pending_query(session_id: Optional[str], pending_query: str) -> None:
+    """Store pending query for clarification follow-up."""
+    if not session_id or not str(session_id).strip() or not pending_query or not pending_query.strip():
+        return
+    with _pending_lock:
+        _pending_queries[session_id.strip()] = pending_query.strip()
+
+
+def _clear_all_pending() -> None:
+    """Clear all pending queries (e.g., when user clears session)."""
+    with _pending_lock:
+        _pending_queries.clear()
 
 # Config from env
 GATEWAY_API_URL = os.environ.get("GATEWAY_API_URL", "").rstrip("/")
@@ -36,7 +65,7 @@ REWRITE_ONLY_TEST_MODE = (
     or os.environ.get("GATEWAY_REWRITE_ONLY_MODE", "").lower() in ("true", "1", "yes")
 )
 
-# Workflow options: (label, value) for Radio
+# Workflow options: (label, value) for Dropdown
 WORKFLOW_CHOICES = [
     ("Auto", "auto"),
     ("General", "general"),
@@ -101,7 +130,14 @@ def _chat_handler(
 
     client = GatewayClient(base_url=GATEWAY_API_URL or None)
     raw_query = message.strip()
-    routed_query = raw_query
+
+    # Merge with pending query when this is a clarification follow-up
+    pending = _get_pending_query(session_id)
+    if pending:
+        raw_query = f"{pending} {raw_query}".strip()
+        routed_query = raw_query
+    else:
+        routed_query = raw_query
     rewrite_ms: Optional[int] = None
     rewrite_backend_value = "none"
     rewrite_message: Optional[str] = None
@@ -131,6 +167,20 @@ def _chat_handler(
                 f"- Rewrite Backend: `{rewrite_backend_value}`\n"
                 f"- Rewrite Time: `{rewrite_ms} ms`"
             )
+            # Include execution plan when available (planner mode)
+            plan = rewrite_result.get("plan")
+            if plan and isinstance(plan, dict):
+                plan_type = plan.get("plan_type", "single_domain")
+                task_groups = plan.get("task_groups") or []
+                tasks_flat: List[Dict[str, Any]] = []
+                for g in task_groups:
+                    tasks_flat.extend(g.get("tasks") or [])
+                if tasks_flat:
+                    rewrite_message += f"\n\n**Plan** (`{plan_type}`):\n"
+                    for i, t in enumerate(tasks_flat, 1):
+                        wf = t.get("workflow", "general")
+                        q = (t.get("query") or "").strip()
+                        rewrite_message += f"\n{i}. `{wf}`: {q}"
             yield rewrite_message
 
     if REWRITE_ONLY_TEST_MODE:
@@ -138,7 +188,8 @@ def _chat_handler(
         if rewrite_message:
             yield (
                 f"{rewrite_message}\n\n"
-                "Rewrite-only test mode enabled. Route LLM and downstream services are skipped."
+                "---\n"
+                "**Rewrite-only test mode.** Route LLM and downstream services are skipped."
             )
         else:
             yield (
@@ -177,6 +228,17 @@ def _chat_handler(
         yield f"Error: {backend_error}"
         return
 
+    # Handle clarification response: store pending_query and display question
+    if result.get("clarification_required"):
+        clarification_question = result.get("clarification_question") or "Please provide more details."
+        pending_query = result.get("pending_query") or routed_query
+        _set_pending_query(session_id, pending_query)
+        yield (
+            f"**Clarification needed:** {clarification_question}\n\n"
+            "Please provide the requested information in your next message."
+        )
+        return
+
     answer = result.get("answer", "")
     if not answer:
         yield "No response from gateway."
@@ -197,6 +259,29 @@ def _chat_handler(
     yield f"{answer}\n" + "\n".join(trace_lines)
 
 
+# CSS to make chat dialog and input box taller
+CHAT_DIALOG_CSS = """
+/* Chat dialog: fill most of viewport */
+#ic_chat_column { min-height: 95vh !important; display: flex !important; flex-direction: column !important; }
+#ic_chat_column .contain { flex: 1 !important; min-height: 0 !important; }
+.chatbot { min-height: 95vh !important; flex: 1 !important; }
+[data-testid="chatbot"] { min-height: 95vh !important; }
+.gr-chat { min-height: 95vh !important; }
+/* Input box: taller for multi-line typing */
+#ic_chat_column textarea { min-height: 150px !important; height: 150px !important; }
+.gr-chat textarea { min-height: 150px !important; height: 150px !important; }
+.chatbot textarea { min-height: 150px !important; height: 150px !important; }
+/* Workflow radio: single column, left-aligned, no extra gap */
+#workflow_radio { flex: 0 0 auto !important; }
+#workflow_radio .wrap { display: flex !important; flex-direction: column !important; flex-wrap: nowrap !important; align-items: flex-start !important; justify-content: flex-start !important; }
+#workflow_radio .contain { display: flex !important; flex-direction: column !important; flex-wrap: nowrap !important; align-items: flex-start !important; justify-content: flex-start !important; }
+#workflow_radio > div { display: flex !important; flex-direction: column !important; flex-wrap: nowrap !important; align-items: flex-start !important; justify-content: flex-start !important; }
+#workflow_radio [class*="wrap"] { display: flex !important; flex-direction: column !important; flex-wrap: nowrap !important; align-items: flex-start !important; justify-content: flex-start !important; }
+/* Left column: pack content at top, no stretch */
+#ic_controls_column { justify-content: flex-start !important; align-items: flex-start !important; }
+"""
+
+
 def create_demo() -> gr.Blocks:
     """
     Build and return the Gradio Blocks demo.
@@ -207,7 +292,12 @@ def create_demo() -> gr.Blocks:
     # Initial session ID
     initial_session_id = str(uuid4())
 
-    with gr.Blocks(title="IC-RAG-Agent Chat", theme=gr.themes.Soft()) as demo:
+    with gr.Blocks(
+        title="IC-RAG-Agent Chat",
+        theme=gr.themes.Soft(),
+        fill_height=True,
+        css=CHAT_DIALOG_CSS,
+    ) as demo:
         gr.Markdown("# IC-RAG-Agent Chat")
         gr.Markdown(
             "Unified Chat UI - Select workflow and type your question. "
@@ -216,45 +306,29 @@ def create_demo() -> gr.Blocks:
 
         session_id_state = gr.State(value=initial_session_id)
 
-        # Workflow and rewrite at top (must exist before ChatInterface).
-        # Row: chat left (scale 3), sidebar right (scale 1).
-        workflow_radio = gr.Radio(
-            choices=WORKFLOW_CHOICES,
-            value="auto",
-            label="Workflow",
-            info="auto|general|amazon_docs|ic_docs|sp_api|uds",
-        )
-        rewrite_checkbox = gr.Checkbox(
-            value=REWRITE_ENABLE_DEFAULT,
-            label="Rewriting Enable",
-            info="Enable query rewriting",
-        )
-        rewrite_backend_dropdown = gr.Dropdown(
-            choices=[("Local (Ollama)", "ollama"), ("DeepSeek", "deepseek")],
-            value=_normalize_rewrite_backend(REWRITE_BACKEND_DEFAULT),
-            label="Rewrite backend",
-            info="Local (Ollama) or DeepSeek when rewriting enabled",
-            interactive=REWRITE_ENABLE_DEFAULT,
-        )
-
+        # Row: controls left (scale 1), chat right (scale 3).
+        # Left column: Workflow, Rewriting, Session, Status.
         with gr.Row():
-            with gr.Column(scale=3):
-                chat = gr.ChatInterface(
-                    fn=_chat_handler,
-                    title="",
-                    additional_inputs=[
-                        workflow_radio,
-                        rewrite_checkbox,
-                        rewrite_backend_dropdown,
-                        session_id_state,
-                    ],
-                    additional_inputs_accordion=gr.Accordion(
-                        label="Options",
-                        open=False,
-                    ),
+            with gr.Column(scale=1, elem_id="ic_controls_column"):
+                gr.Markdown("### Workflow")
+                workflow_radio = gr.Dropdown(
+                    choices=WORKFLOW_CHOICES,
+                    value="auto",
+                    label="Workflow",
+                    info="auto|general|amazon_docs|ic_docs|sp_api|uds",
                 )
-
-            with gr.Column(scale=1):
+                rewrite_checkbox = gr.Checkbox(
+                    value=REWRITE_ENABLE_DEFAULT,
+                    label="Rewriting Enable",
+                    info="Enable query rewriting",
+                )
+                rewrite_backend_dropdown = gr.Dropdown(
+                    choices=[("Local (Ollama)", "ollama"), ("DeepSeek", "deepseek")],
+                    value=_normalize_rewrite_backend(REWRITE_BACKEND_DEFAULT),
+                    label="Rewrite backend",
+                    info="Local (Ollama) or DeepSeek when rewriting enabled",
+                    interactive=REWRITE_ENABLE_DEFAULT,
+                )
                 gr.Markdown("### Session")
                 session_display = gr.Textbox(
                     label="Session ID",
@@ -265,8 +339,23 @@ def create_demo() -> gr.Blocks:
                 gr.Markdown("### Status")
                 health_status = gr.Markdown(_get_gateway_status())
 
-        # Clear Session: update state and display with new UUID
+            with gr.Column(scale=3, elem_id="ic_chat_column"):
+                chat = gr.ChatInterface(
+                    fn=_chat_handler,
+                    title="",
+                    additional_inputs=[
+                        workflow_radio,
+                        rewrite_checkbox,
+                        rewrite_backend_dropdown,
+                        session_id_state,
+                    ],
+                    fill_height=True,
+                    autoscroll=True,
+                )
+
+        # Clear Session: update state and display with new UUID; clear pending clarification
         def on_clear_session():
+            _clear_all_pending()
             new_id = str(uuid4())
             return new_id, new_id
 

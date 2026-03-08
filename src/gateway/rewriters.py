@@ -38,7 +38,8 @@ REWRITE_PROMPT = (
 INTENT_CLASSIFICATION_PROMPT = (
     "List each distinct sub-question from the user query. Output JSON only: {\"intents\": [\"...\", \"...\"]}. "
     "CRITICAL: Do NOT merge multiple questions into one. Each sub-question must be a separate item. "
-    "Preserve ASINs, order IDs, dates exactly. "
+    "Preserve ASINs, order IDs, dates exactly. Do NOT split dates that contain commas "
+    "(e.g. keep \"September 1st, 2026\" or \"January 1, 2025\" as one intent, not two). "
     "Example 1: \"what is FBA get order 123 which table\" -> "
     "{\"intents\": [\"what is FBA\", \"get order 123\", \"which table stores referral fee data\"]}. "
     "Example 2: \"what is FBA vs FBM, get order 112-123, which table stores fee, show storage trend\" -> "
@@ -348,24 +349,29 @@ def _normalize_plan(plan: RewritePlan, fallback_query: str) -> Optional[RewriteP
             break
 
     if not normalized_groups:
-        fallback = (fallback_query or "").strip()
-        if not fallback:
-            return None
-        normalized_groups = [
-            TaskGroup(
-                group_id="g1",
-                parallel=True,
-                tasks=[
-                    TaskItem(
-                        task_id="t1",
-                        workflow="general",
-                        query=fallback,
-                        depends_on=[],
-                        reason="fallback_single_task",
-                    )
-                ],
-            )
-        ]
+        # When we have extracted_intents, leave task_groups empty so caller
+        # (build_execution_plan) uses _build_plan_from_extracted_intents with proper routing.
+        if plan.extracted_intents:
+            pass
+        else:
+            fallback = (fallback_query or "").strip()
+            if not fallback:
+                return None
+            normalized_groups = [
+                TaskGroup(
+                    group_id="g1",
+                    parallel=True,
+                    tasks=[
+                        TaskItem(
+                            task_id="t1",
+                            workflow="general",
+                            query=fallback,
+                            depends_on=[],
+                            reason="fallback_single_task",
+                        )
+                    ],
+                )
+            ]
 
     merge_strategy = (plan.merge_strategy or "concat").strip().lower()
     if merge_strategy not in VALID_MERGE_STRATEGIES:

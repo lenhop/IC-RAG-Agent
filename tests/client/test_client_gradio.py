@@ -219,6 +219,71 @@ def test_chat_handler_streams_progress_while_waiting_for_query():
     assert "Delayed success" in outputs[-1]
 
 
+def test_chat_handler_clarification_required_displays_question_and_stores_pending():
+    """When gateway returns clarification_required, display question and store pending_query."""
+    mock_client = MagicMock()
+    mock_client.rewrite_sync.return_value = {
+        "rewritten_query": "what about my order?",
+        "rewrite_backend": "ollama",
+        "rewrite_time_ms": 5,
+    }
+    mock_client.query_sync.return_value = {
+        "clarification_required": True,
+        "clarification_question": "Please provide your order ID.",
+        "pending_query": "what about my order?",
+        "answer": "Please provide your order ID.",
+    }
+
+    with (
+        patch("src.client.gradio_ui.GatewayClient", return_value=mock_client),
+        patch("src.client.gradio_ui._set_pending_query") as mock_set_pending,
+    ):
+        result = _chat_handler("what about my order?", [], "auto", True, "ollama", "sess-1")
+        outputs = _collect_chat_outputs(result)
+
+    assert any("Clarification needed" in item for item in outputs)
+    assert any("Please provide your order ID" in item for item in outputs)
+    mock_set_pending.assert_called_once_with("sess-1", "what about my order?")
+
+
+def test_chat_handler_merge_pending_query_on_followup():
+    """When pending query exists, merge with user message before sending."""
+    mock_client = MagicMock()
+    merged_query = "what about my order? 112-9876543-12"
+    mock_client.rewrite_sync.return_value = {
+        "rewritten_query": merged_query,
+        "rewrite_backend": "ollama",
+        "rewrite_time_ms": 2,
+    }
+    mock_client.query_sync.return_value = {
+        "answer": "Order 112-9876543-12 status: shipped.",
+        "routing_confidence": 0.95,
+        "debug": {"route_source": "heuristic"},
+    }
+
+    with (
+        patch("src.client.gradio_ui.GatewayClient", return_value=mock_client),
+        patch("src.client.gradio_ui._get_pending_query", return_value="what about my order?"),
+    ):
+        result = _chat_handler("112-9876543-12", [], "auto", True, "ollama", "sess-1")
+        outputs = _collect_chat_outputs(result)
+
+    # Merged query sent to rewrite_sync and then to query_sync
+    mock_client.rewrite_sync.assert_called_once_with(
+        query=merged_query,
+        rewrite_enable=True,
+        rewrite_backend="ollama",
+    )
+    mock_client.query_sync.assert_called_once_with(
+        query=merged_query,
+        workflow="auto",
+        rewrite_enable=False,
+        rewrite_backend=None,
+        session_id="sess-1",
+    )
+    assert "Order 112-9876543-12 status" in outputs[-1]
+
+
 def test_chat_handler_rewrite_only_mode_skips_query_sync():
     """Rewrite-only UI mode should stop after rewrite and not call query endpoint."""
     mock_client = MagicMock()
@@ -235,7 +300,7 @@ def test_chat_handler_rewrite_only_mode_skips_query_sync():
         result = _chat_handler("original query", [], "auto", True, "ollama", "s1")
         outputs = _collect_chat_outputs(result)
 
-    assert any("Rewrite-only test mode enabled." in item for item in outputs)
+    assert any("Rewrite-only test mode" in item for item in outputs)
     mock_client.query_sync.assert_not_called()
 
 

@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Tuple
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .clarification import check_ambiguity
 from .router import build_execution_plan, route_workflow, rewrite_query
 from .logging_utils import format_route_metadata
 from .services import (
@@ -257,6 +258,16 @@ def _is_rewrite_only_mode() -> bool:
     )
 
 
+def _clarification_enabled() -> bool:
+    """Return True when clarification check is enabled (runs before rewrite)."""
+    return os.getenv("GATEWAY_CLARIFICATION_ENABLED", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 @app.post(
     "/api/v1/rewrite",
     response_model=RewriteResponse,
@@ -318,6 +329,28 @@ async def query(request: QueryRequest) -> QueryResponse:
     route_input_query = rewritten_query
 
     try:
+        # Clarification check (before rewrite): return early if query is ambiguous
+        if _clarification_enabled():
+            backend = _resolve_rewrite_backend(request)
+            ambiguity_result = check_ambiguity(original_query, backend)
+            if ambiguity_result.get("needs_clarification"):
+                clarification_question = ambiguity_result.get("clarification_question", "")
+                return QueryResponse(
+                    answer=clarification_question,
+                    workflow="clarification",
+                    routing_confidence=0.0,
+                    sources=[],
+                    request_id=request_id,
+                    error=None,
+                    debug={
+                        "original_query": original_query,
+                        "clarification_required": True,
+                    },
+                    clarification_required=True,
+                    clarification_question=clarification_question,
+                    pending_query=original_query,
+                )
+
         # Route LLM (Planning): rewrite + task classification -> execution_plan
         rewrite_started = time.perf_counter()
         rewritten_query = rewrite_query(request)

@@ -88,6 +88,58 @@ def test_query_general_success(mock_rewrite, mock_route, mock_call):
     mock_call.assert_called_once()
 
 
+@patch("src.gateway.api.rewrite_query")
+@patch("src.gateway.api.check_ambiguity")
+@patch("src.gateway.api._clarification_enabled", return_value=True)
+def test_query_clarification_required_returns_early(
+    mock_clar_enabled, mock_check_ambiguity, mock_rewrite
+):
+    """When clarification is needed, gateway returns early without rewrite or execution."""
+    mock_check_ambiguity.return_value = {
+        "needs_clarification": True,
+        "clarification_question": "Please provide your order ID.",
+    }
+    resp = client.post("/api/v1/query", json=_base_payload())
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["clarification_required"] is True
+    assert data["clarification_question"] == "Please provide your order ID."
+    assert data["pending_query"] == "test query"
+    assert data["workflow"] == "clarification"
+    assert data["answer"] == "Please provide your order ID."
+    mock_check_ambiguity.assert_called_once()
+    mock_rewrite.assert_not_called()
+
+
+@patch("src.gateway.api.rewrite_query")
+@patch("src.gateway.api.check_ambiguity")
+@patch("src.gateway.api._clarification_enabled", return_value=True)
+def test_query_show_me_the_fees_returns_clarification(
+    mock_clar_enabled, mock_check_ambiguity, mock_rewrite
+):
+    """Ambiguous query 'Show me the fees' should return clarification question."""
+    mock_check_ambiguity.return_value = {
+        "needs_clarification": True,
+        "clarification_question": "Which type of fees do you mean? FBA, storage, or referral?",
+    }
+    payload = {
+        "query": "Show me the fees",
+        "workflow": "auto",
+        "rewrite_enable": True,
+        "session_id": None,
+        "stream": False,
+    }
+    resp = client.post("/api/v1/query", json=payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["clarification_required"] is True
+    assert data["clarification_question"] == "Which type of fees do you mean? FBA, storage, or referral?"
+    assert data["pending_query"] == "Show me the fees"
+    assert data["workflow"] == "clarification"
+    mock_check_ambiguity.assert_called_once()
+    mock_rewrite.assert_not_called()
+
+
 @patch("src.gateway.api.call_amazon_docs", return_value={"answer": "amazon docs answer", "sources": []})
 @patch(
     "src.gateway.api.route_workflow",
@@ -503,5 +555,62 @@ def test_query_planner_partial_failure_surfaces_task_error(
     statuses = {item["task_id"]: item["status"] for item in data["task_results"]}
     assert statuses["t1"] == "failed"
     assert statuses["t2"] == "completed"
+    mock_route.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Task 2.4: Hybrid plan with IC docs task when IC_DOCS_ENABLED is false
+# ---------------------------------------------------------------------------
+
+
+@patch(
+    "src.gateway.api.build_execution_plan",
+    return_value=RewritePlan(
+        plan_type="hybrid",
+        merge_strategy="concat",
+        task_groups=[
+            TaskGroup(
+                group_id="g1",
+                parallel=True,
+                tasks=[
+                    TaskItem(task_id="t1", workflow="general", query="what is FBA", depends_on=[], reason=None),
+                    TaskItem(task_id="t2", workflow="ic_docs", query="explain IC-RAG framework", depends_on=[], reason=None),
+                ],
+            )
+        ],
+    ),
+)
+@patch("src.gateway.api.route_workflow")
+@patch("src.gateway.api.call_general", return_value={"answer": "FBA is Fulfillment by Amazon", "sources": []})
+@patch("src.gateway.services._ic_docs_enabled", return_value=False)
+@patch("src.gateway.api.rewrite_query", return_value='{"plan_type":"hybrid"}')
+def test_query_hybrid_plan_with_ic_docs_disabled_returns_friendly_for_ic_task(
+    mock_rewrite, mock_ic_enabled, mock_call_general, mock_route, mock_plan
+):
+    """Hybrid plan with general + ic_docs: when IC docs disabled, ic_docs task returns friendly 'not ready' message."""
+    payload = {
+        "query": "what is FBA and explain IC-RAG framework",
+        "workflow": "auto",
+        "rewrite_enable": True,
+        "session_id": "s1",
+        "stream": False,
+    }
+    resp = client.post("/api/v1/query", json=payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["workflow"] == "hybrid"
+    # Merged answer should include the general answer
+    assert "FBA is Fulfillment by Amazon" in (data["merged_answer"] or "")
+    # The ic_docs task should complete with the friendly message (not an error)
+    assert len(data["task_results"]) == 2
+    ic_task = next(r for r in data["task_results"] if r["workflow"] == "ic_docs")
+    general_task = next(r for r in data["task_results"] if r["workflow"] == "general")
+    assert general_task["status"] == "completed"
+    assert ic_task["status"] == "completed"
+    assert "not ready" in ic_task["answer"].lower()
+    # Merged answer should include both pieces
+    assert "not ready" in (data["merged_answer"] or "").lower()
+    mock_call_general.assert_called_once()
+    mock_ic_enabled.assert_called()
     mock_route.assert_not_called()
 

@@ -1,7 +1,14 @@
 """
-Unit tests for gateway services layer (call_general, call_ic_docs, etc.).
+Unit tests for gateway services layer (call_general, call_amazon_docs, call_ic_docs, etc.).
 
-Covers IC docs skip when IC_DOCS_ENABLED is false: no RAG HTTP call, friendly message returned.
+Covers:
+- call_general happy path, backend error, and ConfigError when RAG_API_URL is empty.
+- call_amazon_docs happy path, backend error, and ConfigError when RAG_API_URL is empty.
+- call_ic_docs skip when IC_DOCS_ENABLED is false: no RAG HTTP call, friendly message returned.
+- call_ic_docs enabled via env values (1, yes).
+- call_sp_api / call_uds ConfigError when backend URL is empty.
+- call_uds completed, failed, empty, and null-error scenarios.
+- call_sp_api session_id omission.
 """
 
 from __future__ import annotations
@@ -12,6 +19,8 @@ import pytest
 
 from src.gateway.services import (
     IC_DOCS_NOT_READY_MESSAGE,
+    call_amazon_docs,
+    call_general,
     call_ic_docs,
     call_sp_api,
     call_uds,
@@ -125,3 +134,147 @@ def test_call_sp_api_omits_none_session_id(mock_post):
     _url, payload = mock_post.call_args[0]
     assert payload["query"] == "fee query"
     assert "session_id" not in payload
+
+
+# ---------------------------------------------------------------------------
+# Task 2.1: Unit tests for call_general and call_amazon_docs
+# ---------------------------------------------------------------------------
+
+
+@patch(
+    "src.gateway.services._http_post",
+    return_value={"answer": "General knowledge answer", "sources": [{"title": "wiki"}]},
+)
+def test_call_general_success(mock_post):
+    """Happy path: call_general returns answer and sources from RAG in general mode."""
+    result = call_general("what is machine learning", "sess-1")
+    assert result["answer"] == "General knowledge answer"
+    assert result["sources"] == [{"title": "wiki"}]
+    assert "error" not in result
+    mock_post.assert_called_once()
+    url, payload = mock_post.call_args[0]
+    assert "/query" in url
+    assert payload["mode"] == "general"
+    assert payload["question"] == "what is machine learning"
+
+
+@patch(
+    "src.gateway.services._http_post",
+    return_value={"error": "Connection refused", "error_type": "ConnectionError"},
+)
+def test_call_general_backend_error_propagates(mock_post):
+    """Backend error from RAG is propagated through call_general result."""
+    result = call_general("test query", None)
+    assert "error" in result
+    assert result["error"] == "Connection refused"
+    assert result["error_type"] == "ConnectionError"
+    mock_post.assert_called_once()
+
+
+@patch("src.gateway.services.RAG_API_URL", "")
+def test_call_general_rag_url_empty_returns_config_error():
+    """When RAG_API_URL is empty, call_general returns ConfigError without HTTP call."""
+    with patch("src.gateway.services._http_post") as mock_post:
+        result = call_general("some query", None)
+    assert result["error"] == "RAG_API_URL not configured"
+    assert result["error_type"] == "ConfigError"
+    mock_post.assert_not_called()
+
+
+@patch(
+    "src.gateway.services._http_post",
+    return_value={"answer": "FBA storage fee is $0.87 per cubic foot", "sources": [{"doc": "fba-fees"}]},
+)
+def test_call_amazon_docs_success(mock_post):
+    """Happy path: call_amazon_docs returns answer from RAG in documents mode with Amazon bias."""
+    result = call_amazon_docs("what is FBA storage fee", "sess-2")
+    assert result["answer"] == "FBA storage fee is $0.87 per cubic foot"
+    assert result["sources"] == [{"doc": "fba-fees"}]
+    assert "error" not in result
+    mock_post.assert_called_once()
+    url, payload = mock_post.call_args[0]
+    assert "/query" in url
+    assert payload["mode"] == "documents"
+    assert "Amazon docs:" in payload["question"]
+
+
+@patch(
+    "src.gateway.services._http_post",
+    return_value={"error": "Timeout after 120s", "error_type": "Timeout"},
+)
+def test_call_amazon_docs_backend_error_propagates(mock_post):
+    """Backend error from RAG is propagated through call_amazon_docs result."""
+    result = call_amazon_docs("FBA fee query", None)
+    assert "error" in result
+    assert result["error"] == "Timeout after 120s"
+    assert result["error_type"] == "Timeout"
+    mock_post.assert_called_once()
+
+
+@patch("src.gateway.services.RAG_API_URL", "")
+def test_call_amazon_docs_rag_url_empty_returns_config_error():
+    """When RAG_API_URL is empty, call_amazon_docs returns ConfigError without HTTP call."""
+    with patch("src.gateway.services._http_post") as mock_post:
+        result = call_amazon_docs("some query", None)
+    assert result["error"] == "RAG_API_URL not configured"
+    assert result["error_type"] == "ConfigError"
+    mock_post.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Task 2.2: ConfigError tests for call_sp_api and call_uds
+# ---------------------------------------------------------------------------
+
+
+@patch("src.gateway.services.SP_API_URL", "")
+def test_call_sp_api_url_empty_returns_config_error():
+    """When SP_API_URL is empty, call_sp_api returns ConfigError without HTTP call."""
+    with patch("src.gateway.services._http_post") as mock_post:
+        result = call_sp_api("check inventory", None)
+    assert result["error"] == "SP_API_URL not configured"
+    assert result["error_type"] == "ConfigError"
+    mock_post.assert_not_called()
+
+
+@patch("src.gateway.services.UDS_API_URL", "")
+def test_call_uds_url_empty_returns_config_error():
+    """When UDS_API_URL is empty, call_uds returns ConfigError without HTTP call."""
+    with patch("src.gateway.services._http_post") as mock_post:
+        result = call_uds("show me sales", None)
+    assert result["error"] == "UDS_API_URL not configured"
+    assert result["error_type"] == "ConfigError"
+    mock_post.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Task 2.3: IC docs enabled via env values (1, yes)
+# ---------------------------------------------------------------------------
+
+
+@patch("src.gateway.services.os.getenv", return_value="1")
+@patch(
+    "src.gateway.services._http_post",
+    return_value={"answer": "IC doc content", "sources": [{"title": "ic-doc"}]},
+)
+def test_call_ic_docs_enabled_when_env_is_one(mock_post, mock_getenv):
+    """When IC_DOCS_ENABLED=1, call_ic_docs should call RAG backend."""
+    result = call_ic_docs("IC docs query", None)
+    assert result["answer"] == "IC doc content"
+    assert result["sources"] == [{"title": "ic-doc"}]
+    mock_post.assert_called_once()
+    url, payload = mock_post.call_args[0]
+    assert "/query" in url
+    assert payload["mode"] == "documents"
+
+
+@patch("src.gateway.services.os.getenv", return_value="yes")
+@patch(
+    "src.gateway.services._http_post",
+    return_value={"answer": "IC doc content 2", "sources": []},
+)
+def test_call_ic_docs_enabled_when_env_is_yes(mock_post, mock_getenv):
+    """When IC_DOCS_ENABLED=yes, call_ic_docs should call RAG backend."""
+    result = call_ic_docs("another IC query", "sess-3")
+    assert result["answer"] == "IC doc content 2"
+    assert result["sources"] == []
+    mock_post.assert_called_once()

@@ -489,6 +489,27 @@ def test_build_execution_plan_explicit_workflow_creates_single_task():
 
 
 @patch("src.gateway.router.planner_rewrite_enabled", return_value=True)
+def test_build_execution_plan_date_with_comma_stays_single_intent(mock_planner):
+    """Query with date like 'September 1st, 2026' must not be split; 2026 must not become separate general task."""
+    req = QueryRequest(
+        query="how many orders were there on September 1st, 2026",
+        workflow="auto",
+        rewrite_enable=True,
+        session_id=None,
+        stream=False,
+    )
+    rewritten = '{"intents": ["how many orders were there on September 1st, 2026"]}'
+    plan = build_execution_plan(req, rewritten)
+    assert len(plan.task_groups) == 1
+    tasks = plan.task_groups[0].tasks
+    assert len(tasks) == 1
+    assert tasks[0].query == "how many orders were there on September 1st, 2026"
+    assert tasks[0].workflow == "uds"
+    # Ensure "2026" was not split into a separate general task
+    assert not any(t.workflow == "general" and t.query.strip() == "2026" for t in tasks)
+
+
+@patch("src.gateway.router.planner_rewrite_enabled", return_value=True)
 def test_build_execution_plan_uses_intents_only_when_phase1_succeeds(mock_planner):
     """Two-phase flow: intents-only JSON should produce one task per intent via heuristics."""
     req = QueryRequest(

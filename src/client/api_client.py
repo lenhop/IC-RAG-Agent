@@ -193,4 +193,5 @@ class GatewayClient:
             "routing_confidence": 1.0,
             "sources": [],
             "request_id": "mock-request-id",
+            "clarification_required": False,
         }

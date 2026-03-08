@@ -107,8 +107,12 @@ def _split_multi_intent_clauses(query: str) -> List[str]:
         parts = granular
     else:
         # Fallback: split by comma, semicolon, or " and " before question words.
+        # Do NOT split on comma when part of date (e.g. "September 1st, 2026", "January 1, 2025").
+        # Use (?!\s*\d{4}\b) so "Month DD, YYYY" is not split (space before year).
         parts = re.split(
-            r"[,;]\s*|\s+and\s+(?=how|what|which|when|show|get|check)", text, flags=re.I
+            r",\s*(?!\s*\d{4}\b)|;\s*|\s+and\s+(?=how|what|which|when|show|get|check)",
+            text,
+            flags=re.I,
         )
     clauses = []
     seen = set()
