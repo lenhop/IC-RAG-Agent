@@ -222,6 +222,18 @@ class RewriteResponse(BaseModel):
         default=None,
         description="Optional structured rewrite plan when planner mode is enabled.",
     )
+    clarification_required: bool = Field(
+        default=False,
+        description="True when query is ambiguous; user should provide more context.",
+    )
+    clarification_question: Optional[str] = Field(
+        default=None,
+        description="Question to ask user when clarification_required is True.",
+    )
+    pending_query: Optional[str] = Field(
+        default=None,
+        description="Original query when clarification is needed.",
+    )
 
     model_config = ConfigDict(
         json_schema_extra={

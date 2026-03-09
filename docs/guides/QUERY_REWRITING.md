@@ -36,7 +36,7 @@ Example: `"what is FBA get order 112-123 which table stores fee show me trend"` 
 |----------|---------|-------------|
 | **GATEWAY_REWRITE_BACKEND** | ollama | Default backend when the client does not send `rewrite_backend`. Use `ollama` or `deepseek`. |
 | **GATEWAY_REWRITE_OLLAMA_URL** | http://localhost:11434/api/generate | Ollama generate endpoint URL. |
-| **GATEWAY_REWRITE_OLLAMA_MODEL** | qwen2.5:1.5b | Model used for local rewriting. |
+| **GATEWAY_REWRITE_OLLAMA_MODEL** | qwen3:1.7b | Model used for local rewriting. |
 | **GATEWAY_REWRITE_DEEPSEEK_MODEL** | deepseek-chat | Model used for DeepSeek API. |
 | **GATEWAY_REWRITE_TIMEOUT** | 10 | Timeout in seconds for LLM calls. |
 | **GATEWAY_REWRITE_PLANNER_ENABLED** | true (gateway) | When true, uses two-phase intent classification for multi-question queries. |
@@ -67,7 +67,7 @@ Example: `"what is FBA get order 112-123 which table stores fee show me trend"` 
 
 | Backend | Requirement |
 |---------|-------------|
-| **Local (Ollama)** | Ollama must be running (e.g. `ollama serve`). Model must be pulled: `ollama pull qwen2.5:1.5b`. |
+| **Local (Ollama)** | Ollama must be running (e.g. `ollama serve`). Model must be pulled: `ollama pull qwen3:1.7b`. |
 | **DeepSeek** | `DEEPSEEK_API_KEY` must be set in `.env`. |
 
 ---
@@ -83,7 +83,7 @@ Example: `"what is FBA get order 112-123 which table stores fee show me trend"` 
 
 2. Pull the rewrite model:
    ```bash
-   ollama pull qwen2.5:1.5b
+   ollama pull qwen3:1.7b
    ```
 
 3. Verify:

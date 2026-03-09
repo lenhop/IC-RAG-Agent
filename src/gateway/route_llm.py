@@ -47,7 +47,7 @@ ROUTE_LLM_SYSTEM_PROMPT = (
 
 # Default env values for Route LLM (separate from rewrite env vars)
 DEFAULT_ROUTE_OLLAMA_BASE_URL = "http://localhost:11434"
-DEFAULT_ROUTE_OLLAMA_MODEL = "qwen2.5:1.5b"
+DEFAULT_ROUTE_OLLAMA_MODEL = "qwen3:1.7b"
 DEFAULT_ROUTE_DEEPSEEK_MODEL = "deepseek-chat"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_ROUTE_TIMEOUT = 5

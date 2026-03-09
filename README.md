@@ -71,6 +71,35 @@ docker compose -f docker-compose.uds.yml up -d
 
 ---
 
+## Unified Gateway
+
+The gateway routes queries to RAG, UDS, and SP-API backends. Route LLM (clarification, rewrite, workflow classification) uses Ollama (local or ECS).
+
+### Start Stack with Chat UI
+
+```bash
+# Full stack (gateway, UDS, RAG, SP-API, UI)
+./bin/project_stack.sh start --with-ui
+
+# Route-only (gateway + UI, no downstream workers) - for testing Route LLM
+./bin/project_stack.sh start --route-only --with-ui
+```
+
+### ECS Ollama
+
+When running gateway locally against ECS backends, use ECS Ollama for Route LLM. Add to `.env`:
+
+```bash
+GATEWAY_REWRITE_OLLAMA_URL=http://8.163.3.40:11434/api/generate
+GATEWAY_REWRITE_OLLAMA_MODEL=qwen3:1.7b
+GATEWAY_ROUTE_LLM_OLLAMA_URL=http://8.163.3.40:11434
+GATEWAY_ROUTE_LLM_OLLAMA_MODEL=qwen3:1.7b
+```
+
+Test connectivity: `./scripts/test_ecs_ollama_connection.sh`
+
+---
+
 ## Features
 
 ### 🎯 Intelligent Intent Classification
@@ -396,12 +425,15 @@ IC-RAG-Agent/
 │   ├── chroma_loaders.py       # Bootstrap, FAQ, CSV/doc -> Chroma
 │   └── rag_api.py              # FastAPI server
 ├── scripts/
+│   ├── install_ollama_ecs.sh        # Install Ollama on ECS (native)
+│   ├── test_ecs_ollama_connection.sh # Test ECS Ollama connectivity from local
 │   ├── load_to_chroma.py            # documents, fqa, keywords, csv -> Chroma
 │   ├── query_rag.py                 # Query interface
 │   ├── run_evaluation.py            # E2E RAG evaluation (retrieval, generation, report)
 │   ├── run_gateway.py               # Unified gateway (route + dispatch)
 │   └── run_unified_chat.py          # Unified Gradio chat UI (RAG/UDS/SP-API)
 ├── bin/
+│   ├── project_stack.sh             # Start/restart gateway, UDS, RAG, SP-API, UI
 │   ├── run_rag_api.sh               # RAG API launcher (backend)
 │   └── uds_ops.sh                   # deploy/rollback/status/logs/setup
 ├── tests/

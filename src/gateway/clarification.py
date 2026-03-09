@@ -1,8 +1,9 @@
 """
 Route LLM clarification: detect ambiguous queries before rewriting.
 
-When the user query is ambiguous or missing critical information (e.g., order ID,
-date range, ASIN), the LLM returns a clarification question instead of executing.
+For Amazon seller queries, detects when the user query is ambiguous or lacks
+critical information (ASIN, Order ID, date range, time period, store, SKU,
+marketplace). The LLM returns a clarification question instead of executing.
 Uses same backends as rewriters: Ollama / DeepSeek.
 """
 
@@ -19,18 +20,18 @@ logger = logging.getLogger(__name__)
 
 # Reuse env defaults from rewriters
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api/generate"
-DEFAULT_OLLAMA_MODEL = "qwen2.5:1.5b"
+DEFAULT_OLLAMA_MODEL = "qwen3:1.7b"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_REWRITE_TIMEOUT = 10
 
 CLARIFICATION_PROMPT = (
-    "Determine if this user query is ambiguous or missing critical information needed to answer it. "
-    "Examples of ambiguity: \"what about my order?\" (missing order ID), "
-    "\"show sales\" (missing date/period), \"check ASIN\" (missing ASIN). "
-    "If ambiguous, output JSON: {\"needs_clarification\": true, \"clarification_question\": \"Please provide your order ID.\"} "
-    "If clear enough to proceed, output: {\"needs_clarification\": false} "
-    "Output JSON only, no markdown. "
+    "You are a clarification expert for Amazon seller queries. "
+    "Check if the query is ambiguous or lacks critical information: "
+    "ASIN, Order ID, date range, time period, store, SKU, marketplace. "
+    "If missing or ambiguous: {\"needs_clarification\": true, \"clarification_question\": \"...\"} "
+    "If clear: {\"needs_clarification\": false} "
+    "DO NOT answer the query. DO NOT add explanation or notes. Output JSON ONLY. "
     "User query: "
 )
 

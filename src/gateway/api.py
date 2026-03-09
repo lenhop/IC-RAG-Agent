@@ -250,13 +250,17 @@ def _build_debug_trace(
 
 
 def _is_rewrite_only_mode() -> bool:
-    """Return True when gateway runs in rewrite-only quick test mode."""
-    return os.getenv("GATEWAY_REWRITE_ONLY_MODE", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
+    """
+    Return True when gateway runs in Route LLM-only mode (truncate downstream).
+
+    When set, /api/v1/query returns after clarification + rewrite + plan building;
+    no worker execution. Use for quick testing of Route LLM without RAG/UDS/SP-API.
+    Env: GATEWAY_REWRITE_ONLY_MODE or GATEWAY_ROUTE_ONLY_MODE.
+    """
+    v = (
+        os.getenv("GATEWAY_REWRITE_ONLY_MODE", "") or os.getenv("GATEWAY_ROUTE_ONLY_MODE", "")
+    ).strip().lower()
+    return v in ("1", "true", "yes", "on")
 
 
 def _clarification_enabled() -> bool:
@@ -272,16 +276,35 @@ def _clarification_enabled() -> bool:
 @app.post(
     "/api/v1/rewrite",
     response_model=RewriteResponse,
-    summary="Rewrite query only",
+    summary="Route LLM only (no execution)",
 )
 async def rewrite(request: QueryRequest) -> RewriteResponse:
     """
-    Rewrite query and return rewrite metadata without routing/execution.
+    Run Route LLM pipeline only: clarification, rewrite, plan building.
+    No downstream worker execution (RAG/UDS/SP-API).
 
-    This endpoint is used by UI clients that want to show rewritten query
-    immediately before running full downstream workflow execution.
+    Use for quick testing of intent classification and routing without
+    invoking worker agents.
     """
     original_query = (request.query or "").strip()
+
+    # Clarification (optional): return early if query is ambiguous
+    if _clarification_enabled():
+        backend = _resolve_rewrite_backend(request)
+        ambiguity_result = check_ambiguity(original_query, backend)
+        if ambiguity_result.get("needs_clarification"):
+            return RewriteResponse(
+                original_query=original_query,
+                rewritten_query=original_query,
+                rewrite_enabled=bool(request.rewrite_enable),
+                rewrite_backend=_resolve_rewrite_backend(request),
+                rewrite_time_ms=0,
+                plan=None,
+                clarification_required=True,
+                clarification_question=ambiguity_result.get("clarification_question", ""),
+                pending_query=original_query,
+            )
+
     rewrite_started = time.perf_counter()
     rewritten_query = rewrite_query(request)
     rewrite_time_ms = int((time.perf_counter() - rewrite_started) * 1000)
@@ -378,6 +401,9 @@ async def query(request: QueryRequest) -> QueryResponse:
                 request_id=request_id,
                 error=None,
                 debug=debug_trace,
+                plan=execution_plan,
+                task_results=[],
+                merged_answer="",
             )
 
         # Route metadata for logging (single-task path uses route_workflow)

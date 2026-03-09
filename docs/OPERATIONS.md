@@ -417,8 +417,8 @@ Route LLM is an LLM-based query classifier that routes incoming queries to one o
 | `GATEWAY_ROUTE_LLM_BACKEND` | `ollama` | Default backend: `"ollama"` (local) or `"deepseek"` (remote). Overridden by per-request `route_backend` field. |
 | `GATEWAY_ROUTE_LLM_CONF_THRESHOLD` | `0.7` | Minimum confidence to accept LLM result. Below this, gateway falls back to rule-based routing. |
 | `GATEWAY_ROUTE_LLM_TIMEOUT` | `5` | Timeout in seconds for the LLM HTTP call. On timeout, falls back to heuristics. |
-| `GATEWAY_ROUTE_LLM_OLLAMA_URL` | `http://localhost:11434` | Ollama API base URL. |
-| `GATEWAY_ROUTE_LLM_OLLAMA_MODEL` | `qwen2.5:1.5b` | Ollama model name for routing classification. |
+| `GATEWAY_ROUTE_LLM_OLLAMA_URL` | `http://localhost:11434` | Ollama API base URL. Use ECS URL (e.g. `http://8.163.3.40:11434`) when gateway runs locally against ECS Ollama. |
+| `GATEWAY_ROUTE_LLM_OLLAMA_MODEL` | `qwen3:1.7b` | Ollama model name for routing classification. |
 | `GATEWAY_ROUTE_LLM_DEEPSEEK_MODEL` | `deepseek-chat` | DeepSeek model name. Uses existing `DEEPSEEK_API_KEY`. |
 
 ### Example `.env` Snippets
@@ -429,8 +429,8 @@ GATEWAY_ROUTE_LLM_ENABLED=true
 GATEWAY_ROUTE_LLM_BACKEND=ollama
 GATEWAY_ROUTE_LLM_CONF_THRESHOLD=0.7
 GATEWAY_ROUTE_LLM_TIMEOUT=5
-GATEWAY_ROUTE_LLM_OLLAMA_URL=http://localhost:11434
-GATEWAY_ROUTE_LLM_OLLAMA_MODEL=qwen2.5:1.5b
+GATEWAY_ROUTE_LLM_OLLAMA_URL=http://8.163.3.40:11434
+GATEWAY_ROUTE_LLM_OLLAMA_MODEL=qwen3:1.7b
 ```
 
 **Remote-only mode (DeepSeek):**
@@ -579,10 +579,10 @@ tail -5 logs/gateway_queries.jsonl | python -m json.tool
 **Step 4: Verify Ollama is reachable (if using local backend)**
 ```bash
 curl http://localhost:11434/api/tags
-# Should list available models including qwen2.5:1.5b
+# Should list available models including qwen3:1.7b
 
 # Pull model if missing
-ollama pull qwen2.5:1.5b
+ollama pull qwen3:1.7b
 ```
 
 #### Known Failure Modes

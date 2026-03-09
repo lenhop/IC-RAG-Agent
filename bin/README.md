@@ -13,9 +13,9 @@ This folder contains executable shell entrypoints for local runtime and operatio
     - SP-API API: `8003`
   - Optional UI:
     - Unified Chat UI: `7862` with `--with-ui`
-  - Quick rewrite-only mode:
-    - Use `--rewrite-only` to run a minimal test stack and skip Route LLM plus downstream backends (`uds`, `rag`, `sp_api`).
-    - In this mode, the gateway returns rewrite-only results and the UI does not call downstream query execution.
+  - Route LLM only (quick testing):
+    - Use `--route-only` to run a minimal test stack: gateway only, no downstream backends (`uds`, `rag`, `sp_api`).
+    - Gateway runs clarification + rewrite + plan building; returns early without worker execution.
     - Planner prompt mode is enabled automatically to test task grouping and per-task breakdown rewrites.
   - Usage:
     - `./bin/project_stack.sh start`
@@ -23,7 +23,9 @@ This folder contains executable shell entrypoints for local runtime and operatio
     - `./bin/project_stack.sh stop`
     - `./bin/project_stack.sh status`
     - `./bin/project_stack.sh start --with-ui`
-    - `./bin/project_stack.sh start --with-ui --rewrite-only`
+    - `./bin/project_stack.sh start --route-only`
+    - `./bin/project_stack.sh restart --route-only`
+    - `./bin/project_stack.sh start --with-ui --route-only`
 - `run_rag_api.sh`
   - Run RAG API service with Uvicorn.
   - Usage:

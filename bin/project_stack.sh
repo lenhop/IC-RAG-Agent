@@ -22,6 +22,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${PROJECT_ROOT}"
 
+# Source .env if present so gateway inherits GATEWAY_* vars (e.g. ECS Ollama URL).
+# Skip if .env causes errors (e.g. malformed API secrets); gateway falls back to defaults.
+if [[ -f .env ]]; then
+  set +e
+  set -a
+  source .env 2>/dev/null
+  set +a
+  set -e
+fi
+
 if [[ -n "${PYTHON_BIN:-}" ]]; then
   PYTHON_BIN="${PYTHON_BIN}"
 elif [[ -x "/opt/miniconda3/bin/python" ]]; then
@@ -48,13 +58,15 @@ Commands:
 
 Options:
   --with-ui          Also run unified chat UI on port 7862
-  --rewrite-only     Start quick rewrite-only test environment
-                     (gateway + optional ui, skip uds/rag/sp_api)
+  --route-only       Route LLM only: gateway runs clarification + rewrite + plan;
+                     no downstream workers (uds/rag/sp_api). Use for quick testing.
+  --rewrite-only     Alias for --route-only (deprecated, use --route-only)
 
 Examples:
   ./bin/project_stack.sh start
   ./bin/project_stack.sh restart --with-ui
-  ./bin/project_stack.sh start --with-ui --rewrite-only
+  ./bin/project_stack.sh start --route-only
+  ./bin/project_stack.sh restart --route-only
   ./bin/project_stack.sh status
 EOF
 }
@@ -123,10 +135,14 @@ service_start_cmd() {
       local rag_url="${RAG_API_URL:-http://127.0.0.1:8002}"
       local uds_url="${UDS_API_URL:-http://127.0.0.1:8001}"
       local sp_url="${SP_API_URL:-http://127.0.0.1:8003}"
+      local ollama_url="${GATEWAY_REWRITE_OLLAMA_URL:-http://localhost:11434/api/generate}"
+      local ollama_model="${GATEWAY_REWRITE_OLLAMA_MODEL:-qwen3:1.7b}"
+      local route_url="${GATEWAY_ROUTE_LLM_OLLAMA_URL:-http://localhost:11434}"
+      local route_model="${GATEWAY_ROUTE_LLM_OLLAMA_MODEL:-qwen3:1.7b}"
       if [[ "${REWRITE_ONLY_MODE}" == "true" ]]; then
-        echo "RAG_API_URL=${rag_url} UDS_API_URL=${uds_url} SP_API_URL=${sp_url} GATEWAY_REWRITE_ONLY_MODE=true GATEWAY_REWRITE_PLANNER_ENABLED=true GATEWAY_REWRITE_BACKEND=deepseek GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
+        echo "RAG_API_URL=${rag_url} UDS_API_URL=${uds_url} SP_API_URL=${sp_url} GATEWAY_REWRITE_ONLY_MODE=true GATEWAY_REWRITE_PLANNER_ENABLED=true GATEWAY_CLARIFICATION_ENABLED=true GATEWAY_REWRITE_BACKEND=ollama GATEWAY_REWRITE_OLLAMA_URL=${ollama_url} GATEWAY_REWRITE_OLLAMA_MODEL=${ollama_model} GATEWAY_ROUTE_LLM_OLLAMA_URL=${route_url} GATEWAY_ROUTE_LLM_OLLAMA_MODEL=${route_model} GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
       else
-        echo "RAG_API_URL=${rag_url} UDS_API_URL=${uds_url} SP_API_URL=${sp_url} GATEWAY_REWRITE_PLANNER_ENABLED=true GATEWAY_REWRITE_BACKEND=deepseek GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
+        echo "RAG_API_URL=${rag_url} UDS_API_URL=${uds_url} SP_API_URL=${sp_url} GATEWAY_REWRITE_PLANNER_ENABLED=true GATEWAY_REWRITE_BACKEND=ollama GATEWAY_REWRITE_OLLAMA_URL=${ollama_url} GATEWAY_REWRITE_OLLAMA_MODEL=${ollama_model} GATEWAY_ROUTE_LLM_OLLAMA_URL=${route_url} GATEWAY_ROUTE_LLM_OLLAMA_MODEL=${route_model} GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
       fi
       ;;
     uds)
@@ -141,7 +157,7 @@ service_start_cmd() {
       ;;
     ui)
       if [[ "${REWRITE_ONLY_MODE}" == "true" ]]; then
-        echo "GATEWAY_API_URL=http://127.0.0.1:8000 GATEWAY_MOCK=false UNIFIED_CHAT_REWRITE_ONLY_MODE=true UNIFIED_CHAT_REWRITE_ENABLE=true UNIFIED_CHAT_REWRITE_BACKEND=deepseek CLIENT_GRADIO_PORT=7862 ${PYTHON_BIN} scripts/run_unified_chat.py"
+        echo "GATEWAY_API_URL=http://127.0.0.1:8000 GATEWAY_MOCK=false UNIFIED_CHAT_REWRITE_ONLY_MODE=true UNIFIED_CHAT_REWRITE_ENABLE=true UNIFIED_CHAT_REWRITE_BACKEND=ollama CLIENT_GRADIO_PORT=7862 ${PYTHON_BIN} scripts/run_unified_chat.py"
       else
         echo "GATEWAY_API_URL=http://127.0.0.1:8000 GATEWAY_MOCK=false CLIENT_GRADIO_PORT=7862 ${PYTHON_BIN} scripts/run_unified_chat.py"
       fi
@@ -358,7 +374,7 @@ main() {
       --with-ui)
         WITH_UI="true"
         ;;
-      --rewrite-only)
+      --route-only|--rewrite-only)
         REWRITE_ONLY_MODE="true"
         ;;
       --help|-h)

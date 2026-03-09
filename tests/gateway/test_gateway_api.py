@@ -63,6 +63,34 @@ def test_rewrite_endpoint_returns_rewrite_metadata(mock_rewrite):
     assert data["rewrite_time_ms"] >= 0
 
 
+@patch("src.gateway.api.rewrite_query")
+@patch("src.gateway.api.check_ambiguity")
+@patch("src.gateway.api._clarification_enabled", return_value=True)
+def test_rewrite_endpoint_clarification_required_returns_early(
+    mock_clar_enabled, mock_check_ambiguity, mock_rewrite
+):
+    """Rewrite endpoint runs clarification first; returns early when ambiguous."""
+    mock_check_ambiguity.return_value = {
+        "needs_clarification": True,
+        "clarification_question": "Which fees do you mean?",
+    }
+    payload = {
+        "query": "Show me the fees",
+        "workflow": "auto",
+        "rewrite_enable": True,
+        "session_id": None,
+        "stream": False,
+    }
+    resp = client.post("/api/v1/rewrite", json=payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["clarification_required"] is True
+    assert data["clarification_question"] == "Which fees do you mean?"
+    assert data["pending_query"] == "Show me the fees"
+    assert data["plan"] is None
+    mock_rewrite.assert_not_called()
+
+
 @patch("src.gateway.api.call_general", return_value={"answer": "general answer", "sources": []})
 @patch(
     "src.gateway.api.route_workflow",
@@ -408,7 +436,7 @@ def test_query_explicit_workflow_ignores_route_backend(mock_rewrite, mock_route,
 def test_query_rewrite_only_mode_skips_route_and_downstream(
     mock_rewrite, mock_route, mock_call_general, monkeypatch
 ):
-    """When rewrite-only mode is on, /query returns rewritten text without routing."""
+    """When rewrite-only mode is on, /query returns rewritten text + plan without execution."""
     monkeypatch.setenv("GATEWAY_REWRITE_ONLY_MODE", "true")
     payload = {
         "query": "quick test",
@@ -425,6 +453,9 @@ def test_query_rewrite_only_mode_skips_route_and_downstream(
     assert data["answer"] == "rewritten quick query"
     assert data["routing_confidence"] == 1.0
     assert data["error"] is None
+    assert data["plan"] is not None
+    assert data["task_results"] == []
+    assert data.get("merged_answer") == ""
     _assert_debug_payload(data)
     assert data["debug"]["route_source"] == "rewrite_only"
     assert data["debug"]["route_backend"] is None
