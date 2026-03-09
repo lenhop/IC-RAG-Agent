@@ -13,7 +13,7 @@ This document describes the system framework for the IC-RAG-Agent project using 
 
 IC-RAG-Agent is an **Intent Classification + Retrieval-Augmented Generation** system with a **Unified Gateway** routing queries to five backend workflows:
 
-- **Gateway** – Single entry point with clarification (optional), Route LLM (rewriting + task classification), and Dispatcher (supervisor agent; executes worker agents in parallel)
+- **Gateway** – Single entry point with clarification (required), Route LLM (rewriting + task classification), and Dispatcher (supervisor agent; executes worker agents in parallel)
 - **UDS Agent** – Business Intelligence for Amazon seller data (ClickHouse + ReAct)
 - **RAG Pipeline** – Document retrieval and hybrid generation with four parallel intent methods
 - **SP-API Agent** – Seller Operations via Amazon SP-API (ReAct + LangGraph workflow)
@@ -93,7 +93,7 @@ The gateway is organized into two conceptual groups:
 
 | Group | Responsibility | Modules | Description |
 |-------|----------------|---------|-------------|
-| **Route LLM** | Planning | `clarification.py`, `rewriters.py`, `router.py`, `route_llm.py` | Clarification (optional), query rewriting, and task classification. Produces an execution plan (what to do). |
+| **Route LLM** | Planning | `clarification.py`, `rewriters.py`, `router.py`, `route_llm.py` | Clarification (required), query rewriting, and task classification. Produces an execution plan (what to do). |
 | **Dispatcher** | Execution | `api.py`, `services.py` | Supervisor agent; invokes worker agents (General RAG, Amazon docs RAG, SP-API Agent, UDS Agent) and executes tasks in parallel within groups, merges results. |
 
 **Route LLM** outputs: rewritten query, execution plan (task_groups with workflow + query per task).
@@ -357,7 +357,7 @@ flowchart TD
 
 ### 5.1 Clarification (Question User)
 
-When `GATEWAY_CLARIFICATION_ENABLED=true`, the gateway runs a clarification check **before** rewriting. The LLM (`check_ambiguity`) detects ambiguous queries (e.g. "Show me the fees" without specifying fee type or period) and returns a clarification question. The client stores `pending_query` and merges the user's follow-up with it on the next turn. If the query is clear, the flow proceeds to rewriting and execution.
+Clarification is required by default. The gateway runs a clarification check **before** rewriting (set `GATEWAY_CLARIFICATION_ENABLED=false` to disable). The LLM (`check_ambiguity`) detects ambiguous queries (e.g. "Show me the fees" without specifying fee type or period) and returns a clarification question. The client stores `pending_query` and merges the user's follow-up with it on the next turn. If the query is clear, the flow proceeds to rewriting and execution.
 
 **Example:** User asks "Show me the fees" → Gateway returns "Which type of fees do you mean? FBA, storage, or referral?" → User replies "FBA fees for last month" → Client sends merged query "Show me the fees FBA fees for last month" → Gateway proceeds to rewrite and route.
 
@@ -365,7 +365,7 @@ When `GATEWAY_CLARIFICATION_ENABLED=true`, the gateway runs a clarification chec
 
 ### 5.2 Route LLM Steps (Current)
 
-1. **Clarification** (optional) – Detect ambiguous queries; ask user.
+1. **Clarification** (required) – Detect ambiguous queries; ask user.
 2. **Normalize** – Trim and collapse whitespace.
 3. **Rewrite** – LLM rewrites or classifies intents.
 4. **Build execution plan** – Parse planner output; route intents to workflows, create task_groups.
@@ -378,7 +378,7 @@ When `GATEWAY_CLARIFICATION_ENABLED=true`, the gateway runs a clarification chec
 
 | Component | File | Description |
 |-----------|------|--------------|
-| Clarification | `src/gateway/clarification.py` | `check_ambiguity()` – LLM detects ambiguous queries before rewrite; asks user for clarification. Enabled via `GATEWAY_CLARIFICATION_ENABLED`. |
+| Clarification | `src/gateway/clarification.py` | `check_ambiguity()` – LLM detects ambiguous queries before rewrite; asks user for clarification. Required by default; set `GATEWAY_CLARIFICATION_ENABLED=false` to disable. |
 | Rewrite prompts | `src/gateway/rewriters.py` | `REWRITE_PROMPT`, `REWRITE_PLANNER_PROMPT`, `INTENT_CLASSIFICATION_PROMPT` |
 | Intent classification | `src/gateway/rewriters.py` | `rewrite_intents_only()` – Phase 1 of two-phase flow |
 | Heuristic split | `src/gateway/router.py` | `_split_multi_intent_clauses()` – fallback when LLM fails |

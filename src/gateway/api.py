@@ -25,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .clarification import check_ambiguity
 from .dispatcher import build_execution_plan
+from .memory import GatewayConversationMemory
 from .router import route_workflow, rewrite_query
 from .logging_utils import format_route_metadata
 from .services import (
@@ -45,6 +46,19 @@ from .schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Gateway short-term memory (Redis-backed). None if Redis unreachable.
+gateway_memory: GatewayConversationMemory | None = None
+try:
+    import redis
+    redis_url = os.getenv("GATEWAY_REDIS_URL", "redis://localhost:6379/0")
+    _redis_client = redis.from_url(redis_url, decode_responses=True)
+    _redis_client.ping()
+    gateway_memory = GatewayConversationMemory(_redis_client)
+    logger.info("Gateway memory initialized (Redis: %s)", redis_url.split("@")[-1] if "@" in redis_url else redis_url)
+except Exception as exc:
+    logger.warning("Gateway memory disabled (Redis unreachable): %s", exc)
+    gateway_memory = None
 
 app = FastAPI(
     title="IC-RAG Gateway API",
@@ -72,6 +86,32 @@ async def health() -> dict[str, Any]:
         JSON payload with status field.
     """
     return {"status": "ok"}
+
+
+@app.get("/api/v1/session/{session_id}")
+async def get_session_history(session_id: str, last_n: int = 10) -> dict[str, Any]:
+    """
+    Return last N turns for a session (for UI or debugging).
+
+    Requires gateway memory (Redis) to be enabled.
+    """
+    if not gateway_memory:
+        return {"session_id": session_id, "history": [], "error": "Gateway memory disabled"}
+    history = gateway_memory.get_history(session_id, last_n=min(last_n, 50))
+    return {"session_id": session_id, "history": history}
+
+
+@app.delete("/api/v1/session/{session_id}")
+async def clear_session(session_id: str) -> dict[str, Any]:
+    """
+    Clear session history (mirror SP-API).
+
+    Requires gateway memory (Redis) to be enabled.
+    """
+    if not gateway_memory:
+        return {"session_id": session_id, "cleared": False, "error": "Gateway memory disabled"}
+    gateway_memory.clear_session(session_id)
+    return {"session_id": session_id, "cleared": True}
 
 
 def _call_workflow_backend(workflow: str, query_text: str, session_id: str | None) -> Dict[str, Any]:
@@ -264,13 +304,11 @@ def _is_rewrite_only_mode() -> bool:
 
 
 def _clarification_enabled() -> bool:
-    """Return True when clarification check is enabled (runs before rewrite)."""
-    return os.getenv("GATEWAY_CLARIFICATION_ENABLED", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
+    """Return True when clarification check is enabled (runs before rewrite). Required by default."""
+    v = os.getenv("GATEWAY_CLARIFICATION_ENABLED", "true").strip().lower()
+    if v in ("0", "false", "no", "off"):
+        return False
+    return True
 
 
 @app.post(
@@ -288,7 +326,7 @@ async def rewrite(request: QueryRequest) -> RewriteResponse:
     """
     original_query = (request.query or "").strip()
 
-    # Clarification (optional): return early if query is ambiguous
+    # Clarification (required): return early if query is ambiguous
     if _clarification_enabled():
         backend = _resolve_rewrite_backend(request)
         ambiguity_result = check_ambiguity(original_query, backend)
@@ -353,7 +391,7 @@ async def query(request: QueryRequest) -> QueryResponse:
     route_input_query = rewritten_query
 
     try:
-        # Clarification check (before rewrite): return early if query is ambiguous
+        # Clarification check (required, before rewrite): return early if query is ambiguous
         if _clarification_enabled():
             backend = _resolve_rewrite_backend(request)
             ambiguity_result = check_ambiguity(original_query, backend)
@@ -486,6 +524,17 @@ async def query(request: QueryRequest) -> QueryResponse:
             task_results=task_results,
             merged_answer=merged_answer,
         )
+        # Save turn to short-term memory (session history) when applicable
+        if gateway_memory and request.session_id and merged_answer and workflow not in ("clarification", "rewrite_only"):
+            try:
+                gateway_memory.save_turn(
+                    request.session_id,
+                    original_query,
+                    merged_answer,
+                    workflow,
+                )
+            except Exception as exc:
+                logger.warning("Gateway memory save_turn failed (non-fatal): %s", exc)
         # main success log includes routing metadata
         logger.info(
             "Gateway handled request %s with workflow=%s (confidence=%.2f) %s",

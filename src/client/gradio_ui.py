@@ -154,6 +154,21 @@ def _chat_handler(
                 "Rewrite failed; continuing with original query.\n"
                 f"Error: {rewrite_error}"
             )
+        elif rewrite_result.get("clarification_required"):
+            # Clarification needed: display question and store pending for follow-up
+            clarification_question = (
+                rewrite_result.get("clarification_question") or "Please provide more details."
+            )
+            pending_query = rewrite_result.get("pending_query") or raw_query
+            _set_pending_query(session_id, pending_query)
+            yield (
+                "**Clarification needed:**\n\n"
+                f"{clarification_question}\n\n"
+                "---\n"
+                "Reply with the missing details (e.g. store, ASIN, date range). "
+                "Your follow-up will be merged with the original query."
+            )
+            return
         else:
             routed_query = str(rewrite_result.get("rewritten_query") or raw_query).strip()
             rewrite_ms = int(rewrite_result.get("rewrite_time_ms") or 0)

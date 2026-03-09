@@ -65,15 +65,8 @@ def test_check_ambiguity_needs_true_but_empty_question_returns_no_clarification(
     assert result == {"needs_clarification": False}
 
 
-@patch("src.gateway.clarification._call_clarification_ollama")
-def test_check_ambiguity_show_me_the_fees_returns_clarification(mock_ollama):
-    """Ambiguous query 'Show me the fees' should trigger clarification question."""
-    mock_ollama.return_value = (
-        '{"needs_clarification": true, '
-        '"clarification_question": "Which type of fees do you mean? '
-        'For example: FBA fees, storage fees, or referral fees? Please specify."}'
-    )
+def test_check_ambiguity_show_me_the_fees_returns_clarification():
+    """Ambiguous query 'Show me the fees' should trigger clarification (heuristic or LLM)."""
     result = check_ambiguity("Show me the fees", backend="ollama")
     assert result["needs_clarification"] is True
     assert "fees" in result["clarification_question"].lower()
-    mock_ollama.assert_called_once_with("Show me the fees")

@@ -14,7 +14,7 @@ Route LLM has **6 steps** in order:
 
 | Step | Purpose |
 |------|---------|
-| 1. **Clarification** (optional) | Detect ambiguous queries; ask user for details before rewriting. |
+| 1. **Clarification** (required) | Detect ambiguous queries; ask user for details before rewriting. |
 | 2. **Normalize** | Trim and collapse whitespace. |
 | 3. **Rewrite** | LLM rewrites query or classifies intents (Phase 1). |
 | 4. **Build execution plan** | Parse planner output; route each intent to workflow; create task_groups. |

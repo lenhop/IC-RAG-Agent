@@ -142,7 +142,7 @@ service_start_cmd() {
       if [[ "${REWRITE_ONLY_MODE}" == "true" ]]; then
         echo "RAG_API_URL=${rag_url} UDS_API_URL=${uds_url} SP_API_URL=${sp_url} GATEWAY_REWRITE_ONLY_MODE=true GATEWAY_REWRITE_PLANNER_ENABLED=true GATEWAY_CLARIFICATION_ENABLED=true GATEWAY_REWRITE_BACKEND=ollama GATEWAY_REWRITE_OLLAMA_URL=${ollama_url} GATEWAY_REWRITE_OLLAMA_MODEL=${ollama_model} GATEWAY_ROUTE_LLM_OLLAMA_URL=${route_url} GATEWAY_ROUTE_LLM_OLLAMA_MODEL=${route_model} GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
       else
-        echo "RAG_API_URL=${rag_url} UDS_API_URL=${uds_url} SP_API_URL=${sp_url} GATEWAY_REWRITE_PLANNER_ENABLED=true GATEWAY_REWRITE_BACKEND=ollama GATEWAY_REWRITE_OLLAMA_URL=${ollama_url} GATEWAY_REWRITE_OLLAMA_MODEL=${ollama_model} GATEWAY_ROUTE_LLM_OLLAMA_URL=${route_url} GATEWAY_ROUTE_LLM_OLLAMA_MODEL=${route_model} GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
+        echo "RAG_API_URL=${rag_url} UDS_API_URL=${uds_url} SP_API_URL=${sp_url} GATEWAY_REWRITE_PLANNER_ENABLED=true GATEWAY_CLARIFICATION_ENABLED=true GATEWAY_REWRITE_BACKEND=ollama GATEWAY_REWRITE_OLLAMA_URL=${ollama_url} GATEWAY_REWRITE_OLLAMA_MODEL=${ollama_model} GATEWAY_ROUTE_LLM_OLLAMA_URL=${route_url} GATEWAY_ROUTE_LLM_OLLAMA_MODEL=${route_model} GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
       fi
       ;;
     uds)

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Optional
 
 import requests
@@ -27,13 +28,109 @@ DEFAULT_REWRITE_TIMEOUT = 10
 
 CLARIFICATION_PROMPT = (
     "You are a clarification expert for Amazon seller queries. "
-    "Check if the query is ambiguous or lacks critical information: "
-    "ASIN, Order ID, date range, time period, store, SKU, marketplace. "
-    "If missing or ambiguous: {\"needs_clarification\": true, \"clarification_question\": \"...\"} "
-    "If clear: {\"needs_clarification\": false} "
-    "DO NOT answer the query. DO NOT add explanation or notes. Output JSON ONLY. "
+    "ALWAYS ask for clarification when the query lacks: "
+    "store/ASIN/SKU (for inventory, products, listings), "
+    "Order ID (for order status), "
+    "date range (for fees, sales, trends), "
+    "fee type (FBA/storage/referral for fee questions), "
+    "marketplace (when multiple stores possible). "
+    "Examples that MUST get needs_clarification=true: "
+    '"What\'s my inventory?" (no store/ASIN), '
+    '"Show me the fees" (no type/period), '
+    '"Check my order" (no Order ID). '
+    "Output JSON only: {\"needs_clarification\": true, \"clarification_question\": \"...\"} or {\"needs_clarification\": false}. "
     "User query: "
 )
+
+
+# Prompt for LLM to generate a contextual clarification question (when heuristic detects ambiguity).
+_GENERATE_QUESTION_PROMPT = (
+    "Generate a brief clarification question for this ambiguous Amazon seller query. "
+    "Ask for the missing info (store, ASIN, SKU, Order ID, date range, fee type, etc). "
+    "Output JSON only: {\"clarification_question\": \"...\"}. "
+    "User query: "
+)
+
+# Heuristic patterns: query mentions topic but lacks required identifiers.
+# (topic_pattern, has_required_pattern, fallback_question when LLM fails)
+_HEURISTIC_AMBIGUOUS = [
+    (
+        r"\b(inventory|stock)\b",
+        r"\b(ASIN|B0[0-9A-Z]{8}|store|SKU|marketplace)\b",
+        "Which store, ASIN, or SKU do you want inventory for?",
+    ),
+    (
+        r"\b(order|orders)\s+(status|info|details)?\b|\b(check|get)\s+(my\s+)?order\b",
+        r"\d{3}-\d{7}-\d{7}|order\s*[iI][dD]",
+        "Please provide the Order ID (e.g. 112-1234567-8901234) to check order status.",
+    ),
+    (
+        r"\b(fees?|charges?|breakdown)\b",
+        r"\b(FBA|storage|referral|last\s+(month|quarter|year)|Q[1-4]|202[0-9])\b",
+        "Which fees do you mean? (FBA, storage, or referral) And for which time period?",
+    ),
+    (
+        r"\b(sales?|trends?|metrics?)\b",
+        r"\b(last\s+(month|quarter|year)|Q[1-4]|202[0-9]|january|february)\b",
+        "Which date range or time period do you want the data for?",
+    ),
+]
+
+
+def _generate_clarification_question_ollama(query: str) -> Optional[str]:
+    """Call LLM to generate a contextual clarification question. Returns None on failure."""
+    url = os.getenv("GATEWAY_REWRITE_OLLAMA_URL", DEFAULT_OLLAMA_URL)
+    mdl = os.getenv("GATEWAY_REWRITE_OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
+    timeout = _get_timeout()
+    payload = {
+        "model": mdl,
+        "prompt": f"{_GENERATE_QUESTION_PROMPT}{query.strip()}",
+        "stream": False,
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=timeout)
+    except (requests.ConnectionError, requests.Timeout, requests.RequestException) as exc:
+        logger.warning("Ollama generate-question failed: %s", exc)
+        return None
+    if resp.status_code != 200:
+        return None
+    try:
+        data = resp.json()
+        text = (data.get("response") or "").strip()
+    except (ValueError, TypeError):
+        return None
+    if not text:
+        return None
+    raw = _strip_markdown_fences(text)
+    candidate = _extract_first_json_object(raw)
+    if not candidate:
+        return None
+    try:
+        parsed = json.loads(candidate)
+        q = parsed.get("clarification_question")
+        if isinstance(q, str) and q.strip():
+            return q.strip()
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
+def _heuristic_needs_clarification(query: str) -> Optional[dict]:
+    """
+    Return clarification dict if query matches known ambiguous patterns.
+    Used as fast path before LLM when pattern is clear.
+    """
+    q = (query or "").strip()
+    if not q:
+        return None
+    for topic_pattern, has_required, question in _HEURISTIC_AMBIGUOUS:
+        if not re.search(topic_pattern, q, re.IGNORECASE):
+            continue
+        if has_required is None:
+            return {"needs_clarification": True, "clarification_question": question}
+        if not re.search(has_required, q, re.IGNORECASE):
+            return {"needs_clarification": True, "clarification_question": question}
+    return None
 
 
 def _get_timeout() -> int:
@@ -147,6 +244,19 @@ def check_ambiguity(query: str, backend: Optional[str] = None) -> dict:
     """
     if not query or not query.strip():
         return {"needs_clarification": False}
+
+    # Heuristic fast path: known ambiguous patterns. Use LLM to generate contextual question.
+    heuristic_result = _heuristic_needs_clarification(query)
+    if heuristic_result is not None:
+        fallback_question = heuristic_result.get("clarification_question", "")
+        effective_backend = (backend or "").strip().lower() or os.getenv(
+            "GATEWAY_REWRITE_BACKEND", "ollama"
+        ).strip().lower()
+        if effective_backend == "ollama":
+            llm_question = _generate_clarification_question_ollama(query.strip())
+            if llm_question:
+                return {"needs_clarification": True, "clarification_question": llm_question}
+        return {"needs_clarification": True, "clarification_question": fallback_question}
 
     effective_backend = (backend or "").strip().lower() or os.getenv(
         "GATEWAY_REWRITE_BACKEND", "ollama"
