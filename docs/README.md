@@ -17,7 +17,8 @@ Start here if you want to develop or extend the system:
 - **[Developer Guide](guides/UDS_DEVELOPER_GUIDE.md)** - Architecture, tool development, code structure
 - **[API Reference](guides/UDS_API_REFERENCE.md)** - Complete API documentation with examples
 - **[HuggingFace Setup Guide](guides/HUGGINGFACE_SETUP_GUIDE.md)** - HuggingFace CLI and model download
-- **[Architecture Decisions (Archive)](archive/ARCHITECTURE_DECISIONS.md)** - Historical architecture decisions and rationale
+- **[Architecture Decisions](ARCHITECTURE_DECISIONS.md)** - Design rationale, role analogy, improvement suggestions
+- **[Architecture Decisions (Archive)](archive/ARCHITECTURE_DECISIONS.md)** - Historical architecture decisions
 
 ### For Operations
 Start here if you're deploying or operating the system:

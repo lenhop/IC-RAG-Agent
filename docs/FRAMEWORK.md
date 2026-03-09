@@ -1,6 +1,6 @@
 # IC-RAG-Agent System Framework
 
-**Version:** 2.2.0  
+**Version:** 2.3.0  
 **Last Updated:** 2026-03-08
 
 This document describes the system framework for the IC-RAG-Agent project using Mermaid diagrams.
@@ -28,11 +28,11 @@ flowchart TB
 
     subgraph Gateway["Unified Gateway"]
         API[FastAPI]
-        RouteLLM[Route LLM: Clarification, rewriting, intent classification, task planning]
-        Dispatcher[Dispatcher: Orchestrator, invoke backends, merge results]
+        RouteLLM[Route LLM: Clarification, Rewriting, Intent Classification]
+        Dispatcher[Dispatcher: Task Planning, Invoke, Merge]
     end
 
-    subgraph Backends["Worker Agents"]
+    subgraph Workers["Worker Agents"]
         RAG[RAG Pipeline]
         UDS[UDS Agent]
         SP[SP-API Agent]
@@ -53,9 +53,9 @@ flowchart TB
     UI -->|POST| API
     API --> RouteLLM
     RouteLLM --> Dispatcher
-    Dispatcher -->|general / amazon_docs / ic_docs| RAG
-    Dispatcher -->|uds| UDS
-    Dispatcher -->|sp_api| SP
+    Dispatcher --> RAG
+    Dispatcher --> UDS
+    Dispatcher --> SP
 
     RAG --> Chroma
     RAG --> Redis
@@ -70,6 +70,8 @@ flowchart TB
     Log -->|write| CH
     Monitor -->|read| CH
 ```
+
+> **Note:** Target design: Task planning moves to Dispatcher. Route LLM outputs intents only; Dispatcher maps intents to workflows and plans execution.
 
 ---
 
@@ -98,7 +100,17 @@ The gateway is organized into two conceptual groups:
 
 **Dispatcher** inputs: execution plan. Outputs: task_results, merged_answer, aggregated sources.
 
-### 1.3 Memory Strategy
+### 1.3 Role Analogy (Target Design)
+
+| Role | Responsibility | Module |
+|------|----------------|--------|
+| **Decision Maker (Reason LLM)** | Clarify needs, identify intents | Route LLM |
+| **Project Manager (Supervisor)** | Task planning, assignment, supervision, result aggregation | Dispatcher |
+| **Worker** | Execute tasks, report results | RAG, SP-API, UDS |
+
+**Proposed change:** Move Task planning from Route LLM to Dispatcher. Route LLM outputs intents only; Dispatcher performs intent → workflow mapping and task planning. See [ARCHITECTURE_DECISIONS.md](ARCHITECTURE_DECISIONS.md) for rationale and improvement suggestions.
+
+### 1.4 Memory Strategy
 
 | Layer | Store | Purpose |
 |-------|-------|---------|
@@ -349,7 +361,18 @@ When `GATEWAY_CLARIFICATION_ENABLED=true`, the gateway runs a clarification chec
 
 **Example:** User asks "Show me the fees" → Gateway returns "Which type of fees do you mean? FBA, storage, or referral?" → User replies "FBA fees for last month" → Client sends merged query "Show me the fees FBA fees for last month" → Gateway proceeds to rewrite and route.
 
-### 5.2 Query Rewriting and Routing Rules
+**Why clarification before rewriting:** Ambiguity is about missing information (which fees? what period?). The rewriter cannot invent information; it would guess and introduce bias. Clarifying first avoids wasted rewrite calls and ensures correct routing. See [ARCHITECTURE_DECISIONS.md](ARCHITECTURE_DECISIONS.md).
+
+### 5.2 Route LLM Steps (Current)
+
+1. **Clarification** (optional) – Detect ambiguous queries; ask user.
+2. **Normalize** – Trim and collapse whitespace.
+3. **Rewrite** – LLM rewrites or classifies intents.
+4. **Build execution plan** – Parse planner output; route intents to workflows, create task_groups.
+5. **Plan correction** – Heuristic override for misclassifications.
+6. **Expand merged tasks** – Split tasks with multiple sub-questions.
+
+### 5.3 Query Rewriting and Routing Rules
 
 **File locations:**
 
@@ -381,7 +404,7 @@ When `GATEWAY_CLARIFICATION_ENABLED=true`, the gateway runs a clarification chec
 | sp_api | 0.85 | sp-api, fba, shipment, catalog, seller api |
 | general | 0.7 | fallback when no keyword match |
 
-### 5.3 Multi-Task Execution Flow (Two-Phase Intent Split)
+### 5.4 Multi-Task Execution Flow (Two-Phase Intent Split)
 
 When `GATEWAY_REWRITE_PLANNER_ENABLED=true`, the gateway uses a two-phase flow to avoid LLM merging multiple sub-questions into one task:
 

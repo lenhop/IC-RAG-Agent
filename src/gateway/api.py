@@ -24,7 +24,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .clarification import check_ambiguity
-from .router import build_execution_plan, route_workflow, rewrite_query
+from .dispatcher import build_execution_plan
+from .router import route_workflow, rewrite_query
 from .logging_utils import format_route_metadata
 from .services import (
     call_amazon_docs,
