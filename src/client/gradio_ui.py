@@ -404,18 +404,23 @@ def _chat_handler(
     yield f"{answer}\n" + "\n".join(trace_lines)
 
 
-# CSS to make chat dialog and input box taller
+# CSS to make chat dialog and input box taller, keep input visible at bottom
 CHAT_DIALOG_CSS = """
-/* Chat dialog: fill most of viewport */
-#ic_chat_column { min-height: 95vh !important; display: flex !important; flex-direction: column !important; }
-#ic_chat_column .contain { flex: 1 !important; min-height: 0 !important; }
-.chatbot { min-height: 95vh !important; flex: 1 !important; }
-[data-testid="chatbot"] { min-height: 95vh !important; }
-.gr-chat { min-height: 95vh !important; }
+/* Chat column: fixed height, flex column, messages scroll, input stays visible at bottom */
+#ic_chat_column { height: 95vh !important; max-height: 95vh !important; display: flex !important; flex-direction: column !important; overflow: hidden !important; }
+#ic_chat_column > div { flex: 1 !important; min-height: 0 !important; overflow: hidden !important; display: flex !important; flex-direction: column !important; }
+#ic_chat_column .contain { flex: 1 !important; min-height: 0 !important; overflow: hidden !important; display: flex !important; flex-direction: column !important; }
+/* Chatbot/messages: flex-grow to fill space, scroll internally, never push input off */
+#ic_chatbot { flex: 1 1 auto !important; min-height: 0 !important; overflow-y: auto !important; max-height: none !important; }
+.chatbot { flex: 1 1 auto !important; min-height: 0 !important; overflow-y: auto !important; }
+[data-testid="chatbot"] { flex: 1 1 auto !important; min-height: 0 !important; overflow-y: auto !important; }
+.gr-chat { flex: 1 !important; min-height: 0 !important; display: flex !important; flex-direction: column !important; overflow: hidden !important; }
+.gr-chat .scroll-hide, .gr-chat [class*="scroll"] { flex: 1 1 auto !important; min-height: 0 !important; overflow-y: auto !important; }
+/* Input area: flex-shrink 0 so it stays visible at bottom, never covered */
+#ic_chat_column .gr-box, #ic_chat_column form, .gr-chat .gr-box, .gr-chat form { flex-shrink: 0 !important; }
 /* Input box: taller for multi-line typing */
-#ic_chat_column textarea { min-height: 150px !important; height: 150px !important; }
-.gr-chat textarea { min-height: 150px !important; height: 150px !important; }
-.chatbot textarea { min-height: 150px !important; height: 150px !important; }
+#ic_chat_column textarea { min-height: 150px !important; height: 150px !important; flex-shrink: 0 !important; }
+.gr-chat textarea { min-height: 150px !important; height: 150px !important; flex-shrink: 0 !important; }
 /* Workflow radio: single column, left-aligned, no extra gap */
 #workflow_radio { flex: 0 0 auto !important; }
 #workflow_radio .wrap { display: flex !important; flex-direction: column !important; flex-wrap: nowrap !important; align-items: flex-start !important; justify-content: flex-start !important; }
@@ -424,6 +429,44 @@ CHAT_DIALOG_CSS = """
 #workflow_radio [class*="wrap"] { display: flex !important; flex-direction: column !important; flex-wrap: nowrap !important; align-items: flex-start !important; justify-content: flex-start !important; }
 /* Left column: pack content at top, no stretch */
 #ic_controls_column { justify-content: flex-start !important; align-items: flex-start !important; }
+"""
+
+# JavaScript to auto-scroll chat to bottom when new messages arrive or on submit
+CHAT_AUTOSCROLL_JS = """
+(function() {
+    function scrollChatToBottom() {
+        var selectors = ['#ic_chatbot', '[aria-label="chatbot conversation"]', '.gr-chat .scroll-hide', '#ic_chat_column [class*="scroll"]'];
+        selectors.forEach(function(sel) {
+            var el = document.querySelector(sel);
+            if (el) {
+                el.scrollTop = el.scrollHeight;
+                var children = el.querySelectorAll('[style*="overflow"]');
+                for (var i = 0; i < children.length; i++) {
+                    children[i].scrollTop = children[i].scrollHeight;
+                }
+            }
+        });
+    }
+    function attachObserver() {
+        var root = document.getElementById('ic_chatbot') || document.getElementById('ic_chat_column') || document.querySelector('.gr-chat');
+        if (root && !root._icScrollObserved) {
+            root._icScrollObserved = true;
+            var obs = new MutationObserver(scrollChatToBottom);
+            obs.observe(root, { childList: true, subtree: true });
+            scrollChatToBottom();
+        }
+    }
+    function init() {
+        attachObserver();
+        setTimeout(attachObserver, 800);
+        setTimeout(attachObserver, 2000);
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
+})();
 """
 
 
@@ -645,7 +688,7 @@ def launch(server_name: str = "0.0.0.0", server_port: Optional[int] = None) -> N
     demo = create_demo()
     print(f"Starting IC-RAG-Agent Chat at http://localhost:{port} (bind {server_name})")
     print(f"Gateway: {GATEWAY_API_URL or '(mock mode)'}")
-    demo.launch(server_name=server_name, server_port=port, share=False)
+    demo.launch(server_name=server_name, server_port=port, share=False, js=CHAT_AUTOSCROLL_JS)
 
 
 def main() -> None:
