@@ -17,6 +17,8 @@ from typing import Optional
 
 import requests
 
+from .prompt_loader import load_prompt
+
 logger = logging.getLogger(__name__)
 
 # Reuse env defaults from rewriters
@@ -26,34 +28,9 @@ DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_REWRITE_TIMEOUT = 10
 
-CLARIFICATION_PROMPT = (
-    "You are a clarification expert for Amazon seller queries. "
-    "ALWAYS ask for clarification when the query lacks: "
-    "store/ASIN/SKU (for inventory, products, listings), "
-    "Order ID (for order status), "
-    "date range (for fees, sales, trends), "
-    "fee type (FBA/storage/referral for fee questions), "
-    "marketplace (when multiple stores possible). "
-    "Do NOT ask for clarification when the query is about documentation, requirements, policy, compliance, guidelines, or what Amazon says - these are self-contained conceptual questions. "
-    "Examples that MUST get needs_clarification=true: "
-    '"What\'s my inventory?" (no store/ASIN), '
-    '"Show me the fees" (no type/period), '
-    '"Check my order" (no Order ID). '
-    "Examples that MUST get needs_clarification=false: "
-    '"What are Amazon\'s product compliance requirements", '
-    '"How are the sales for 20250101". '
-    "Output JSON only: {\"needs_clarification\": true, \"clarification_question\": \"...\"} or {\"needs_clarification\": false}. "
-    "User query: "
-)
-
-
-# Prompt for LLM to generate a contextual clarification question (when heuristic detects ambiguity).
-_GENERATE_QUESTION_PROMPT = (
-    "Generate a brief clarification question for this ambiguous Amazon seller query. "
-    "Ask for the missing info (store, ASIN, SKU, Order ID, date range, fee type, etc). "
-    "Output JSON only: {\"clarification_question\": \"...\"}. "
-    "User query: "
-)
+# Prompts loaded from src/prompts/*.txt (cached after first access)
+CLARIFICATION_PROMPT = load_prompt("clarification")
+_GENERATE_QUESTION_PROMPT = load_prompt("clarification_generate_question")
 
 def _is_concrete_documentation_query(query: str) -> bool:
     """

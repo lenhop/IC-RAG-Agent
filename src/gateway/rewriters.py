@@ -22,82 +22,14 @@ import requests
 from pydantic import ValidationError
 
 from .schemas import RewritePlan, TaskGroup, TaskItem
+from .prompt_loader import load_prompt
 
 logger = logging.getLogger(__name__)
 
-# Shared prompt for both backends (per PLAN.md)
-REWRITE_PROMPT = (
-    "Rewrite this user question into a clearer search query for our knowledge base. "
-    "IMPORTANT: When the user query contains multiple distinct questions or topics, "
-    "you MUST output each sub-query on its own line as a numbered list:\n"
-    "1. first sub-query\n"
-    "2. second sub-query\n"
-    "Do NOT merge multiple questions into one long sentence. "
-    "Break down long run-on sentences into short, clear numbered items. "
-    "Preserve all dates, numbers, filters, and entity names. "
-    "Do not answer the question; only output the rewritten query or numbered list. "
-    "No explanation."
-)
-
-# Phase 1: Intent classification only. Lists distinct sub-questions; no task building.
-# Used when GATEWAY_REWRITE_PLANNER_ENABLED to avoid LLM merging intents.
-INTENT_CLASSIFICATION_PROMPT = (
-    "List each distinct sub-question from the user query. Output JSON only: {\"intents\": [\"...\", \"...\"]}. "
-    "CRITICAL: Do NOT merge multiple questions into one. Each sub-question must be a separate item. "
-    "Preserve ASINs, order IDs, dates exactly. Do NOT split dates that contain commas "
-    "(e.g. keep \"September 1st, 2026\" or \"January 1, 2025\" as one intent, not two). "
-    "Example 1: \"what is FBA get order 123 which table\" -> "
-    "{\"intents\": [\"what is FBA\", \"get order 123\", \"which table stores referral fee data\"]}. "
-    "Example 2: \"what is FBA vs FBM, get order 112-123, which table stores fee, show storage trend\" -> "
-    "{\"intents\": [\"what is the difference between FBA and FBM\", \"get order status for 112-123\", "
-    "\"which ClickHouse table stores referral fee breakdown\", \"show me month over month trend of storage fees\"]}"
-)
-
-# Planner-style rewrite prompt for hybrid task decomposition.
-# Enabled via GATEWAY_REWRITE_PLANNER_ENABLED to avoid changing default behavior.
-# When two-phase flow is used, this is bypassed in favor of INTENT_CLASSIFICATION_PROMPT.
-REWRITE_PLANNER_PROMPT = (
-    "You are a query rewriting and task planning engine for a multi-agent gateway. "
-    "Your task is to split a complex user query into executable subtasks. "
-    "Allowed workflows: general, amazon_docs, ic_docs, sp_api, uds. "
-    "Preserve all entities, dates, metrics, ASINs, and constraints from user text. "
-    "Do not answer the user question. "
-    "Output JSON only. No markdown, no extra text. "
-    "Process: Step 1) List each distinct sub-question in extracted_intents (one per item). "
-    "Step 2) Create exactly one task per extracted intent in task_groups. "
-    "JSON schema: "
-    "{"
-    '"extracted_intents":["sub-question 1","sub-question 2",...],'
-    '"plan_type":"single_domain|hybrid",'
-    '"merge_strategy":"none|concat|compare|synthesize",'
-    '"task_groups":[{'
-    '"group_id":"g1",'
-    '"parallel":true,'
-    '"tasks":[{'
-    '"task_id":"t1",'
-    '"workflow":"general|amazon_docs|ic_docs|sp_api|uds",'
-    '"query":"agent-ready query (must match one extracted_intents item)",'
-    '"depends_on":["task_id_optional"],'
-    '"reason":"short routing reason optional"'
-    "}]"
-    "}]"
-    "} "
-    "Routing policy constraints: "
-    "A) amazon_docs for Amazon business rules/policies/requirements/fee definitions; "
-    "B) uds should be preferred first for analytical/historical questions that can be answered from warehouse snapshots; "
-    "C) sp_api must be used only when the requested data is real-time/current-state or can only be retrieved via live SP-API endpoints; "
-    "D) uds is historical (daily loaded) and should handle trend/aggregate/by-period/table analytics; "
-    "E) sp_api must not be used for policy/business-rule explanation tasks. "
-    "Constraints: "
-    "1) extracted_intents must list every distinct sub-question point by point; do not merge. "
-    "2) Each task query must match exactly one extracted_intents item. "
-    "3) keep task_groups ordered by dependency stage; "
-    "4) each task must have non-empty query; "
-    "5) use hybrid when more than one workflow is required; "
-    "6) default merge_strategy to concat unless explicit compare/synthesize intent. "
-    "Example: user asks 'what does FBA removal policy say check ASIN B07 active listings which table stores fee data' -> "
-    "extracted_intents: [\"what does Amazon FBA removal policy say\", \"check if ASIN B07 has any active listings\", \"which table stores referral fee data\"]."
-)
+# Prompts loaded from src/prompts/*.txt (cached after first access)
+REWRITE_PROMPT = load_prompt("rewrite")
+INTENT_CLASSIFICATION_PROMPT = load_prompt("intent_classification")
+REWRITE_PLANNER_PROMPT = load_prompt("rewrite_planner")
 
 # Environment defaults
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api/generate"

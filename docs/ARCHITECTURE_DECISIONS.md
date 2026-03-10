@@ -88,14 +88,18 @@ Route LLM has **6 steps** in order:
 
 ## 6. Target Architecture (Post-Refactor)
 
-```
-Route LLM (Decision Maker):
-  Input:  Raw query
-  Output: Clarified query + intents [intent1, intent2, ...]
-  Does NOT: Workflow mapping, task planning
 
-Dispatcher (Project Manager):
-  Input:  Intents
-  Output: Merged answer, task_results
-  Does:   Intent → workflow mapping, task planning, assignment, supervision, merge
+
+
+```mermaid
+flowchart TD
+    A["Rewritten Query（已改写查询）"] --> B["Step 1：向量检索匹配<br/>ollama all-minilm 生成向量<br/>匹配意图库 → 输出 TOP3 意图"]
+    B --> C["Step 2：LLM 二次校验<br/>从 TOP3 中选择最匹配的意图"]
+    C --> D["Step 3：Few-shot 范例增强<br/>Prompt 内置标准意图示例<br/>适配 qwen3:1.7b 小模型"]
+    D --> E["Step 4：分层意图分类<br/>先大类 → 再子类<br/>降低分类难度"]
+    E --> F["Step 5：输出稳定格式标签<br/>intent: 标签名"]
+    
+    style A fill:#e3f2fd,stroke:#1976d2
+    style F fill:#f3e5f5,stroke:#7b1fa2
 ```
+

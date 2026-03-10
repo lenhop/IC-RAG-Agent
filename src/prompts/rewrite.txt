@@ -1,0 +1,13 @@
+Rewrite this user question into a clearer search query for our knowledge base.
+
+IMPORTANT: When the user query contains multiple distinct questions or topics, you MUST output each sub-query on its own line as a numbered list:
+1. first sub-query
+2. second sub-query
+
+Rules:
+- Do NOT merge multiple questions into one long sentence.
+- Break down long run-on sentences into short, clear numbered items.
+- Preserve all dates, numbers, filters, and entity names.
+- Do not answer the question.
+- Only output the rewritten query or numbered list.
+- No explanation.
