@@ -22,7 +22,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Tuple
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from .clarification import check_ambiguity
@@ -33,6 +33,7 @@ from .routing_heuristics import (
     apply_docs_preference,
     format_rewritten_query_bullets,
     route_workflow_heuristic,
+    split_multi_intent_clauses,
 )
 from .logging_utils import format_route_metadata
 from .services import (
@@ -51,8 +52,61 @@ from .schemas import (
     TaskGroup,
     TaskItem,
 )
+from .auth_routes import router as auth_router
+from src.auth.jwt_util import verify_token
 
 logger = logging.getLogger(__name__)
+
+
+def _auth_required() -> bool:
+    """Return True when gateway requires auth for query/rewrite."""
+    return os.getenv("GATEWAY_AUTH_REQUIRED", "").lower() in ("1", "true", "yes", "on")
+
+
+async def _get_optional_user_if_required(
+    authorization: str | None = Header(None, alias="Authorization"),
+) -> dict | None:
+    """
+    When GATEWAY_AUTH_REQUIRED=true, validate JWT and return payload or raise 401.
+    When false, return None (no auth check).
+    """
+    if not _auth_required():
+        return None
+    if not authorization or not authorization.strip():
+        raise HTTPException(status_code=401, detail="Authorization required")
+    payload = verify_token(authorization)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return payload
+
+
+async def _require_user_for_history(
+    authorization: str | None = Header(None, alias="Authorization"),
+) -> dict:
+    """
+    Require valid JWT for user history endpoint.
+    Returns payload with sub (user_id); raises 401 if missing or invalid.
+    """
+    if not authorization or not authorization.strip():
+        raise HTTPException(status_code=401, detail="Authorization required")
+    payload = verify_token(authorization)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+    return payload
+
+
+def _resolve_user_id(request: QueryRequest, _user: dict | None) -> str | None:
+    """
+    Resolve effective user_id for memory operations.
+
+    When GATEWAY_AUTH_REQUIRED=true: derive from JWT (sub claim).
+    When auth optional: use request.user_id from body.
+    """
+    if _user and _user.get("sub"):
+        return str(_user["sub"]).strip() or None
+    if request.user_id and str(request.user_id).strip():
+        return str(request.user_id).strip()
+    return None
 
 # Gateway short-term memory (Redis-backed). None if Redis unreachable.
 gateway_memory: GatewayConversationMemory | None = None
@@ -82,6 +136,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(auth_router)
 
 
 @app.get("/health")
@@ -119,6 +175,35 @@ async def clear_session(session_id: str) -> dict[str, Any]:
         return {"session_id": session_id, "cleared": False, "error": "Gateway memory disabled"}
     gateway_memory.clear_session(session_id)
     return {"session_id": session_id, "cleared": True}
+
+
+@app.get("/api/v1/user/history")
+async def get_user_history(
+    last_n: int = 5,
+    _user: dict = Depends(_require_user_for_history),
+) -> dict[str, Any]:
+    """
+    Return last N conversation turns for the authenticated user.
+
+    Requires Authorization: Bearer <token>. Extracts user_id from JWT (sub claim).
+    """
+    user_id = (_user.get("sub") or "").strip() if _user else None
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token: missing user id")
+    if not gateway_memory:
+        return {"history": [], "error": "Gateway memory disabled"}
+    last_n = min(max(1, last_n), 50)
+    raw = gateway_memory.get_history_by_user(user_id, last_n=last_n)
+    history = [
+        {
+            "query": h.get("query", ""),
+            "answer": h.get("answer", ""),
+            "workflow": h.get("workflow", ""),
+            "timestamp": h.get("timestamp", ""),
+        }
+        for h in raw
+    ]
+    return {"history": history}
 
 
 def _call_workflow_backend(workflow: str, query_text: str, session_id: str | None) -> Dict[str, Any]:
@@ -323,7 +408,10 @@ def _clarification_enabled() -> bool:
     response_model=RewriteResponse,
     summary="Route LLM only (no execution)",
 )
-async def rewrite(request: QueryRequest) -> RewriteResponse:
+async def rewrite(
+    request: QueryRequest,
+    _user: dict | None = Depends(_get_optional_user_if_required),
+) -> RewriteResponse:
     """
     Run Route LLM pipeline only: clarification, rewriting, intent classification.
     No execution plan building (Dispatcher's job) or downstream worker execution.
@@ -332,6 +420,7 @@ async def rewrite(request: QueryRequest) -> RewriteResponse:
     rewrite with context), 3) Intent classification.
     """
     original_query = (request.query or "").strip()
+    effective_user_id = _resolve_user_id(request, _user)
 
     # Clarification (required): return early if query is ambiguous
     if _clarification_enabled():
@@ -339,13 +428,14 @@ async def rewrite(request: QueryRequest) -> RewriteResponse:
         ambiguity_result = check_ambiguity(original_query, backend)
         if ambiguity_result.get("needs_clarification"):
             clarification_question = ambiguity_result.get("clarification_question", "")
-            if gateway_memory and request.session_id:
+            if gateway_memory and effective_user_id:
                 try:
                     gateway_memory.save_turn(
-                        request.session_id,
+                        request.session_id or "",
                         original_query,
                         clarification_question,
                         "clarification",
+                        user_id=effective_user_id,
                     )
                 except Exception as exc:
                     logger.warning("Gateway memory save_turn failed (non-fatal): %s", exc)
@@ -361,9 +451,11 @@ async def rewrite(request: QueryRequest) -> RewriteResponse:
                 pending_query=original_query,
             )
 
+    # Ensure router receives user_id for memory merge (from JWT or request body)
+    req_for_rewrite = request.model_copy(update={"user_id": effective_user_id}) if effective_user_id else request
     rewrite_started = time.perf_counter()
     rewritten_query, intents, memory_rounds, memory_text_length = rewrite_query(
-        request, gateway_memory=gateway_memory
+        req_for_rewrite, gateway_memory=gateway_memory
     )
     rewrite_time_ms = int((time.perf_counter() - rewrite_started) * 1000)
     rewritten_query_length = len(rewritten_query or "")
@@ -382,20 +474,32 @@ async def rewrite(request: QueryRequest) -> RewriteResponse:
                 seen.add(wf)
                 workflows.append(wf)
     else:
+        # When intent classification returned None, split multi-part query and route each clause.
         q = (rewritten_query or "").strip()
         if q:
-            wf, _ = route_workflow_heuristic(q)
-            wf = apply_docs_preference(q, wf)
-            if wf:
-                workflows = [wf]
+            clauses = split_multi_intent_clauses(q)
+            if len(clauses) >= 2:
+                seen: set[str] = set()
+                for clause in clauses:
+                    wf, _ = route_workflow_heuristic(clause)
+                    wf = apply_docs_preference(clause, wf)
+                    if wf and wf not in seen:
+                        seen.add(wf)
+                        workflows.append(wf)
+            else:
+                wf, _ = route_workflow_heuristic(q)
+                wf = apply_docs_preference(q, wf)
+                if wf:
+                    workflows = [wf]
 
-    if gateway_memory and request.session_id:
+    if gateway_memory and effective_user_id:
         try:
             gateway_memory.save_turn(
-                request.session_id,
+                request.session_id or "",
                 original_query,
                 rewritten_query,
                 "rewrite",
+                user_id=effective_user_id,
             )
         except Exception as exc:
             logger.warning("Gateway memory save_turn failed (non-fatal): %s", exc)
@@ -423,7 +527,10 @@ async def rewrite(request: QueryRequest) -> RewriteResponse:
     response_model=QueryResponse,
     summary="Submit unified gateway query",
 )
-async def query(request: QueryRequest) -> QueryResponse:
+async def query(
+    request: QueryRequest,
+    _user: dict | None = Depends(_get_optional_user_if_required),
+) -> QueryResponse:
     """
     Handle unified gateway query: Route LLM (planning) + Dispatcher (execution).
 
@@ -440,6 +547,7 @@ async def query(request: QueryRequest) -> QueryResponse:
     """
     request_id = str(uuid.uuid4())
     original_query = (request.query or "").strip()
+    effective_user_id = _resolve_user_id(request, _user)
     rewritten_query = original_query
     rewrite_time_ms = 0
     route_source = "unknown"
@@ -456,13 +564,14 @@ async def query(request: QueryRequest) -> QueryResponse:
             ambiguity_result = check_ambiguity(original_query, backend)
             if ambiguity_result.get("needs_clarification"):
                 clarification_question = ambiguity_result.get("clarification_question", "")
-                if gateway_memory and request.session_id:
+                if gateway_memory and effective_user_id:
                     try:
                         gateway_memory.save_turn(
-                            request.session_id,
+                            request.session_id or "",
                             original_query,
                             clarification_question,
                             "clarification",
+                            user_id=effective_user_id,
                         )
                     except Exception as exc:
                         logger.warning("Gateway memory save_turn failed (non-fatal): %s", exc)
@@ -484,9 +593,10 @@ async def query(request: QueryRequest) -> QueryResponse:
 
         # Route LLM: rewrite + intent classification -> rewritten_query, intents
         # Dispatcher: build_execution_plan -> execution_plan
+        req_for_rewrite = request.model_copy(update={"user_id": effective_user_id}) if effective_user_id else request
         rewrite_started = time.perf_counter()
         rewritten_query, intents, _, _ = rewrite_query(
-            request, gateway_memory=gateway_memory
+            req_for_rewrite, gateway_memory=gateway_memory
         )
         rewrite_time_ms = int((time.perf_counter() - rewrite_started) * 1000)
 
@@ -510,13 +620,14 @@ async def query(request: QueryRequest) -> QueryResponse:
         route_input_query = _extract_route_input_query(execution_plan, original_query)
 
         if _is_rewrite_only_mode():
-            if gateway_memory and request.session_id:
+            if gateway_memory and effective_user_id:
                 try:
                     gateway_memory.save_turn(
-                        request.session_id,
+                        request.session_id or "",
                         original_query,
                         rewritten_query,
                         "rewrite_only",
+                        user_id=effective_user_id,
                     )
                 except Exception as exc:
                     logger.warning("Gateway memory save_turn failed (non-fatal): %s", exc)
@@ -591,13 +702,14 @@ async def query(request: QueryRequest) -> QueryResponse:
         )
 
         if top_error and not merged_answer:
-            if gateway_memory and request.session_id:
+            if gateway_memory and effective_user_id:
                 try:
                     gateway_memory.save_turn(
-                        request.session_id,
+                        request.session_id or "",
                         original_query,
                         top_error or "error",
                         workflow,
+                        user_id=effective_user_id,
                     )
                 except Exception as exc:
                     logger.warning("Gateway memory save_turn failed (non-fatal): %s", exc)
@@ -633,14 +745,15 @@ async def query(request: QueryRequest) -> QueryResponse:
             task_results=task_results,
             merged_answer=merged_answer,
         )
-        # Save turn to short-term memory (session history) when applicable
-        if gateway_memory and request.session_id and merged_answer and workflow not in ("clarification", "rewrite_only"):
+        # Save turn to short-term memory (user history) when applicable
+        if gateway_memory and effective_user_id and merged_answer and workflow not in ("clarification", "rewrite_only"):
             try:
                 gateway_memory.save_turn(
-                    request.session_id,
+                    request.session_id or "",
                     original_query,
                     merged_answer,
                     workflow,
+                    user_id=effective_user_id,
                 )
             except Exception as exc:
                 logger.warning("Gateway memory save_turn failed (non-fatal): %s", exc)
@@ -657,13 +770,14 @@ async def query(request: QueryRequest) -> QueryResponse:
         # Defensive error handling so the API still returns a valid schema.
         logger.exception("Gateway query handler failed: %s", exc)
         # Persist error turn to Redis so chat box content is complete
-        if gateway_memory and request.session_id:
+        if gateway_memory and effective_user_id:
             try:
                 gateway_memory.save_turn(
-                    request.session_id,
+                    request.session_id or "",
                     original_query,
                     str(exc),
                     "error",
+                    user_id=effective_user_id,
                 )
             except Exception as save_exc:
                 logger.warning("Gateway memory save_turn failed (non-fatal): %s", save_exc)

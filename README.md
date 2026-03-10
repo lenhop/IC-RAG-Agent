@@ -98,6 +98,27 @@ GATEWAY_ROUTE_LLM_OLLAMA_MODEL=qwen3:1.7b
 
 Test connectivity: `./scripts/test_ecs_ollama_connection.sh`
 
+### Auth (Login / Register)
+
+The Gradio chat UI supports user registration and sign-in. Users are stored in ClickHouse table `ic_agent.ic_rag_agent_user`.
+
+**Environment variables:**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AUTH_JWT_SECRET` | (required in prod) | Secret for JWT signing; use a strong random value in production |
+| `AUTH_JWT_EXPIRE_SECONDS` | 86400 | Token expiry in seconds (24h) |
+| `GATEWAY_AUTH_REQUIRED` | false | When true, `/api/v1/query` and `/api/v1/rewrite` require `Authorization: Bearer <token>` |
+| `AUTH_PASSWORD_MIN_LENGTH` | 8 | Minimum password length; must include at least one letter and one digit |
+
+**API endpoints:**
+- `POST /api/v1/auth/register` - Register new user
+- `POST /api/v1/auth/signin` - Sign in, returns JWT + user info
+- `POST /api/v1/auth/signout` - Sign out (client discards token)
+- `GET /api/v1/auth/me` - Get current user from JWT
+
+**Database:** Run `db/auth/create_user_table.sql` for non-Docker setups. Docker init includes the table.
+
 ---
 
 ## Features

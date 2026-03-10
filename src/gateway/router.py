@@ -125,9 +125,13 @@ def rewrite_query(
     conversation_context = None
     memory_rounds_used = 0
     memory_text_length = 0
-    if gateway_memory and request.session_id:
+    if gateway_memory:
         last_n = _get_memory_rounds()
-        history = gateway_memory.get_history(request.session_id, last_n=last_n)
+        history: list = []
+        if request.user_id and str(request.user_id).strip():
+            history = gateway_memory.get_history_by_user(str(request.user_id).strip(), last_n=last_n)
+        elif request.session_id and str(request.session_id).strip():
+            history = gateway_memory.get_history(request.session_id, last_n=last_n)
         if history:
             conversation_context = _format_history_for_llm(history)
             memory_rounds_used = len(history)

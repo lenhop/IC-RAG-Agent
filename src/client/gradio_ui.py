@@ -123,6 +123,59 @@ WORKFLOW_CHOICES = [
 ]
 
 
+def _do_signin(user_name: str, password: str) -> tuple[Optional[str], Optional[Dict], str, bool, bool]:
+    """
+    Sign in handler. Returns (token, user_info, message, show_chat, show_login).
+    """
+    if not user_name or not user_name.strip():
+        return None, None, "Please enter user name.", False, True
+    if not password or not password.strip():
+        return None, None, "Please enter password.", False, True
+    client = GatewayClient(base_url=GATEWAY_API_URL or None)
+    result = client.signin_sync(user_name=user_name.strip(), password=password)
+    err = result.get("error")
+    if err:
+        return None, None, f"Sign in failed: {err}", False, True
+    token = result.get("access_token")
+    user = result.get("user") or {}
+    return token, user, f"Signed in as {user.get('user_name', user_name)}", True, False
+
+
+def _do_register(user_name: str, password: str, email: str) -> tuple[Optional[str], Optional[Dict], str, bool, bool]:
+    """
+    Register handler. Returns (token, user_info, message, show_chat, show_login).
+    After register we auto sign-in to get token.
+    """
+    if not user_name or not user_name.strip():
+        return None, None, "Please enter user name.", False, True
+    if not password or not password.strip():
+        return None, None, "Please enter password.", False, True
+    client = GatewayClient(base_url=GATEWAY_API_URL or None)
+    reg_result = client.register_sync(
+        user_name=user_name.strip(),
+        password=password,
+        email=(email or "").strip() or None,
+    )
+    err = reg_result.get("error")
+    if err:
+        return None, None, f"Registration failed: {err}", False, True
+    # Auto sign-in after register
+    signin_result = client.signin_sync(user_name=user_name.strip(), password=password)
+    signin_err = signin_result.get("error")
+    if signin_err:
+        return None, None, f"Registered but sign in failed: {signin_err}", False, True
+    token = signin_result.get("access_token")
+    user = signin_result.get("user") or {}
+    return token, user, f"Registered and signed in as {user.get('user_name', user_name)}", True, False
+
+
+def _do_signout() -> tuple[None, None, dict, dict]:
+    """Sign out handler. Returns (None, None, login_visible, chat_visible)."""
+    client = GatewayClient(base_url=GATEWAY_API_URL or None)
+    client.signout_sync()
+    return None, None, gr.update(visible=True), gr.update(visible=False)
+
+
 def _get_gateway_status() -> str:
     """Return human-readable gateway status for sidebar."""
     if not GATEWAY_API_URL or GATEWAY_MOCK:
@@ -155,6 +208,8 @@ def _chat_handler(
     rewrite_enable: bool,
     rewrite_backend: str,
     session_id: str,
+    auth_token: Optional[str] = None,
+    user_info: Optional[Dict[str, Any]] = None,
 ) -> Union[str, Iterator[str]]:
     """
     Chat callback: stream rewrite progress and final answer.
@@ -166,6 +221,8 @@ def _chat_handler(
         rewrite_enable: Whether query rewriting is enabled.
         rewrite_backend: Rewrite backend when enabled: "ollama" or "deepseek".
         session_id: Session UUID for multi-turn context.
+        auth_token: Optional JWT for protected gateway.
+        user_info: Optional user dict with user_id for user-scoped history.
 
     Returns:
         Iterator yielding intermediate/final messages, or a plain string for
@@ -176,6 +233,7 @@ def _chat_handler(
         return
 
     client = GatewayClient(base_url=GATEWAY_API_URL or None)
+    user_id = (user_info.get("user_id") or "").strip() if user_info else None
     raw_query = message.strip()
 
     # Merge with pending query when this is a clarification follow-up
@@ -195,6 +253,8 @@ def _chat_handler(
             rewrite_enable=True,
             rewrite_backend=(rewrite_backend or "").strip() or None,
             session_id=session_id or None,
+            user_id=user_id,
+            token=auth_token,
         )
         rewrite_error = rewrite_result.get("error")
         if rewrite_error:
@@ -290,6 +350,8 @@ def _chat_handler(
             rewrite_enable=False,
             rewrite_backend=None,
             session_id=session_id or None,
+            user_id=user_id,
+            token=auth_token,
         )
         elapsed_seconds = 0
         while not future.done():
@@ -383,58 +445,172 @@ def create_demo() -> gr.Blocks:
     ) as demo:
         gr.Markdown("# IC-RAG-Agent Chat")
         gr.Markdown(
-            "Unified Chat UI - Select workflow and type your question. "
+            "Unified Chat UI - Sign in or register, then select workflow and type your question. "
             "Uses mock mode when gateway is unavailable."
         )
 
         session_id_state = gr.State(value=initial_session_id)
+        auth_token_state = gr.State(value=None)
+        user_info_state = gr.State(value=None)
 
-        # Row: controls left (scale 1), chat right (scale 3).
-        # Left column: Workflow, Rewriting, Session, Status.
-        with gr.Row():
-            with gr.Column(scale=1, elem_id="ic_controls_column"):
-                gr.Markdown("### Workflow")
-                workflow_radio = gr.Dropdown(
-                    choices=WORKFLOW_CHOICES,
-                    value="auto",
-                    label="Workflow",
-                    info="auto|general|amazon_docs|ic_docs|sp_api|uds",
-                )
-                rewrite_checkbox = gr.Checkbox(
-                    value=REWRITE_ENABLE_DEFAULT,
-                    label="Rewriting Enable",
-                    info="Enable query rewriting",
-                )
-                rewrite_backend_dropdown = gr.Dropdown(
-                    choices=[("Local (Ollama)", "ollama"), ("DeepSeek", "deepseek")],
-                    value=_normalize_rewrite_backend(REWRITE_BACKEND_DEFAULT),
-                    label="Rewrite backend",
-                    info="Local (Ollama) or DeepSeek when rewriting enabled",
-                    interactive=REWRITE_ENABLE_DEFAULT,
-                )
-                gr.Markdown("### Session")
-                session_display = gr.Textbox(
-                    label="Session ID",
-                    value=initial_session_id,
-                    interactive=False,
-                )
-                clear_btn = gr.Button("Clear Session", variant="secondary")
-                gr.Markdown("### Status")
-                health_status = gr.Markdown(_get_gateway_status())
+        # Login panel: visible when not logged in
+        with gr.Column(visible=True, elem_id="ic_login_panel") as login_panel:
+            with gr.Tabs():
+                with gr.Tab("Sign In"):
+                    signin_user = gr.Textbox(label="User Name", placeholder="Enter user name")
+                    signin_pass = gr.Textbox(label="Password", type="password", placeholder="Enter password")
+                    signin_btn = gr.Button("Sign In", variant="primary")
+                    signin_msg = gr.Markdown("")
+                with gr.Tab("Register"):
+                    reg_user = gr.Textbox(label="User Name", placeholder="Enter user name")
+                    reg_pass = gr.Textbox(label="Password", type="password", placeholder="Min 8 chars, 1 letter, 1 digit")
+                    reg_email = gr.Textbox(label="Email (optional)", placeholder="Enter email")
+                    reg_btn = gr.Button("Register", variant="primary")
+                    reg_msg = gr.Markdown("")
 
-            with gr.Column(scale=3, elem_id="ic_chat_column"):
-                chat = gr.ChatInterface(
-                    fn=_chat_handler,
-                    title="",
-                    additional_inputs=[
-                        workflow_radio,
-                        rewrite_checkbox,
-                        rewrite_backend_dropdown,
-                        session_id_state,
-                    ],
-                    fill_height=True,
-                    autoscroll=True,
-                )
+        # Chat panel: visible when logged in
+        with gr.Column(visible=False, elem_id="ic_chat_panel") as chat_panel:
+            signout_btn = gr.Button("Sign Out", variant="secondary")
+            with gr.Row():
+                with gr.Column(scale=1, elem_id="ic_controls_column"):
+                    gr.Markdown("### Workflow")
+                    workflow_radio = gr.Dropdown(
+                        choices=WORKFLOW_CHOICES,
+                        value="auto",
+                        label="Workflow",
+                        info="auto|general|amazon_docs|ic_docs|sp_api|uds",
+                    )
+                    rewrite_checkbox = gr.Checkbox(
+                        value=REWRITE_ENABLE_DEFAULT,
+                        label="Rewriting Enable",
+                        info="Enable query rewriting",
+                    )
+                    rewrite_backend_dropdown = gr.Dropdown(
+                        choices=[("Local (Ollama)", "ollama"), ("DeepSeek", "deepseek")],
+                        value=_normalize_rewrite_backend(REWRITE_BACKEND_DEFAULT),
+                        label="Rewrite backend",
+                        info="Local (Ollama) or DeepSeek when rewriting enabled",
+                        interactive=REWRITE_ENABLE_DEFAULT,
+                    )
+                    gr.Markdown("### User")
+                    user_display = gr.Markdown("", elem_id="ic_user_display", line_breaks=True)
+                    gr.Markdown("### Session")
+                    session_display = gr.Textbox(
+                        label="Session ID",
+                        value=initial_session_id,
+                        interactive=False,
+                    )
+                    clear_btn = gr.Button("Clear Session", variant="secondary")
+                    gr.Markdown("### Status")
+                    health_status = gr.Markdown(_get_gateway_status())
+
+                with gr.Column(scale=3, elem_id="ic_chat_column"):
+                    chatbot = gr.Chatbot(value=[], elem_id="ic_chatbot")
+                    chat = gr.ChatInterface(
+                        fn=_chat_handler,
+                        chatbot=chatbot,
+                        title="",
+                        additional_inputs=[
+                            workflow_radio,
+                            rewrite_checkbox,
+                            rewrite_backend_dropdown,
+                            session_id_state,
+                            auth_token_state,
+                            user_info_state,
+                        ],
+                        fill_height=True,
+                        autoscroll=True,
+                    )
+
+        def on_signin(su: str, sp: str):
+            token, user, msg, show_chat, show_login = _do_signin(su, sp)
+            user_md = (
+                f"**UserName:** {user.get('user_name', '')}\n**Role:** {user.get('role', 'general')}"
+                if user else ""
+            )
+            chat_history: List[Dict[str, str]] = []
+            if token and show_chat:
+                client = GatewayClient(base_url=GATEWAY_API_URL or None)
+                hist_result = client.get_user_history_sync(token, last_n=5)
+                if not hist_result.get("error"):
+                    raw = hist_result.get("history", [])
+                    for h in raw:
+                        q, a = h.get("query", ""), h.get("answer", "")
+                        if q or a:
+                            chat_history.append({"role": "user", "content": q})
+                            chat_history.append({"role": "assistant", "content": a})
+            return (
+                token,
+                user,
+                gr.update(visible=show_login),
+                gr.update(visible=show_chat),
+                msg,
+                user_md,
+                gr.update(value=chat_history),
+            )
+
+        def on_register(ru: str, rp: str, re: str):
+            token, user, msg, show_chat, show_login = _do_register(ru, rp, re)
+            user_md = (
+                f"**UserName:** {user.get('user_name', '')}\n**Role:** {user.get('role', 'general')}"
+                if user else ""
+            )
+            chat_history: List[Dict[str, str]] = []
+            if token and show_chat:
+                client = GatewayClient(base_url=GATEWAY_API_URL or None)
+                hist_result = client.get_user_history_sync(token, last_n=5)
+                if not hist_result.get("error"):
+                    raw = hist_result.get("history", [])
+                    for h in raw:
+                        q, a = h.get("query", ""), h.get("answer", "")
+                        if q or a:
+                            chat_history.append({"role": "user", "content": q})
+                            chat_history.append({"role": "assistant", "content": a})
+            return (
+                token,
+                user,
+                gr.update(visible=show_login),
+                gr.update(visible=show_chat),
+                msg,
+                user_md,
+                gr.update(value=chat_history),
+            )
+
+        def on_signout():
+            token, user, login_vis, chat_vis = _do_signout()
+            return token, user, login_vis, chat_vis
+
+        signin_btn.click(
+            fn=on_signin,
+            inputs=[signin_user, signin_pass],
+            outputs=[
+                auth_token_state,
+                user_info_state,
+                login_panel,
+                chat_panel,
+                signin_msg,
+                user_display,
+                chatbot,
+            ],
+        )
+        reg_btn.click(
+            fn=on_register,
+            inputs=[reg_user, reg_pass, reg_email],
+            outputs=[
+                auth_token_state,
+                user_info_state,
+                login_panel,
+                chat_panel,
+                reg_msg,
+                user_display,
+                chatbot,
+            ],
+        )
+        signout_btn.click(
+            fn=on_signout,
+            inputs=[],
+            outputs=[auth_token_state, user_info_state, login_panel, chat_panel],
+        )
 
         # Clear Session: update state and display with new UUID; clear pending clarification
         def on_clear_session():

@@ -34,10 +34,14 @@ CLARIFICATION_PROMPT = (
     "date range (for fees, sales, trends), "
     "fee type (FBA/storage/referral for fee questions), "
     "marketplace (when multiple stores possible). "
+    "Do NOT ask for clarification when the query is about documentation, requirements, policy, compliance, guidelines, or what Amazon says - these are self-contained conceptual questions. "
     "Examples that MUST get needs_clarification=true: "
     '"What\'s my inventory?" (no store/ASIN), '
     '"Show me the fees" (no type/period), '
     '"Check my order" (no Order ID). '
+    "Examples that MUST get needs_clarification=false: "
+    '"What are Amazon\'s product compliance requirements", '
+    '"How are the sales for 20250101". '
     "Output JSON only: {\"needs_clarification\": true, \"clarification_question\": \"...\"} or {\"needs_clarification\": false}. "
     "User query: "
 )
@@ -50,6 +54,29 @@ _GENERATE_QUESTION_PROMPT = (
     "Output JSON only: {\"clarification_question\": \"...\"}. "
     "User query: "
 )
+
+def _is_concrete_documentation_query(query: str) -> bool:
+    """
+    Return True for documentation, policy, compliance, requirements questions.
+    These are self-contained conceptual questions and do NOT need clarification.
+    """
+    q = (query or "").strip().lower()
+    if not q:
+        return False
+    patterns = [
+        r"documentation\s+requirements",
+        r"product\s+compliance",
+        r"safety\s+documentation",
+        r"policy\s+on",
+        r"what\s+are\s+.*\s+requirements",
+        r"what\s+does\s+amazon",
+        r"guidelines",
+        r"business\s+rules",
+        r"compliance\s+and\s+safety",
+        r"requirements\s+for",
+    ]
+    return any(re.search(p, q) for p in patterns)
+
 
 # Heuristic patterns: query mentions topic but lacks required identifiers.
 # (topic_pattern, has_required_pattern, fallback_question when LLM fails)
@@ -66,12 +93,12 @@ _HEURISTIC_AMBIGUOUS = [
     ),
     (
         r"\b(fees?|charges?|breakdown)\b",
-        r"\b(FBA|storage|referral|last\s+(month|quarter|year)|Q[1-4]|202[0-9])\b",
+        r"\b(FBA|storage|referral|last\s+(month|quarter|year)|Q[1-4]|20\d{2}|20\d{6})\b|\b\d{4}-\d{2}-\d{2}\b",
         "Which fees do you mean? (FBA, storage, or referral) And for which time period?",
     ),
     (
         r"\b(sales?|trends?|metrics?)\b",
-        r"\b(last\s+(month|quarter|year)|Q[1-4]|202[0-9]|january|february)\b",
+        r"\b(last\s+(month|quarter|year)|Q[1-4]|20\d{2}|20\d{6})\b|\b\d{4}-\d{2}-\d{2}\b|january|february|march|april|may|june|july|august|september|october|november|december\b",
         "Which date range or time period do you want the data for?",
     ),
 ]
@@ -243,6 +270,10 @@ def check_ambiguity(query: str, backend: Optional[str] = None) -> dict:
         {"needs_clarification": False} to allow normal flow to proceed.
     """
     if not query or not query.strip():
+        return {"needs_clarification": False}
+
+    # Skip clarification for documentation/policy/requirements questions (self-contained).
+    if _is_concrete_documentation_query(query):
         return {"needs_clarification": False}
 
     # Heuristic fast path: known ambiguous patterns. Use LLM to generate contextual question.

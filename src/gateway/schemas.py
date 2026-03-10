@@ -57,6 +57,10 @@ class QueryRequest(BaseModel):
         default=None,
         description="Optional session identifier for multi-turn context.",
     )
+    user_id: Optional[str] = Field(
+        default=None,
+        description="User identifier when logged in; used for user-scoped conversation history.",
+    )
     stream: bool = Field(
         default=False,
         description="If true, client prefers streaming responses (SSE).",
@@ -82,6 +86,7 @@ class QueryRequest(BaseModel):
                 "rewrite_backend": "ollama",
                 "route_backend": None,
                 "session_id": "session-1234",
+                "user_id": None,
                 "stream": False,
             }
         },

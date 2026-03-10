@@ -41,24 +41,33 @@ def memory(mock_redis):
 
 
 def test_save_turn_appends_turn(memory, mock_redis):
-    """save_turn should RPUSH JSON payload and call EXPIRE."""
-    memory.save_turn("sess-1", "What are my sales?", "Your sales are $100.", "uds")
+    """save_turn should RPUSH JSON payload to user key and call EXPIRE."""
+    memory.save_turn(
+        "sess-1",
+        "What are my sales?",
+        "Your sales are $100.",
+        "uds",
+        user_id="user-123",
+    )
     mock_redis.rpush.assert_called_once()
     key, payload = mock_redis.rpush.call_args[0]
-    assert key == "gateway:session:sess-1:history"
+    assert key == "gateway:user:user-123:history"
     data = json.loads(payload)
     assert data["query"] == "What are my sales?"
     assert data["answer"] == "Your sales are $100."
     assert data["workflow"] == "uds"
+    assert data["user_id"] == "user-123"
+    assert data["session_id"] == "sess-1"
     assert "timestamp" in data
     mock_redis.expire.assert_called_once_with(key, 86400)
     mock_redis.ltrim.assert_called_once_with(key, -50, -1)
 
 
-def test_save_turn_skips_empty_session_id(memory, mock_redis):
-    """save_turn should not call Redis when session_id is empty."""
-    memory.save_turn("", "q", "a", "general")
-    memory.save_turn("  ", "q", "a", "general")
+def test_save_turn_skips_empty_user_id(memory, mock_redis):
+    """save_turn should not call Redis when user_id is empty or absent."""
+    memory.save_turn("sess-1", "q", "a", "general", user_id="")
+    memory.save_turn("sess-1", "q", "a", "general", user_id="  ")
+    memory.save_turn("sess-1", "q", "a", "general")
     mock_redis.rpush.assert_not_called()
 
 
@@ -98,8 +107,44 @@ def test_clear_session_skips_empty(memory, mock_redis):
     mock_redis.delete.assert_not_called()
 
 
+def test_get_history_by_user_returns_last_n(memory, mock_redis):
+    """get_history_by_user should LRANGE user key and parse JSON."""
+    raw = [
+        '{"query": "q1", "answer": "a1", "workflow": "uds", "timestamp": "2024-01-01T00:00:00Z", "user_id": "u1", "session_id": "s1"}',
+        '{"query": "q2", "answer": "a2", "workflow": "general", "timestamp": "2024-01-01T00:01:00Z", "user_id": "u1", "session_id": "s1"}',
+    ]
+    mock_redis.lrange.return_value = raw
+    history = memory.get_history_by_user("user-1", last_n=10)
+    assert len(history) == 2
+    assert history[0]["query"] == "q1"
+    assert history[1]["query"] == "q2"
+    mock_redis.lrange.assert_called_once_with(
+        "gateway:user:user-1:history", -10, -1
+    )
+
+
+def test_get_history_by_user_empty_user_returns_empty(memory, mock_redis):
+    """get_history_by_user should return [] for empty user_id."""
+    assert memory.get_history_by_user("", last_n=10) == []
+    assert memory.get_history_by_user("  ", last_n=10) == []
+    mock_redis.lrange.assert_not_called()
+
+
+def test_clear_user_history_deletes_key(memory, mock_redis):
+    """clear_user_history should DELETE the user key."""
+    memory.clear_user_history("user-1")
+    mock_redis.delete.assert_called_once_with("gateway:user:user-1:history")
+
+
+def test_clear_user_history_skips_empty(memory, mock_redis):
+    """clear_user_history should not call Redis when user_id is empty."""
+    memory.clear_user_history("")
+    memory.clear_user_history("  ")
+    mock_redis.delete.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
-# Integration tests: save_turn called on successful query
+# Integration tests: save_turn called on successful query (requires user_id)
 # ---------------------------------------------------------------------------
 
 
@@ -111,10 +156,10 @@ def test_clear_session_skips_empty(memory, mock_redis):
 )
 @patch("src.gateway.api.rewrite_query", return_value=("rewritten query", None, 0, 0))
 @patch("src.gateway.api.build_execution_plan")
-def test_query_success_saves_turn_when_session_id_present(
+def test_query_success_saves_turn_when_user_id_present(
     mock_build_plan, mock_rewrite, mock_route, mock_call, mock_clar_enabled
 ):
-    """When query succeeds with session_id and non-empty answer, save_turn is called."""
+    """When query succeeds with user_id and non-empty answer, save_turn is called."""
     from src.gateway.schemas import RewritePlan, TaskGroup, TaskItem
 
     mock_plan = RewritePlan(
@@ -137,6 +182,7 @@ def test_query_success_saves_turn_when_session_id_present(
                 "workflow": "auto",
                 "rewrite_enable": True,
                 "session_id": "sess-integration-1",
+                "user_id": "user-integration-1",
                 "stream": False,
             },
         )
@@ -149,6 +195,7 @@ def test_query_success_saves_turn_when_session_id_present(
         "What are my sales?",
         "general answer",
         "general",
+        user_id="user-integration-1",
     )
 
 
@@ -164,7 +211,7 @@ def test_query_success_saves_turn_when_session_id_present(
 def test_query_clarification_triggers_save_turn(
     mock_clar_enabled, mock_check, mock_build_plan, mock_rewrite, mock_route, mock_call
 ):
-    """Clarification responses should trigger save_turn when session_id present."""
+    """Clarification responses should trigger save_turn when user_id present."""
     mock_check.return_value = {
         "needs_clarification": True,
         "clarification_question": "Which fees do you mean?",
@@ -180,6 +227,7 @@ def test_query_clarification_triggers_save_turn(
                 "workflow": "auto",
                 "rewrite_enable": True,
                 "session_id": "sess-1",
+                "user_id": "user-1",
                 "stream": False,
             },
         )
@@ -189,6 +237,7 @@ def test_query_clarification_triggers_save_turn(
         "Show fees",
         "Which fees do you mean?",
         "clarification",
+        user_id="user-1",
     )
 
 
@@ -199,7 +248,7 @@ def test_query_clarification_triggers_save_turn(
 def test_query_rewrite_only_triggers_save_turn(
     mock_build_plan, mock_rewrite, mock_clar_enabled, mock_rewrite_only
 ):
-    """Rewrite-only response should trigger save_turn when session_id present."""
+    """Rewrite-only response should trigger save_turn when user_id present."""
     from src.gateway.schemas import RewritePlan, TaskGroup, TaskItem
 
     mock_plan = RewritePlan(
@@ -222,6 +271,7 @@ def test_query_rewrite_only_triggers_save_turn(
                 "workflow": "auto",
                 "rewrite_enable": True,
                 "session_id": "sess-rewrite-only",
+                "user_id": "user-rewrite-only",
                 "stream": False,
             },
         )
@@ -231,6 +281,7 @@ def test_query_rewrite_only_triggers_save_turn(
         "What about last month?",
         "rewritten query for retrieval",
         "rewrite_only",
+        user_id="user-rewrite-only",
     )
 
 
@@ -328,3 +379,48 @@ def test_delete_session_with_memory(mock_redis):
     assert data["session_id"] == "sess-1"
     assert data["cleared"] is True
     mock_redis.delete.assert_called_once_with("gateway:session:sess-1:history")
+
+
+# ---------------------------------------------------------------------------
+# User history API tests
+# ---------------------------------------------------------------------------
+
+
+@patch("src.gateway.api.verify_token", return_value={"sub": "user-123"})
+def test_get_user_history_returns_history_when_authenticated(mock_verify, mock_redis):
+    """GET /api/v1/user/history returns history when JWT valid and memory enabled."""
+    mock_redis.lrange.return_value = [
+        '{"query": "q1", "answer": "a1", "workflow": "uds", "timestamp": "2024-01-01T00:00:00Z"}',
+    ]
+    mem = GatewayConversationMemory(mock_redis)
+    with patch("src.gateway.api.gateway_memory", mem):
+        client = TestClient(app)
+        resp = client.get(
+            "/api/v1/user/history?last_n=5",
+            headers={"Authorization": "Bearer fake-token"},
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "history" in data
+    assert len(data["history"]) == 1
+    assert data["history"][0]["query"] == "q1"
+    assert data["history"][0]["answer"] == "a1"
+    mock_redis.lrange.assert_called_once_with("gateway:user:user-123:history", -5, -1)
+
+
+def test_get_user_history_returns_401_when_no_auth():
+    """GET /api/v1/user/history returns 401 when Authorization header missing."""
+    client = TestClient(app)
+    resp = client.get("/api/v1/user/history")
+    assert resp.status_code == 401
+
+
+@patch("src.gateway.api.verify_token", return_value=None)
+def test_get_user_history_returns_401_when_token_invalid(mock_verify):
+    """GET /api/v1/user/history returns 401 when token invalid or expired."""
+    client = TestClient(app)
+    resp = client.get(
+        "/api/v1/user/history",
+        headers={"Authorization": "Bearer invalid-token"},
+    )
+    assert resp.status_code == 401

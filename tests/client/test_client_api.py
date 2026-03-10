@@ -30,8 +30,9 @@ def client():
 # ---------------------------------------------------------------------------
 
 
-def test_mock_mode_empty_base_url():
+def test_mock_mode_empty_base_url(monkeypatch):
     """Mock mode: empty base_url returns simulated response without HTTP call."""
+    monkeypatch.delenv("GATEWAY_API_URL", raising=False)
     client = GatewayClient(base_url="")
     with patch("src.client.api_client.requests.post") as mock_post:
         result = client.query_sync(
@@ -267,8 +268,9 @@ def test_rewrite_sync_200_returns_rewrite_payload(client):
     assert payload["rewrite_backend"] == "ollama"
 
 
-def test_rewrite_sync_mock_mode_returns_immediate_payload():
+def test_rewrite_sync_mock_mode_returns_immediate_payload(monkeypatch):
     """rewrite_sync in mock mode returns deterministic local payload."""
+    monkeypatch.delenv("GATEWAY_API_URL", raising=False)
     client = GatewayClient(base_url="")
     with patch("src.client.api_client.requests.post") as mock_post:
         result = client.rewrite_sync("hello", rewrite_enable=True, rewrite_backend="deepseek")
@@ -276,3 +278,98 @@ def test_rewrite_sync_mock_mode_returns_immediate_payload():
     assert result["original_query"] == "hello"
     assert result["rewritten_query"] == "hello"
     assert result["rewrite_backend"] == "deepseek"
+
+
+# ---------------------------------------------------------------------------
+# Auth methods
+# ---------------------------------------------------------------------------
+
+
+def test_register_sync_mock_mode(monkeypatch):
+    """register_sync in mock mode returns mock user without HTTP call."""
+    monkeypatch.delenv("GATEWAY_API_URL", raising=False)
+    mock_client = GatewayClient(base_url="")
+    with patch("src.client.api_client.requests.post") as mock_post:
+        result = mock_client.register_sync("alice", "Pass1234", "alice@example.com")
+    mock_post.assert_not_called()
+    assert result["user_name"] == "alice"
+    assert result["role"] == "general"
+    assert "user_id" in result
+
+
+def test_register_sync_200(client):
+    """register_sync returns user info on 200."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.content = b'{"user_id":"u1","user_name":"alice","role":"general"}'
+    mock_resp.json.return_value = {"user_id": "u1", "user_name": "alice", "role": "general"}
+    mock_resp.raise_for_status = MagicMock()
+    with patch("src.client.api_client.requests.post", return_value=mock_resp):
+        result = client.register_sync("alice", "Pass1234")
+    assert result["user_name"] == "alice"
+    assert "error" not in result
+
+
+def test_register_sync_400_returns_error(client):
+    """register_sync returns error dict on 400."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 400
+    mock_resp.content = b'{"detail":"user_name already exists"}'
+    mock_resp.json.return_value = {"detail": "user_name already exists"}
+    mock_resp.raise_for_status = MagicMock()
+    with patch("src.client.api_client.requests.post", return_value=mock_resp):
+        result = client.register_sync("existing", "Pass1234")
+    assert "error" in result
+    assert "user_name already exists" in result["error"]
+
+
+def test_signin_sync_mock_mode(monkeypatch):
+    """signin_sync in mock mode returns mock token without HTTP call."""
+    monkeypatch.delenv("GATEWAY_API_URL", raising=False)
+    mock_client = GatewayClient(base_url="")
+    with patch("src.client.api_client.requests.post") as mock_post:
+        result = mock_client.signin_sync("alice", "Pass1234")
+    mock_post.assert_not_called()
+    assert result["access_token"]
+    assert result["token_type"] == "bearer"
+    assert result["user"]["user_name"] == "alice"
+
+
+def test_signin_sync_200(client):
+    """signin_sync returns token and user on 200."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "access_token": "jwt-123",
+        "token_type": "bearer",
+        "user": {"user_id": "u1", "user_name": "alice", "role": "general"},
+    }
+    mock_resp.raise_for_status = MagicMock()
+    with patch("src.client.api_client.requests.post", return_value=mock_resp):
+        result = client.signin_sync("alice", "Pass1234")
+    assert result["access_token"] == "jwt-123"
+    assert result["user"]["user_name"] == "alice"
+
+
+def test_signin_sync_401_returns_error(client):
+    """signin_sync returns error dict on 401."""
+    mock_resp = MagicMock()
+    mock_resp.status_code = 401
+    mock_resp.content = b'{"detail":"Invalid user_name or password"}'
+    mock_resp.json.return_value = {"detail": "Invalid user_name or password"}
+    mock_resp.raise_for_status = MagicMock()
+    with patch("src.client.api_client.requests.post", return_value=mock_resp):
+        result = client.signin_sync("alice", "wrong")
+    assert "error" in result
+    assert "Invalid" in result["error"]
+
+
+def test_me_sync_mock_mode(monkeypatch):
+    """me_sync in mock mode returns mock user without HTTP call."""
+    monkeypatch.delenv("GATEWAY_API_URL", raising=False)
+    mock_client = GatewayClient(base_url="")
+    with patch("src.client.api_client.requests.get") as mock_get:
+        result = mock_client.me_sync("any-token")
+    mock_get.assert_not_called()
+    assert result["user_name"] == "mock"
+    assert "user_id" in result

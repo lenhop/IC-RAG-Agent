@@ -65,9 +65,38 @@ def test_rewrite_query_with_history_when_session_and_memory_present(mock_rewrite
     assert "What were my sales?" in call_kwargs["conversation_context"]
 
 
+@patch("src.gateway.router.rewrite_with_context", return_value="rewritten with user history")
+def test_rewrite_query_with_history_when_user_id_present(mock_rewrite_context):
+    """When user_id present, rewrite uses get_history_by_user for memory merge."""
+    from unittest.mock import MagicMock
+
+    mock_memory = MagicMock()
+    mock_memory.get_history_by_user.return_value = [
+        {"query": "What were my sales?", "answer": "Your total sales were $1000.", "workflow": "uds"},
+    ]
+
+    req = QueryRequest(
+        query="What about last month?",
+        workflow="auto",
+        rewrite_enable=True,
+        session_id="sess-1",
+        user_id="user-1",
+        stream=False,
+    )
+    with patch("src.gateway.router.intent_classification_enabled", return_value=False):
+        rewritten, intents, memory_rounds, memory_text_len = rewrite_query(
+            req, gateway_memory=mock_memory
+        )
+
+    assert rewritten == "rewritten with user history"
+    assert memory_rounds == 1
+    mock_memory.get_history_by_user.assert_called_once_with("user-1", last_n=3)
+    mock_memory.get_history.assert_not_called()
+
+
 @patch("src.gateway.router.rewrite_with_context", return_value="rewritten no context")
 def test_rewrite_query_without_history_when_session_absent(mock_rewrite_context):
-    """When session_id absent, rewrite_with_context gets no conversation_context."""
+    """When session_id and user_id absent, rewrite_with_context gets no conversation_context."""
     from unittest.mock import MagicMock
 
     mock_memory = MagicMock()
@@ -86,6 +115,7 @@ def test_rewrite_query_without_history_when_session_absent(mock_rewrite_context)
     assert rewritten == "rewritten no context"
     assert memory_rounds == 0
     mock_memory.get_history.assert_not_called()
+    mock_memory.get_history_by_user.assert_not_called()
     mock_rewrite_context.assert_called_once_with(
         "What about last month?",
         conversation_context=None,

@@ -70,3 +70,19 @@ def test_check_ambiguity_show_me_the_fees_returns_clarification():
     result = check_ambiguity("Show me the fees", backend="ollama")
     assert result["needs_clarification"] is True
     assert "fees" in result["clarification_question"].lower()
+
+
+def test_check_ambiguity_documentation_requirements_returns_no_clarification():
+    """Documentation/policy/requirements questions should NOT trigger clarification."""
+    result = check_ambiguity(
+        "what are Amazon's product compliance and safety documentation requirements"
+    )
+    assert result["needs_clarification"] is False
+
+
+@patch("src.gateway.clarification._call_clarification_ollama")
+def test_check_ambiguity_sales_with_yyyymmdd_returns_no_clarification(mock_ollama):
+    """Sales query with YYYYMMDD date: heuristic skips (has date), LLM returns false."""
+    mock_ollama.return_value = '{"needs_clarification": false}'
+    result = check_ambiguity("how are the sales for 20250101?", backend="ollama")
+    assert result["needs_clarification"] is False

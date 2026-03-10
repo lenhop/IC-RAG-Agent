@@ -86,6 +86,8 @@ The UDS Agent can be configured via environment variables:
 | `CH_USER` | `default` | ClickHouse username |
 | `CH_PASSWORD` | `` | ClickHouse password |
 | `CH_DATABASE` | `uds` | ClickHouse database |
+| `AUTH_JWT_SECRET` | (set in prod) | JWT signing secret for auth |
+| `GATEWAY_AUTH_REQUIRED` | `false` | Require auth for query/rewrite endpoints |
 | `REDIS_URL` | `redis://redis:6379/0` | Redis connection URL |
 | `OLLAMA_HOST` | `0.0.0.0` | Ollama host |
 | `OLLAMA_MODEL` | `qwen3:1.7b` | Default LLM model |
@@ -113,6 +115,7 @@ With reverse proxy:
 The ClickHouse database is automatically initialized with the schema defined in `init-clickhouse.sql`. This includes:
 
 - Tables for Amazon data (inventory, orders, fees, etc.)
+- Auth user table `ic_agent.ic_rag_agent_user` for login/register
 - Performance indexes for common query patterns
 - Default user permissions
 
