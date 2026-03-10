@@ -14,13 +14,93 @@ from src.gateway.router import rewrite_query, route_workflow
 from src.gateway.schemas import QueryRequest, RewritePlan, TaskGroup, TaskItem
 
 
+def test_rewrite_query_empty_after_normalize_returns_early():
+    """Empty query after normalize returns early, no LLM call."""
+    with patch("src.gateway.router.rewrite_with_context") as mock_rewrite:
+        req = QueryRequest(
+            query="   ",
+            workflow="auto",
+            rewrite_enable=True,
+            session_id=None,
+            stream=False,
+        )
+        rewritten, intents, memory_rounds, memory_text_len = rewrite_query(req)
+    assert rewritten == ""
+    assert intents is None
+    assert memory_rounds == 0
+    assert memory_text_len == 0
+    mock_rewrite.assert_not_called()
+
+
+@patch("src.gateway.router.rewrite_with_context", return_value="rewritten with context")
+def test_rewrite_query_with_history_when_session_and_memory_present(mock_rewrite_context):
+    """When session_id and gateway_memory present, rewrite_with_context gets history."""
+    from unittest.mock import MagicMock
+
+    mock_memory = MagicMock()
+    mock_memory.get_history.return_value = [
+        {"query": "What were my sales?", "answer": "Your total sales were $1000.", "workflow": "uds"},
+        {"query": "Break down by product", "answer": "Product A: $600, Product B: $400.", "workflow": "uds"},
+    ]
+
+    req = QueryRequest(
+        query="What about last month?",
+        workflow="auto",
+        rewrite_enable=True,
+        session_id="sess-1",
+        stream=False,
+    )
+    with patch("src.gateway.router.intent_classification_enabled", return_value=False):
+        rewritten, intents, memory_rounds, memory_text_len = rewrite_query(
+            req, gateway_memory=mock_memory
+        )
+
+    assert rewritten == "rewritten with context"
+    assert memory_rounds == 2
+    mock_memory.get_history.assert_called_once_with("sess-1", last_n=3)
+    mock_rewrite_context.assert_called_once()
+    call_kwargs = mock_rewrite_context.call_args[1]
+    assert call_kwargs["conversation_context"] is not None
+    assert "User asked" in call_kwargs["conversation_context"]
+    assert "What were my sales?" in call_kwargs["conversation_context"]
+
+
+@patch("src.gateway.router.rewrite_with_context", return_value="rewritten no context")
+def test_rewrite_query_without_history_when_session_absent(mock_rewrite_context):
+    """When session_id absent, rewrite_with_context gets no conversation_context."""
+    from unittest.mock import MagicMock
+
+    mock_memory = MagicMock()
+
+    req = QueryRequest(
+        query="What about last month?",
+        workflow="auto",
+        rewrite_enable=True,
+        session_id=None,
+        stream=False,
+    )
+    rewritten, intents, memory_rounds, memory_text_len = rewrite_query(
+        req, gateway_memory=mock_memory
+    )
+
+    assert rewritten == "rewritten no context"
+    assert memory_rounds == 0
+    mock_memory.get_history.assert_not_called()
+    mock_rewrite_context.assert_called_once_with(
+        "What about last month?",
+        conversation_context=None,
+        backend="ollama",
+    )
+
+
 @patch("src.gateway.router.rewrite_intents_only")
-def test_rewrite_query_planner_uses_intents_only(mock_intents):
-    """When planner enabled, rewrite_query uses Phase 1 intent classification."""
+@patch("src.gateway.router.rewrite_with_context", return_value="optimized retrieval query")
+def test_rewrite_query_intent_classification_on_optimized_query(mock_rewrite, mock_intents):
+    """When intent classification enabled, runs on optimized retrieval query from rewrite."""
     mock_intents.return_value = {
         "intents": ["what is FBA", "get order 112-9876543-12", "which table stores fee data"],
     }
-    with patch("src.gateway.router.planner_rewrite_enabled", return_value=True):
+    with patch("src.gateway.router.intent_classification_enabled", return_value=True):
         req = QueryRequest(
             query="what is FBA get order 112-9876543-12 which table stores fee data",
             workflow="auto",
@@ -28,21 +108,22 @@ def test_rewrite_query_planner_uses_intents_only(mock_intents):
             session_id=None,
             stream=False,
         )
-        rewritten = rewrite_query(req)
-    import json
-    parsed = json.loads(rewritten)
-    assert parsed.get("intents") == [
+        rewritten, intents, memory_rounds, memory_text_len = rewrite_query(req)
+    assert rewritten == "optimized retrieval query"
+    assert intents == [
         "what is FBA",
         "get order 112-9876543-12",
         "which table stores fee data",
     ]
     mock_intents.assert_called_once()
+    assert mock_intents.call_args[0][0] == "optimized retrieval query"
 
 
 @patch("src.gateway.router.rewrite_intents_only", return_value=None)
-def test_rewrite_query_planner_fallback_when_intents_fail(mock_intents):
-    """When planner enabled but rewrite_intents_only fails, return normalized query."""
-    with patch("src.gateway.router.planner_rewrite_enabled", return_value=True):
+@patch("src.gateway.router.rewrite_with_context", return_value="optimized query")
+def test_rewrite_query_intent_classification_fallback_when_fails(mock_rewrite, mock_intents):
+    """When intent classification enabled but fails, return (optimized_query, None)."""
+    with patch("src.gateway.router.intent_classification_enabled", return_value=True):
         req = QueryRequest(
             query="  what   is   FBA   get   order   123  ",
             workflow="auto",
@@ -50,15 +131,16 @@ def test_rewrite_query_planner_fallback_when_intents_fail(mock_intents):
             session_id=None,
             stream=False,
         )
-        rewritten = rewrite_query(req)
-    assert rewritten == "what is FBA get order 123"
+        rewritten, intents, memory_rounds, memory_text_len = rewrite_query(req)
+    assert rewritten == "optimized query"
+    assert intents is None
     mock_intents.assert_called_once()
 
 
-@patch("src.gateway.rewriters.rewrite_with_ollama", return_value="what are my sales this month?")
-def test_rewrite_query_strips_and_collapses_whitespace(mock_ollama):
+@patch("src.gateway.router.rewrite_with_context", return_value="what are my sales this month?")
+def test_rewrite_query_strips_and_collapses_whitespace(mock_rewrite_context):
     """rewrite_query should trim and collapse internal whitespace."""
-    with patch("src.gateway.router.planner_rewrite_enabled", return_value=False):
+    with patch("src.gateway.router.intent_classification_enabled", return_value=False):
         req = QueryRequest(
             query="  what   are   my   sales   \n  this month?  ",
             workflow="auto",
@@ -67,7 +149,7 @@ def test_rewrite_query_strips_and_collapses_whitespace(mock_ollama):
             session_id=None,
             stream=False,
         )
-        rewritten = rewrite_query(req)
+        rewritten, intents, memory_rounds, memory_text_len = rewrite_query(req)
     assert rewritten == "what are my sales this month?"
 
 
@@ -484,8 +566,7 @@ def test_build_execution_plan_explicit_workflow_creates_single_task():
     assert task.query == "sales by month"
 
 
-@patch("src.gateway.dispatcher.planner_rewrite_enabled", return_value=True)
-def test_build_execution_plan_date_with_comma_stays_single_intent(mock_planner):
+def test_build_execution_plan_date_with_comma_stays_single_intent():
     """Query with date like 'September 1st, 2026' must not be split; 2026 must not become separate general task."""
     req = QueryRequest(
         query="how many orders were there on September 1st, 2026",
@@ -494,8 +575,8 @@ def test_build_execution_plan_date_with_comma_stays_single_intent(mock_planner):
         session_id=None,
         stream=False,
     )
-    rewritten = '{"intents": ["how many orders were there on September 1st, 2026"]}'
-    plan = build_execution_plan(req, rewritten)
+    intents = ["how many orders were there on September 1st, 2026"]
+    plan = build_execution_plan(req, "rewritten query", intents=intents)
     assert len(plan.task_groups) == 1
     tasks = plan.task_groups[0].tasks
     assert len(tasks) == 1
@@ -505,9 +586,8 @@ def test_build_execution_plan_date_with_comma_stays_single_intent(mock_planner):
     assert not any(t.workflow == "general" and t.query.strip() == "2026" for t in tasks)
 
 
-@patch("src.gateway.dispatcher.planner_rewrite_enabled", return_value=True)
-def test_build_execution_plan_uses_intents_only_when_phase1_succeeds(mock_planner):
-    """Two-phase flow: intents-only JSON should produce one task per intent via heuristics."""
+def test_build_execution_plan_uses_intents_when_provided():
+    """When intents provided from intent classification, produce one task per intent via heuristics."""
     req = QueryRequest(
         query="what is FBA get order 112-9876543-12 which table stores fee data",
         workflow="auto",
@@ -515,8 +595,8 @@ def test_build_execution_plan_uses_intents_only_when_phase1_succeeds(mock_planne
         session_id=None,
         stream=False,
     )
-    rewritten = '{"intents": ["what is FBA", "get order 112-9876543-12", "which table stores fee data"]}'
-    plan = build_execution_plan(req, rewritten)
+    intents = ["what is FBA", "get order 112-9876543-12", "which table stores fee data"]
+    plan = build_execution_plan(req, "rewritten query", intents=intents)
     assert plan.plan_type == "hybrid"
     assert len(plan.task_groups) == 1
     tasks = plan.task_groups[0].tasks
@@ -527,10 +607,8 @@ def test_build_execution_plan_uses_intents_only_when_phase1_succeeds(mock_planne
     assert "uds" in workflows  # "which table stores..."
 
 
-@patch("src.gateway.dispatcher.planner_rewrite_enabled", return_value=True)
-@patch("src.gateway.dispatcher.parse_rewrite_plan_text")
-def test_build_execution_plan_uses_planner_output_when_available(mock_parse, mock_planner):
-    """Planner-enabled auto mode should use parsed planner execution plan."""
+def test_build_execution_plan_with_intents_creates_multi_task():
+    """When intents provided, create one task per intent."""
     req = QueryRequest(
         query="what is fba and sales trend",
         workflow="auto",
@@ -538,22 +616,15 @@ def test_build_execution_plan_uses_planner_output_when_available(mock_parse, moc
         session_id=None,
         stream=False,
     )
-    mock_parse.return_value = build_execution_plan(
-        QueryRequest(query="fallback", workflow="general", rewrite_enable=True, session_id=None, stream=False),
-        "fallback query",
-    )
-    plan = build_execution_plan(req, '{"plan_type":"hybrid"}')
+    intents = ["what is FBA", "sales trend by month"]
+    plan = build_execution_plan(req, "rewritten", intents=intents)
     assert plan.task_groups
-    mock_parse.assert_called_once()
+    assert sum(len(g.tasks) for g in plan.task_groups) == 2
 
 
-@patch("src.gateway.dispatcher.planner_rewrite_enabled", return_value=True)
-@patch("src.gateway.dispatcher.parse_rewrite_plan_text", return_value=None)
 @patch("src.gateway.router.route_workflow", return_value=("sp_api", 0.85, "heuristic", None, None))
-def test_build_execution_plan_falls_back_to_routing_when_planner_invalid(
-    mock_route, mock_parse, mock_planner
-):
-    """Invalid planner output should fall back to routed single-task plan."""
+def test_build_execution_plan_falls_back_to_routing_when_no_intents(mock_route):
+    """When intents None, fall back to routed single-task plan."""
     req = QueryRequest(
         query="fba fee details",
         workflow="auto",
@@ -561,11 +632,10 @@ def test_build_execution_plan_falls_back_to_routing_when_planner_invalid(
         session_id=None,
         stream=False,
     )
-    plan = build_execution_plan(req, "fba fee details")
+    plan = build_execution_plan(req, "fba fee details", intents=None)
     assert len(plan.task_groups) == 1
     assert len(plan.task_groups[0].tasks) == 1
     assert plan.task_groups[0].tasks[0].workflow == "sp_api"
-    mock_parse.assert_called_once()
     mock_route.assert_called_once()
 
 

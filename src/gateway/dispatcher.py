@@ -11,7 +11,6 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
-from .rewriters import parse_rewrite_plan_text, planner_rewrite_enabled
 from .routing_heuristics import (
     apply_docs_preference,
     normalize_query,
@@ -206,14 +205,19 @@ def _correct_plan_workflows(plan: RewritePlan) -> RewritePlan:
     return plan
 
 
-def build_execution_plan(request: QueryRequest, rewritten_query: str) -> RewritePlan:
+def build_execution_plan(
+    request: QueryRequest,
+    rewritten_query: str,
+    intents: Optional[List[str]] = None,
+) -> RewritePlan:
     """
     Build a validated execution plan for query orchestration.
 
     Behavior:
     - Explicit workflow (non-auto): synthesize one task with that workflow.
-    - Planner mode enabled (auto): parse structured planner output from rewritten text.
-    - Fallback: route once and synthesize one task from routed workflow.
+    - When intents provided: use _build_plan_from_extracted_intents (from intent
+      classification on optimized retrieval query).
+    - Fallback: heuristic multi-clause split, or route once and single task.
     """
     from .router import route_workflow
 
@@ -224,40 +228,9 @@ def build_execution_plan(request: QueryRequest, rewritten_query: str) -> Rewrite
         task_query = (rewritten_query or normalized_query).strip() or normalized_query
         return _build_single_task_plan(task_query, explicit)
 
-    if planner_rewrite_enabled():
-        parsed_plan = parse_rewrite_plan_text(
-            text=rewritten_query or "",
-            fallback_query=normalized_query,
-        )
-        if parsed_plan:
-            task_count = sum(len(g.tasks) for g in (parsed_plan.task_groups or []))
-            intents = parsed_plan.extracted_intents or []
-            # When extracted_intents has more items than tasks (or no tasks), use intents.
-            if intents and (len(intents) > task_count or task_count == 0):
-                logger.info(
-                    "Planner merged or empty tasks (%d tasks vs %d extracted_intents); "
-                    "rebuilding from extracted_intents.",
-                    task_count,
-                    len(intents),
-                )
-                return _correct_plan_workflows(_build_plan_from_extracted_intents(intents))
-            if parsed_plan.task_groups:
-                # When LLM returns single task but query has multiple clauses, use heuristic.
-                clauses = split_multi_intent_clauses(rewritten_query or normalized_query)
-                if task_count == 1 and len(clauses) >= 2:
-                    logger.info(
-                        "Planner returned single task for multi-clause query (%d clauses); "
-                        "using heuristic multi-task fallback.",
-                        len(clauses),
-                    )
-                    multi_task_plan = _build_multi_task_plan_from_query(
-                        rewritten_query or normalized_query
-                    )
-                    if multi_task_plan:
-                        return _correct_plan_workflows(multi_task_plan)
-                # Expand any merged tasks (e.g. "how many X how many Y" -> two tasks).
-                expanded = _expand_merged_tasks(parsed_plan)
-                return _correct_plan_workflows(expanded)
+    # Intent classification ran on optimized retrieval query; use intents when available.
+    if intents and len(intents) > 0:
+        return _correct_plan_workflows(_build_plan_from_extracted_intents(intents))
 
     multi_task_plan = _build_multi_task_plan_from_query(rewritten_query or normalized_query)
     if multi_task_plan is not None:

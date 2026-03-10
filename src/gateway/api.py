@@ -6,7 +6,9 @@ Exposes REST API for the unified query gateway:
 - POST /api/v1/rewrite: rewrite-only endpoint (no execution)
 - GET /health: health check
 
-Architecture: Route LLM (rewriters, router, route_llm) produces an execution plan.
+Architecture: Route LLM (clarification, rewriters, router) does 3 steps: Clarification,
+Rewriting (normalize, memory merge, rewrite with context), Intent classification.
+Dispatcher (build_execution_plan, services) builds the plan and executes tasks.
 This module (Dispatcher) receives the plan, executes tasks in parallel within groups,
 invokes worker agents (RAG, Amazon docs RAG, SP-API Agent, UDS Agent), and merges results.
 """
@@ -27,6 +29,11 @@ from .clarification import check_ambiguity
 from .dispatcher import build_execution_plan
 from .memory import GatewayConversationMemory
 from .router import route_workflow, rewrite_query
+from .routing_heuristics import (
+    apply_docs_preference,
+    format_rewritten_query_bullets,
+    route_workflow_heuristic,
+)
 from .logging_utils import format_route_metadata
 from .services import (
     call_amazon_docs,
@@ -293,7 +300,7 @@ def _is_rewrite_only_mode() -> bool:
     """
     Return True when gateway runs in Route LLM-only mode (truncate downstream).
 
-    When set, /api/v1/query returns after clarification + rewrite + plan building;
+    When set, /api/v1/query returns after Route LLM (clarification + rewrite + intents) + plan building;
     no worker execution. Use for quick testing of Route LLM without RAG/UDS/SP-API.
     Env: GATEWAY_REWRITE_ONLY_MODE or GATEWAY_ROUTE_ONLY_MODE.
     """
@@ -318,11 +325,11 @@ def _clarification_enabled() -> bool:
 )
 async def rewrite(request: QueryRequest) -> RewriteResponse:
     """
-    Run Route LLM pipeline only: clarification, rewrite, plan building.
-    No downstream worker execution (RAG/UDS/SP-API).
+    Run Route LLM pipeline only: clarification, rewriting, intent classification.
+    No execution plan building (Dispatcher's job) or downstream worker execution.
 
-    Use for quick testing of intent classification and routing without
-    invoking worker agents.
+    Route LLM steps: 1) Clarification, 2) Rewriting (normalize, memory merge,
+    rewrite with context), 3) Intent classification.
     """
     original_query = (request.query or "").strip()
 
@@ -331,6 +338,17 @@ async def rewrite(request: QueryRequest) -> RewriteResponse:
         backend = _resolve_rewrite_backend(request)
         ambiguity_result = check_ambiguity(original_query, backend)
         if ambiguity_result.get("needs_clarification"):
+            clarification_question = ambiguity_result.get("clarification_question", "")
+            if gateway_memory and request.session_id:
+                try:
+                    gateway_memory.save_turn(
+                        request.session_id,
+                        original_query,
+                        clarification_question,
+                        "clarification",
+                    )
+                except Exception as exc:
+                    logger.warning("Gateway memory save_turn failed (non-fatal): %s", exc)
             return RewriteResponse(
                 original_query=original_query,
                 rewritten_query=original_query,
@@ -339,23 +357,64 @@ async def rewrite(request: QueryRequest) -> RewriteResponse:
                 rewrite_time_ms=0,
                 plan=None,
                 clarification_required=True,
-                clarification_question=ambiguity_result.get("clarification_question", ""),
+                clarification_question=clarification_question,
                 pending_query=original_query,
             )
 
     rewrite_started = time.perf_counter()
-    rewritten_query = rewrite_query(request)
+    rewritten_query, intents, memory_rounds, memory_text_length = rewrite_query(
+        request, gateway_memory=gateway_memory
+    )
     rewrite_time_ms = int((time.perf_counter() - rewrite_started) * 1000)
-    rewrite_plan = None
-    if (request.workflow or "auto").strip().lower() == "auto":
-        rewrite_plan = build_execution_plan(request, rewritten_query)
+    rewritten_query_length = len(rewritten_query or "")
+
+    # Derive workflow names from intents for UI display (lightweight heuristic).
+    workflows: List[str] = []
+    if intents:
+        seen: set[str] = set()
+        for intent in intents:
+            q = (intent or "").strip()
+            if not q:
+                continue
+            wf, _ = route_workflow_heuristic(q)
+            wf = apply_docs_preference(q, wf)
+            if wf and wf not in seen:
+                seen.add(wf)
+                workflows.append(wf)
+    else:
+        q = (rewritten_query or "").strip()
+        if q:
+            wf, _ = route_workflow_heuristic(q)
+            wf = apply_docs_preference(q, wf)
+            if wf:
+                workflows = [wf]
+
+    if gateway_memory and request.session_id:
+        try:
+            gateway_memory.save_turn(
+                request.session_id,
+                original_query,
+                rewritten_query,
+                "rewrite",
+            )
+        except Exception as exc:
+            logger.warning("Gateway memory save_turn failed (non-fatal): %s", exc)
+    # Enforce bullet-point display for long/multi-part queries (LLM often ignores format).
+    rewritten_query_display = format_rewritten_query_bullets(
+        rewritten_query, intents=intents, min_length=60
+    )
     return RewriteResponse(
         original_query=original_query,
         rewritten_query=rewritten_query,
         rewrite_enabled=bool(request.rewrite_enable),
         rewrite_backend=_resolve_rewrite_backend(request),
         rewrite_time_ms=rewrite_time_ms,
-        plan=rewrite_plan,
+        plan=None,
+        memory_rounds=memory_rounds,
+        memory_text_length=memory_text_length,
+        rewritten_query_length=rewritten_query_length,
+        workflows=workflows if workflows else None,
+        rewritten_query_display=rewritten_query_display,
     )
 
 
@@ -369,8 +428,8 @@ async def query(request: QueryRequest) -> QueryResponse:
     Handle unified gateway query: Route LLM (planning) + Dispatcher (execution).
 
     Steps:
-        1) Route LLM: rewrite query, build execution plan (task classification).
-        2) Dispatcher: execute tasks in parallel within groups, invoke worker agents.
+        1) Route LLM: clarification, rewriting (normalize, memory merge, rewrite), intent classification.
+        2) Dispatcher: build execution plan, execute tasks in parallel, invoke worker agents.
         3) Merge task results and return QueryResponse.
 
     Args:
@@ -397,6 +456,16 @@ async def query(request: QueryRequest) -> QueryResponse:
             ambiguity_result = check_ambiguity(original_query, backend)
             if ambiguity_result.get("needs_clarification"):
                 clarification_question = ambiguity_result.get("clarification_question", "")
+                if gateway_memory and request.session_id:
+                    try:
+                        gateway_memory.save_turn(
+                            request.session_id,
+                            original_query,
+                            clarification_question,
+                            "clarification",
+                        )
+                    except Exception as exc:
+                        logger.warning("Gateway memory save_turn failed (non-fatal): %s", exc)
                 return QueryResponse(
                     answer=clarification_question,
                     workflow="clarification",
@@ -413,14 +482,44 @@ async def query(request: QueryRequest) -> QueryResponse:
                     pending_query=original_query,
                 )
 
-        # Route LLM (Planning): rewrite + task classification -> execution_plan
+        # Route LLM: rewrite + intent classification -> rewritten_query, intents
+        # Dispatcher: build_execution_plan -> execution_plan
         rewrite_started = time.perf_counter()
-        rewritten_query = rewrite_query(request)
+        rewritten_query, intents, _, _ = rewrite_query(
+            request, gateway_memory=gateway_memory
+        )
         rewrite_time_ms = int((time.perf_counter() - rewrite_started) * 1000)
-        execution_plan = build_execution_plan(request, rewritten_query)
+
+        # Skip downstream when normalized query is empty.
+        if not rewritten_query or not rewritten_query.strip():
+            return QueryResponse(
+                answer="Please provide a non-empty query.",
+                workflow="general",
+                routing_confidence=0.0,
+                sources=[],
+                request_id=request_id,
+                error=None,
+                debug={
+                    "original_query": original_query,
+                    "rewritten_query": "",
+                    "clarification_required": False,
+                },
+            )
+
+        execution_plan = build_execution_plan(request, rewritten_query, intents=intents)
         route_input_query = _extract_route_input_query(execution_plan, original_query)
 
         if _is_rewrite_only_mode():
+            if gateway_memory and request.session_id:
+                try:
+                    gateway_memory.save_turn(
+                        request.session_id,
+                        original_query,
+                        rewritten_query,
+                        "rewrite_only",
+                    )
+                except Exception as exc:
+                    logger.warning("Gateway memory save_turn failed (non-fatal): %s", exc)
             debug_trace = _build_debug_trace(
                 original_query=original_query,
                 rewritten_query=rewritten_query,
@@ -492,6 +591,16 @@ async def query(request: QueryRequest) -> QueryResponse:
         )
 
         if top_error and not merged_answer:
+            if gateway_memory and request.session_id:
+                try:
+                    gateway_memory.save_turn(
+                        request.session_id,
+                        original_query,
+                        top_error or "error",
+                        workflow,
+                    )
+                except Exception as exc:
+                    logger.warning("Gateway memory save_turn failed (non-fatal): %s", exc)
             logger.warning(
                 "Planned execution failed for request %s (workflow=%s): %s %s",
                 request_id,
@@ -547,6 +656,17 @@ async def query(request: QueryRequest) -> QueryResponse:
     except Exception as exc:  # pragma: no cover - defensive fallback
         # Defensive error handling so the API still returns a valid schema.
         logger.exception("Gateway query handler failed: %s", exc)
+        # Persist error turn to Redis so chat box content is complete
+        if gateway_memory and request.session_id:
+            try:
+                gateway_memory.save_turn(
+                    request.session_id,
+                    original_query,
+                    str(exc),
+                    "error",
+                )
+            except Exception as save_exc:
+                logger.warning("Gateway memory save_turn failed (non-fatal): %s", save_exc)
         return QueryResponse(
             answer="",
             workflow=workflow,

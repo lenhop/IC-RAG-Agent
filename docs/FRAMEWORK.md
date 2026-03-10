@@ -9,15 +9,59 @@ This document describes the system framework for the IC-RAG-Agent project using 
 
 ---
 
-## 1. System Overview
+### 1. System Overview
 
 IC-RAG-Agent is an **Intent Classification + Retrieval-Augmented Generation** system with a **Unified Gateway** routing queries to five backend workflows:
 
-- **Gateway** – Single entry point with clarification (required), Route LLM (rewriting + task classification), and Dispatcher (supervisor agent; executes worker agents in parallel)
+- **Gateway** – Single entry point with Route LLM (clarification, rewriting, intent classification) and Dispatcher (build execution plan, execute worker agents, merge results)
 - **UDS Agent** – Business Intelligence for Amazon seller data (ClickHouse + ReAct)
 - **RAG Pipeline** – Document retrieval and hybrid generation with four parallel intent methods
 - **SP-API Agent** – Seller Operations via Amazon SP-API (ReAct + LangGraph workflow)
 - **Client** – Unified Gradio Chat UI calling the gateway
+
+#### Framework
+
+```mermaid
+%%{init: {'themeVariables': {'nodeSpacing': 20, 'rankSpacing': 25}}}%%
+flowchart TB
+    subgraph UI["Client Layer"]
+        ChatBox[UI Chat Box]
+    end
+
+    subgraph RouteLLM["Route LLM (Decision-maker)"]
+        direction LR
+        C1[Clarification    ]
+        C2[Rewriting        ]
+        C3[Intent Classif.  ]
+        C1 --> C2 --> C3
+    end
+
+    subgraph Dispatcher["Dispatcher (Project Manager)"]
+        direction LR
+        D1[Task Planning   ]
+        D2[Task Allocation ]
+        D3[Parallel Control]
+        D4[Result Summary  ]
+        D1 --> D2 --> D3 --> D4
+    end
+
+    subgraph Worker["Worker (Executor)"]
+        direction LR
+        W1[RAG     ]
+        W2[UDS     ]
+        W3[SP-API  ]
+        W1 --> W2 --> W3
+    end
+
+    ChatBox --> RouteLLM
+    RouteLLM -->|Output Intent List| Dispatcher
+    Dispatcher -->|Tasks| Worker
+
+```
+
+
+
+#### Workflow
 
 ```mermaid
 %%{init: {'themeVariables': {'fontSize': '11px'}, 'flowchart': {'curve': 'linear'}}}%%
@@ -29,7 +73,7 @@ flowchart TB
     subgraph Gateway["Unified Gateway"]
         API[FastAPI]
         RouteLLM[Route LLM: Clarification, Rewriting, Intent Classification]
-        Dispatcher[Dispatcher: Task Planning, Invoke, Merge]
+        Dispatcher[Dispatcher: Build Plan, Invoke, Merge]
     end
 
     subgraph Workers["Worker Agents"]
@@ -71,7 +115,7 @@ flowchart TB
     Monitor -->|read| CH
 ```
 
-> **Note:** Target design: Task planning moves to Dispatcher. Route LLM outputs intents only; Dispatcher maps intents to workflows and plans execution.
+> **Note:** Route LLM outputs rewritten query + intents. Dispatcher builds execution plan (maps intents to workflows) and executes tasks.
 
 ---
 
@@ -93,22 +137,22 @@ The gateway is organized into two conceptual groups:
 
 | Group | Responsibility | Modules | Description |
 |-------|----------------|---------|-------------|
-| **Route LLM** | Planning | `clarification.py`, `rewriters.py`, `router.py`, `route_llm.py` | Clarification (required), query rewriting, and task classification. Produces an execution plan (what to do). |
-| **Dispatcher** | Execution | `api.py`, `services.py` | Supervisor agent; invokes worker agents (General RAG, Amazon docs RAG, SP-API Agent, UDS Agent) and executes tasks in parallel within groups, merges results. |
+| **Route LLM** | Clarification, Rewriting, Intent Classification | `clarification.py`, `rewriters.py`, `router.py`, `route_llm.py` | Three steps: (1) Clarification, (2) Rewriting (normalize, memory merge, rewrite with context), (3) Intent classification. Outputs rewritten query + intents. |
+| **Dispatcher** | Build Plan, Execute, Merge | `api.py`, `dispatcher.py`, `services.py` | Builds execution plan from rewritten query + intents; invokes worker agents; executes tasks in parallel within groups; merges results. |
 
-**Route LLM** outputs: rewritten query, execution plan (task_groups with workflow + query per task).
+**Route LLM** outputs: rewritten query, intents (list of sub-questions).
 
-**Dispatcher** inputs: execution plan. Outputs: task_results, merged_answer, aggregated sources.
+**Dispatcher** inputs: rewritten query, intents. Builds execution plan (task_groups with workflow + query per task). Outputs: task_results, merged_answer, aggregated sources.
 
 ### 1.3 Role Analogy (Target Design)
 
 | Role | Responsibility | Module |
 |------|----------------|--------|
-| **Decision Maker (Reason LLM)** | Clarify needs, identify intents | Route LLM |
-| **Project Manager (Supervisor)** | Task planning, assignment, supervision, result aggregation | Dispatcher |
+| **Decision Maker (Reason LLM)** | Clarify needs, rewrite query, identify intents | Route LLM |
+| **Project Manager (Supervisor)** | Build execution plan, assign tasks, supervise, aggregate results | Dispatcher |
 | **Worker** | Execute tasks, report results | RAG, SP-API, UDS |
 
-**Proposed change:** Move Task planning from Route LLM to Dispatcher. Route LLM outputs intents only; Dispatcher performs intent → workflow mapping and task planning. See [ARCHITECTURE_DECISIONS.md](ARCHITECTURE_DECISIONS.md) for rationale and improvement suggestions.
+**Design:** Route LLM outputs rewritten query + intents. Dispatcher builds execution plan (intent → workflow mapping) and executes tasks. See [ARCHITECTURE_DECISIONS.md](ARCHITECTURE_DECISIONS.md) for rationale.
 
 ### 1.4 Memory Strategy
 
@@ -132,13 +176,13 @@ flowchart TB
 
     subgraph L1["Gateway Layer"]
         GatewayAPI[FastAPI Gateway]
-        subgraph RL["Route LLM (Planning)"]
+        subgraph RL["Route LLM (3 steps)"]
             Clarify[Clarification<br/>check_ambiguity]
-            Rewriters[Query Rewriters<br/>Ollama / DeepSeek]
-            Planner[Planner + Correction]
-            RouteLLMMod[Route LLM / Heuristic]
+            Rewriters[Rewriting: Normalize, Memory Merge, Rewrite<br/>Ollama / DeepSeek]
+            IntentClass[Intent Classification]
         end
-        subgraph Disp["Dispatcher (Execution)"]
+        subgraph Disp["Dispatcher (Build Plan, Execute)"]
+            DispatcherMod[dispatcher.py<br/>build_execution_plan]
             Orch[Orchestrator<br/>api.py]
             Services[Service Dispatch<br/>services.py]
         end
@@ -300,13 +344,13 @@ sequenceDiagram
 
     GW->>RouteLLM: raw_query (or merged)
 
-    Note over RouteLLM: Rewriting + Task Classification
-    RouteLLM->>RouteLLM: Normalize, LLM rewrite, plan/correct
-    RouteLLM-->>GW: execution_plan (rewritten_query, task_groups)
+    Note over RouteLLM: 3 steps: Clarification, Rewriting, Intent Classification
+    RouteLLM->>RouteLLM: Normalize, Memory merge, Rewrite, Intent classification
+    RouteLLM-->>GW: rewritten_query, intents
 
-    GW->>Dispatcher: execution_plan
+    GW->>Dispatcher: rewritten_query, intents
 
-    Note over Dispatcher: Supervise + Invoke
+    Note over Dispatcher: Build plan, Supervise + Invoke
     Dispatcher->>Backend: Execute tasks (parallel/sequential)
     Backend-->>Dispatcher: task_results
     Dispatcher->>Dispatcher: Merge answers
@@ -315,7 +359,7 @@ sequenceDiagram
     GW-->>ChatUI: QueryResponse (answer, plan, task_results)
     ChatUI-->>User: Display answer
 
-    Note over GW: Clarification (before rewrite). Route LLM = planning. Dispatcher = execution.
+    Note over GW: Route LLM = 3 steps. Dispatcher = build plan + execute.
 ```
 
 ---
@@ -363,14 +407,23 @@ Clarification is required by default. The gateway runs a clarification check **b
 
 **Why clarification before rewriting:** Ambiguity is about missing information (which fees? what period?). The rewriter cannot invent information; it would guess and introduce bias. Clarifying first avoids wasted rewrite calls and ensures correct routing. See [ARCHITECTURE_DECISIONS.md](ARCHITECTURE_DECISIONS.md).
 
-### 5.2 Route LLM Steps (Current)
+### 5.2 Route LLM Steps (3 steps)
 
-1. **Clarification** (required) – Detect ambiguous queries; ask user.
-2. **Normalize** – Trim and collapse whitespace.
-3. **Rewrite** – LLM rewrites or classifies intents.
-4. **Build execution plan** – Parse planner output; route intents to workflows, create task_groups.
-5. **Plan correction** – Heuristic override for misclassifications.
-6. **Expand merged tasks** – Split tasks with multiple sub-questions.
+Route LLM has exactly three steps:
+
+1. **Clarification** (required) – Detect ambiguous queries; ask user for missing info (store, ASIN, Order ID, date range, fee type, etc.).
+
+2. **Rewriting** – Three sub-steps:
+   - **Normalize** – Trim and collapse whitespace.
+   - **Memory merge** – Load last N turns from Redis; format as conversation context.
+   - **Rewrite with context** – LLM produces retrieval-optimized query (Ollama / DeepSeek).
+
+3. **Intent classification** – Extract distinct sub-questions from the optimized query. Output: `{"intents": ["...", "..."]}`.
+
+**Dispatcher** (not Route LLM) is responsible for:
+- Build execution plan – Map intents to workflows, create task_groups.
+- Plan correction – Heuristic override for misclassifications.
+- Expand merged tasks – Split tasks with multiple sub-questions.
 
 ### 5.3 Query Rewriting and Routing Rules
 
@@ -378,13 +431,13 @@ Clarification is required by default. The gateway runs a clarification check **b
 
 | Component | File | Description |
 |-----------|------|--------------|
-| Clarification | `src/gateway/clarification.py` | `check_ambiguity()` – LLM detects ambiguous queries before rewrite; asks user for clarification. Required by default; set `GATEWAY_CLARIFICATION_ENABLED=false` to disable. |
-| Rewrite prompts | `src/gateway/rewriters.py` | `REWRITE_PROMPT`, `REWRITE_PLANNER_PROMPT`, `INTENT_CLASSIFICATION_PROMPT` |
-| Intent classification | `src/gateway/rewriters.py` | `rewrite_intents_only()` – Phase 1 of two-phase flow |
-| Heuristic split | `src/gateway/router.py` | `_split_multi_intent_clauses()` – fallback when LLM fails |
-| Heuristic routing | `src/gateway/router.py` | `_route_workflow_heuristic()` |
-| Plan correction | `src/gateway/router.py` | `_correct_plan_workflows()` |
-| Route LLM prompt | `src/gateway/route_llm.py` | `ROUTE_LLM_SYSTEM_PROMPT` |
+| Clarification | `src/gateway/clarification.py` | `check_ambiguity()` – LLM detects ambiguous queries; asks user for clarification. Required by default. |
+| Normalize, Memory merge, Rewrite | `src/gateway/router.py`, `rewriters.py` | `rewrite_query()`, `rewrite_with_context()` – LLM produces retrieval-optimized query. |
+| Intent classification | `src/gateway/rewriters.py` | `rewrite_intents_only()` – extracts distinct sub-questions. |
+| Build execution plan | `src/gateway/dispatcher.py` | `build_execution_plan()` – maps intents to workflows, creates task_groups. |
+| Heuristic split | `src/gateway/routing_heuristics.py` | `split_multi_intent_clauses()` – fallback when intent classification fails. |
+| Heuristic routing | `src/gateway/router.py` | `_route_workflow_heuristic()` – single-task workflow selection. |
+| Plan correction | `src/gateway/dispatcher.py` | `_correct_plan_workflows()` – heuristic override for misclassifications. |
 
 **Planner routing policy (rewriters.py):**
 
@@ -410,9 +463,9 @@ When `GATEWAY_REWRITE_PLANNER_ENABLED=true`, the gateway uses a two-phase flow t
 
 1. **Phase 1 – Intent classification:** `rewrite_intents_only()` calls the LLM to list distinct sub-questions. Output: `{"intents": ["...", "..."]}`. On success, tasks are built from intents. On failure, heuristic split is used.
 
-2. **Phase 2 – Task building:** For each intent, `_route_workflow_heuristic()` assigns a workflow. One task per intent.
+2. **Phase 2 – Task building (Dispatcher):** `build_execution_plan()` maps each intent to a workflow via heuristic. One task per intent.
 
-**Heuristic split fallback:** When Phase 1 fails, `_split_multi_intent_clauses()` splits the query by question-starter patterns (`get order`, `which`, `show me`, `what is`, etc.). Example: `"what is FBA get order 123 which table show me trend"` → 4 clauses → 4 tasks.
+**Heuristic split fallback:** When Phase 1 fails, `split_multi_intent_clauses()` splits the query by question-starter patterns (`get order`, `which`, `show me`, `what is`, etc.). Example: `"what is FBA get order 123 which table show me trend"` → 4 clauses → 4 tasks.
 
 ```mermaid
 flowchart TB

@@ -220,7 +220,7 @@ class RewriteResponse(BaseModel):
     )
     plan: Optional["RewritePlan"] = Field(
         default=None,
-        description="Optional structured rewrite plan when planner mode is enabled.",
+        description="Always None from rewrite endpoint. Plan is built by Dispatcher in /query flow.",
     )
     clarification_required: bool = Field(
         default=False,
@@ -233,6 +233,29 @@ class RewriteResponse(BaseModel):
     pending_query: Optional[str] = Field(
         default=None,
         description="Original query when clarification is needed.",
+    )
+    memory_rounds: int = Field(
+        default=0,
+        ge=0,
+        description="Number of short-term memory rounds integrated (0 when no session/history).",
+    )
+    memory_text_length: int = Field(
+        default=0,
+        ge=0,
+        description="Character count of short-term memory context integrated (0 when none).",
+    )
+    rewritten_query_length: int = Field(
+        default=0,
+        ge=0,
+        description="Character count of the rewritten query.",
+    )
+    workflows: Optional[List[str]] = Field(
+        default=None,
+        description="Intent classification result: workflow names (e.g. general, amazon_docs, uds, sp_api).",
+    )
+    rewritten_query_display: Optional[str] = Field(
+        default=None,
+        description="Bullet-point formatted rewritten query for UI display. Use when present.",
     )
 
     model_config = ConfigDict(

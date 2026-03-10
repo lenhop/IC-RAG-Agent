@@ -259,37 +259,16 @@ def test_build_execution_plan_explicit_workflow():
     assert plan.task_groups[0].tasks[0].workflow == "sp_api"
 
 
-@patch("src.gateway.dispatcher.planner_rewrite_enabled", return_value=True)
-@patch(
-    "src.gateway.dispatcher.parse_rewrite_plan_text",
-    return_value=RewritePlan(
-        plan_type="hybrid",
-        merge_strategy="concat",
-        extracted_intents=["what is FBA", "total sales last month", "get order 123"],
-        task_groups=[
-            TaskGroup(
-                group_id="g1",
-                parallel=True,
-                tasks=[
-                    TaskItem(task_id="t1", workflow="general", query="what is FBA total sales get order"),
-                ],
-            )
-        ],
-    ),
-)
-def test_build_execution_plan_rebuilds_from_extracted_intents_when_merged(
-    mock_parse, mock_planner
-):
-    """When LLM merges tasks but extracted_intents has more items, rebuild from intents."""
+def test_build_execution_plan_uses_intents_when_provided():
+    """When intents provided (from intent classification on optimized query), use them."""
     request = QueryRequest(query="what is FBA total sales get order 123", workflow="auto")
-    plan = build_execution_plan(request, '{"intents": [...]}')
-    # Should have 3 tasks (from 3 extracted_intents), not 1
+    intents = ["what is FBA", "total sales last month", "get order 123"]
+    plan = build_execution_plan(request, "anything", intents=intents)
     total_tasks = sum(len(g.tasks) for g in plan.task_groups)
     assert total_tasks == 3
 
 
-@patch("src.gateway.dispatcher.planner_rewrite_enabled", return_value=False)
-def test_build_execution_plan_heuristic_fallback_multi_clause(mock_planner):
+def test_build_execution_plan_heuristic_fallback_multi_clause():
     """Without planner, compound query uses heuristic clause splitting."""
     request = QueryRequest(
         query="what is FBA get order status for 123 show me total sales",

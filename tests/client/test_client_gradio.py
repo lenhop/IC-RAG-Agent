@@ -48,14 +48,15 @@ def test_chat_handler_returns_answer():
         result = _chat_handler("What is the answer?", [], "uds", True, "ollama", "sess-1")
         outputs = _collect_chat_outputs(result)
 
-    assert len(outputs) == 2
-    assert "Rewrite completed." in outputs[0]
+        assert len(outputs) == 2
+        assert "Normalize: Completed" in outputs[0]
     assert "The answer is 42." in outputs[1]
     assert "Routed Input: `What is the answer?`" in outputs[1]
     mock_client.rewrite_sync.assert_called_once_with(
         query="What is the answer?",
         rewrite_enable=True,
         rewrite_backend="ollama",
+        session_id="sess-1",
     )
     mock_client.query_sync.assert_called_once_with(
         query="What is the answer?",
@@ -273,6 +274,7 @@ def test_chat_handler_merge_pending_query_on_followup():
         query=merged_query,
         rewrite_enable=True,
         rewrite_backend="ollama",
+        session_id="sess-1",
     )
     mock_client.query_sync.assert_called_once_with(
         query=merged_query,
@@ -302,6 +304,13 @@ def test_chat_handler_rewrite_only_mode_skips_query_sync():
 
     assert any("Rewrite-only test mode" in item for item in outputs)
     mock_client.query_sync.assert_not_called()
+    # Ensure session_id is passed so chat turns are saved to Redis
+    mock_client.rewrite_sync.assert_called_once_with(
+        query="original query",
+        rewrite_enable=True,
+        rewrite_backend="ollama",
+        session_id="s1",
+    )
 
 
 # ---------------------------------------------------------------------------

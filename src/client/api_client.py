@@ -110,6 +110,7 @@ class GatewayClient:
         query: str,
         rewrite_enable: bool = True,
         rewrite_backend: Optional[str] = None,
+        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Call rewrite-only endpoint for immediate UI feedback.
@@ -118,6 +119,7 @@ class GatewayClient:
             query: User query string.
             rewrite_enable: Whether to enable rewriting.
             rewrite_backend: Optional backend ("ollama" or "deepseek").
+            session_id: Optional session ID for multi-turn logging to Redis.
 
         Returns:
             Dict with rewritten query metadata, or error dict.
@@ -135,7 +137,7 @@ class GatewayClient:
             "query": query,
             "workflow": "auto",
             "rewrite_enable": rewrite_enable,
-            "session_id": None,
+            "session_id": session_id,
         }
         if rewrite_enable and rewrite_backend:
             payload["rewrite_backend"] = (rewrite_backend or "").strip().lower()

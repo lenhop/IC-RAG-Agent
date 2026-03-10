@@ -16,6 +16,7 @@ from src.gateway.rewriters import (
     INTENT_CLASSIFICATION_PROMPT,
     REWRITE_PROMPT,
     REWRITE_PLANNER_PROMPT,
+    _strip_echoed_context_from_rewrite,
     parse_rewrite_plan_text,
     rewrite_intents_only,
     rewrite_with_ollama,
@@ -333,3 +334,17 @@ def test_parse_rewrite_plan_text_honors_max_tasks_guard():
     assert len(plan.task_groups) == 1
     assert len(plan.task_groups[0].tasks) == 1
     assert plan.task_groups[0].tasks[0].query == "q1"
+
+
+def test_strip_echoed_context_returns_fallback_when_trace_present():
+    """When LLM echoes trace (Normalize, Rewrite Backend, etc.), return fallback."""
+    echoed = "user: foo assistant: - Normalize: Completed - Rewrite Backend: ollama"
+    result = _strip_echoed_context_from_rewrite(echoed, "fallback query")
+    assert result == "fallback query"
+
+
+def test_strip_echoed_context_returns_response_when_clean():
+    """When response has no echo patterns, return as-is."""
+    clean = "how do attention work, summarize IP steps"
+    result = _strip_echoed_context_from_rewrite(clean, "fallback")
+    assert result == clean

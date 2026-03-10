@@ -109,7 +109,7 @@ def test_clear_session_skips_empty(memory, mock_redis):
     "src.gateway.api.route_workflow",
     return_value=("general", 0.95, "manual", None, None),
 )
-@patch("src.gateway.api.rewrite_query", return_value="rewritten query")
+@patch("src.gateway.api.rewrite_query", return_value=("rewritten query", None, 0, 0))
 @patch("src.gateway.api.build_execution_plan")
 def test_query_success_saves_turn_when_session_id_present(
     mock_build_plan, mock_rewrite, mock_route, mock_call, mock_clar_enabled
@@ -157,25 +157,18 @@ def test_query_success_saves_turn_when_session_id_present(
     "src.gateway.api.route_workflow",
     return_value=("clarification", 0.0, "manual", None, None),
 )
-@patch("src.gateway.api.rewrite_query", return_value="rewritten")
+@patch("src.gateway.api.rewrite_query", return_value=("rewritten", None, 0, 0))
 @patch("src.gateway.api.build_execution_plan")
 @patch("src.gateway.api.check_ambiguity")
-@patch("src.gateway.api._clarification_enabled", return_value=False)
-def test_query_clarification_does_not_save_turn(
+@patch("src.gateway.api._clarification_enabled", return_value=True)
+def test_query_clarification_triggers_save_turn(
     mock_clar_enabled, mock_check, mock_build_plan, mock_rewrite, mock_route, mock_call
 ):
-    """Clarification responses should not be saved to memory."""
-    from src.gateway.schemas import RewritePlan, TaskGroup, TaskItem
-
-    mock_plan = RewritePlan(
-        task_groups=[
-            TaskGroup(
-                group_id="g1",
-                tasks=[TaskItem(task_id="t1", query="rewritten", workflow="clarification")],
-            )
-        ],
-    )
-    mock_build_plan.return_value = mock_plan
+    """Clarification responses should trigger save_turn when session_id present."""
+    mock_check.return_value = {
+        "needs_clarification": True,
+        "clarification_question": "Which fees do you mean?",
+    }
 
     mock_memory = MagicMock()
     with patch("src.gateway.api.gateway_memory", mock_memory):
@@ -191,17 +184,63 @@ def test_query_clarification_does_not_save_turn(
             },
         )
     assert resp.status_code == 200
-    mock_memory.save_turn.assert_not_called()
+    mock_memory.save_turn.assert_called_once_with(
+        "sess-1",
+        "Show fees",
+        "Which fees do you mean?",
+        "clarification",
+    )
+
+
+@patch("src.gateway.api._is_rewrite_only_mode", return_value=True)
+@patch("src.gateway.api._clarification_enabled", return_value=False)
+@patch("src.gateway.api.rewrite_query", return_value=("rewritten query for retrieval", None, 0, 0))
+@patch("src.gateway.api.build_execution_plan")
+def test_query_rewrite_only_triggers_save_turn(
+    mock_build_plan, mock_rewrite, mock_clar_enabled, mock_rewrite_only
+):
+    """Rewrite-only response should trigger save_turn when session_id present."""
+    from src.gateway.schemas import RewritePlan, TaskGroup, TaskItem
+
+    mock_plan = RewritePlan(
+        task_groups=[
+            TaskGroup(
+                group_id="g1",
+                tasks=[TaskItem(task_id="t1", query="rewritten query for retrieval", workflow="rewrite_only")],
+            )
+        ],
+    )
+    mock_build_plan.return_value = mock_plan
+
+    mock_memory = MagicMock()
+    with patch("src.gateway.api.gateway_memory", mock_memory):
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/query",
+            json={
+                "query": "What about last month?",
+                "workflow": "auto",
+                "rewrite_enable": True,
+                "session_id": "sess-rewrite-only",
+                "stream": False,
+            },
+        )
+    assert resp.status_code == 200
+    mock_memory.save_turn.assert_called_once_with(
+        "sess-rewrite-only",
+        "What about last month?",
+        "rewritten query for retrieval",
+        "rewrite_only",
+    )
 
 
 @patch("src.gateway.api._clarification_enabled", return_value=False)
-@patch("src.gateway.api.gateway_memory", None)
 @patch("src.gateway.api.call_general", return_value={"answer": "ok", "sources": []})
 @patch(
     "src.gateway.api.route_workflow",
     return_value=("general", 0.95, "manual", None, None),
 )
-@patch("src.gateway.api.rewrite_query", return_value="rewritten")
+@patch("src.gateway.api.rewrite_query", return_value=("rewritten", None, 0, 0))
 @patch("src.gateway.api.build_execution_plan")
 def test_query_without_memory_does_not_fail(
     mock_build_plan, mock_rewrite, mock_route, mock_call, mock_clar_enabled

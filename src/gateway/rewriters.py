@@ -28,9 +28,15 @@ logger = logging.getLogger(__name__)
 # Shared prompt for both backends (per PLAN.md)
 REWRITE_PROMPT = (
     "Rewrite this user question into a clearer search query for our knowledge base. "
+    "IMPORTANT: When the user query contains multiple distinct questions or topics, "
+    "you MUST output each sub-query on its own line as a numbered list:\n"
+    "1. first sub-query\n"
+    "2. second sub-query\n"
+    "Do NOT merge multiple questions into one long sentence. "
+    "Break down long run-on sentences into short, clear numbered items. "
     "Preserve all dates, numbers, filters, and entity names. "
-    "Do not answer the question; only output the rewritten query. "
-    "Output a single line, no explanation."
+    "Do not answer the question; only output the rewritten query or numbered list. "
+    "No explanation."
 )
 
 # Phase 1: Intent classification only. Lists distinct sub-questions; no task building.
@@ -116,6 +122,19 @@ def planner_rewrite_enabled() -> bool:
     """Return True when planner-style rewrite prompt is enabled."""
     value = os.getenv("GATEWAY_REWRITE_PLANNER_ENABLED", "").strip().lower()
     return value in ("1", "true", "yes", "on")
+
+
+def intent_classification_enabled() -> bool:
+    """
+    Return True when intent classification should run on the optimized retrieval query.
+
+    Enabled when GATEWAY_INTENT_CLASSIFICATION_ENABLED or GATEWAY_REWRITE_PLANNER_ENABLED
+    (backward compatibility).
+    """
+    ic = os.getenv("GATEWAY_INTENT_CLASSIFICATION_ENABLED", "").strip().lower()
+    if ic in ("1", "true", "yes", "on"):
+        return True
+    return planner_rewrite_enabled()
 
 
 def _get_rewrite_prompt() -> str:
@@ -506,6 +525,151 @@ def rewrite_with_ollama(query: str, model: Optional[str] = None) -> str:
         return query.strip()
 
 
+def _strip_echoed_context_from_rewrite(response: str, fallback_query: str) -> str:
+    """
+    Detect when LLM echoed conversation context and return clean query.
+    When response contains trace patterns (Normalize, Rewrite Backend, etc.) or
+    user/assistant labels, the LLM echoed instead of outputting only the rewrite.
+    Return fallback to avoid doubling the trace in memory and display.
+    """
+    if not response or not response.strip():
+        return fallback_query
+    r = response.strip()
+    echo_patterns = (
+        "normalize: completed",
+        "integrate short-term memory",
+        "rewrite backend",
+        "rewrite time",
+        "intent classification",
+        "rewrite-only test mode",
+        "user:",
+        "assistant:",
+    )
+    r_lower = r.lower()
+    if any(p in r_lower for p in echo_patterns):
+        logger.debug("Rewrite output contains echoed context; using fallback query")
+        return fallback_query
+    return r
+
+
+def rewrite_with_context(
+    query: str,
+    conversation_context: Optional[str] = None,
+    backend: str = "ollama",
+    model: Optional[str] = None,
+) -> str:
+    """
+    Rewrite query with optional conversation context for retrieval optimization.
+
+    When conversation_context is provided, prepends it to the prompt so the LLM
+    can produce a retrieval-optimized query using recent turns.
+
+    Args:
+        query: Current user query to rewrite.
+        conversation_context: Optional formatted history (e.g. "Turn 1: Q: ... A: ...").
+        backend: "ollama" or "deepseek".
+        model: Optional model override.
+
+    Returns:
+        Rewritten query string, or original query on failure.
+    """
+    if not query or not query.strip():
+        return query
+
+    effective_backend = (backend or "").strip().lower() or os.getenv(
+        "GATEWAY_REWRITE_BACKEND", "ollama"
+    ).strip().lower()
+
+    if conversation_context and conversation_context.strip():
+        prompt_prefix = (
+            f"Conversation context (recent turns):\n{conversation_context.strip()}\n\n"
+            f"Current query to rewrite: {query.strip()}\n\n"
+            "CRITICAL: Output ONLY the rewritten query. Do NOT repeat the context, "
+            "'user:', 'assistant:', or any trace (Normalize, Rewrite Backend, etc.)."
+        )
+    else:
+        prompt_prefix = query.strip()
+
+    raw: str
+    if effective_backend == "ollama":
+        raw = _rewrite_with_ollama_prompt(prompt_prefix, query.strip(), model)
+    elif effective_backend == "deepseek":
+        raw = _rewrite_with_deepseek_prompt(prompt_prefix, query.strip(), model)
+    else:
+        logger.warning("rewrite_with_context: unknown backend %s; returning original", effective_backend)
+        return query.strip()
+    return _strip_echoed_context_from_rewrite(raw, query.strip())
+
+
+def _rewrite_with_ollama_prompt(
+    prompt_content: str, fallback_query: str, model: Optional[str] = None
+) -> str:
+    """Call Ollama with custom prompt content; return rewritten text or fallback."""
+    url = os.getenv("GATEWAY_REWRITE_OLLAMA_URL", DEFAULT_OLLAMA_URL)
+    mdl = model or os.getenv("GATEWAY_REWRITE_OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
+    timeout = _get_rewrite_timeout()
+    payload = {
+        "model": mdl,
+        "prompt": f"{REWRITE_PROMPT}\n\nUser question: {prompt_content}",
+        "stream": False,
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=timeout)
+    except (requests.ConnectionError, requests.Timeout, requests.RequestException) as exc:
+        logger.warning("Ollama rewrite connection failed (%s): %s", url, exc)
+        return fallback_query
+    if resp.status_code != 200:
+        try:
+            detail = resp.json().get("error", resp.text)
+        except Exception:
+            detail = resp.text
+        logger.warning("Ollama rewrite HTTP %s (%s): %s", resp.status_code, url, detail)
+        return fallback_query
+    try:
+        data = resp.json()
+        rewritten = (data.get("response") or "").strip()
+        return rewritten if rewritten else fallback_query
+    except (ValueError, TypeError) as exc:
+        logger.warning("Ollama rewrite invalid JSON (%s): %s", url, exc)
+        return fallback_query
+
+
+def _rewrite_with_deepseek_prompt(
+    prompt_content: str, fallback_query: str, model: Optional[str] = None
+) -> str:
+    """Call DeepSeek with custom prompt content; return rewritten text or fallback."""
+    api_key = os.getenv("DEEPSEEK_API_KEY")
+    if not api_key or not api_key.strip():
+        logger.warning("DEEPSEEK_API_KEY not set; cannot call DeepSeek rewrite")
+        return fallback_query
+    mdl = model or os.getenv("GATEWAY_REWRITE_DEEPSEEK_MODEL", DEFAULT_DEEPSEEK_MODEL)
+    timeout = _get_rewrite_timeout()
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        logger.warning("openai client not installed; cannot call DeepSeek rewrite: %s", exc)
+        return fallback_query
+    client = OpenAI(api_key=api_key, base_url=DEEPSEEK_BASE_URL, timeout=timeout)
+    messages = [
+        {"role": "system", "content": REWRITE_PROMPT},
+        {"role": "user", "content": prompt_content},
+    ]
+    try:
+        response = client.chat.completions.create(
+            model=mdl,
+            messages=messages,
+            max_tokens=256,
+            temperature=0.3,
+        )
+        choice = response.choices[0] if response.choices else None
+        if choice and choice.message and choice.message.content:
+            rewritten = (choice.message.content or "").strip()
+            return rewritten if rewritten else fallback_query
+    except Exception as exc:
+        logger.warning("DeepSeek rewrite failed: %s", exc)
+    return fallback_query
+
+
 def rewrite_with_deepseek(query: str, model: Optional[str] = None) -> str:
     """
     Rewrite query using DeepSeek API (OpenAI-compatible client).
@@ -576,9 +740,11 @@ __all__ = [
     "INTENT_CLASSIFICATION_PROMPT",
     "REWRITE_PROMPT",
     "REWRITE_PLANNER_PROMPT",
+    "intent_classification_enabled",
     "planner_rewrite_enabled",
     "parse_rewrite_plan_text",
     "rewrite_intents_only",
+    "rewrite_with_context",
     "rewrite_with_ollama",
     "rewrite_with_deepseek",
 ]

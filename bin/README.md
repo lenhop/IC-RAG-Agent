@@ -15,7 +15,7 @@ This folder contains executable shell entrypoints for local runtime and operatio
     - Unified Chat UI: `7862` with `--with-ui`
   - Route LLM only (quick testing):
     - Use `--route-only` to run a minimal test stack: gateway only, no downstream backends (`uds`, `rag`, `sp_api`).
-    - Gateway runs clarification + rewrite + plan building; returns early without worker execution.
+    - Gateway runs Route LLM (clarification, rewriting, intent classification) + Dispatcher plan building; returns early without worker execution.
     - Planner prompt mode is enabled automatically to test task grouping and per-task breakdown rewrites.
   - Usage:
     - `./bin/project_stack.sh start`

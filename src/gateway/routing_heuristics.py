@@ -9,7 +9,7 @@ routing logic.
 from __future__ import annotations
 
 import re
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 
 def normalize_query(text: str) -> str:
@@ -86,6 +86,9 @@ def split_multi_intent_clauses(query: str) -> List[str]:
     seen = set()
     for raw in parts:
         clause = normalize_query(raw)
+        # Strip leading "and " from clause.
+        if clause and clause.lower().startswith("and "):
+            clause = clause[4:].strip()
         if not clause:
             continue
         key = clause.lower()
@@ -94,6 +97,93 @@ def split_multi_intent_clauses(query: str) -> List[str]:
         seen.add(key)
         clauses.append(clause)
     return clauses
+
+
+def _split_for_display(query: str) -> List[str]:
+    """
+    Split query into display items. Handles:
+    - Numbered lists (1. ... 2. ...)
+    - Bullet points (- ... or • ...)
+    - Comma/semicolon separation
+    - "and" before question words
+    Avoids splitting on date commas (e.g. "September 1st, 2026").
+    """
+    text = normalize_query(query)
+    if not text:
+        return []
+
+    # Check for numbered list (1. ... 2. ...) or bullet points (- ... / • ...)
+    numbered = re.split(r"\s*\d+\.\s+", text)
+    numbered = [normalize_query(p) for p in numbered if normalize_query(p)]
+    if len(numbered) >= 2:
+        return numbered
+
+    bullet_items = re.split(r"\s*[-•]\s+", text)
+    bullet_items = [normalize_query(p) for p in bullet_items if normalize_query(p)]
+    if len(bullet_items) >= 2:
+        return bullet_items
+
+    # Try splitting by comma/semicolon (avoid date commas) or "and" before question words
+    parts = re.split(
+        r",\s*(?!\s*\d{4}\b)|;\s*|\s+and\s+(?=how|what|which|when|show|get|check)",
+        text,
+        flags=re.I,
+    )
+    clauses = []
+    seen: set[str] = set()
+    for raw in parts:
+        clause = normalize_query(raw)
+        if clause and clause.lower().startswith("and "):
+            clause = clause[4:].strip()
+        if not clause or len(clause) < 3:
+            continue
+        key = clause.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        clauses.append(clause)
+    return clauses
+
+
+def format_rewritten_query_bullets(
+    rewritten_query: str,
+    intents: Optional[List[str]] = None,
+    min_length: int = 60,
+) -> Optional[str]:
+    """
+    Format long or multi-part rewritten query as bullet points for display.
+    Enforces bullet-point output regardless of LLM format.
+
+    Uses intents when available (from intent classification); otherwise splits
+    by numbered list, bullet points, comma/semicolon via _split_for_display.
+
+    Returns:
+        Bullet-point formatted string ("- a\\n- b\\n- c") or None if not applicable.
+    """
+    q = (rewritten_query or "").strip()
+    if not q:
+        return None
+    items: List[str] = []
+    if intents and len(intents) >= 2:
+        for it in intents:
+            s = (it or "").strip()
+            if s and s.lower().startswith("and "):
+                s = s[4:].strip()
+            if s:
+                items.append(s)
+    if len(items) < 2:
+        # Always try splitting — even short queries may have numbered/bullet items
+        clauses = _split_for_display(q)
+        if len(clauses) >= 2:
+            items = clauses
+    if len(items) < 2 and len(q) >= min_length:
+        # Last resort: try splitting on "and" for long queries
+        clauses = _split_for_display(q)
+        if len(clauses) >= 2:
+            items = clauses
+    if len(items) < 2:
+        return None
+    return "\n".join(f"    - {item}" for item in items)
 
 
 def route_workflow_heuristic(query: str) -> Tuple[str, float]:
@@ -265,6 +355,7 @@ def route_workflow_heuristic(query: str) -> Tuple[str, float]:
 
 
 __all__ = [
+    "format_rewritten_query_bullets",
     "normalize_query",
     "apply_docs_preference",
     "split_multi_intent_clauses",

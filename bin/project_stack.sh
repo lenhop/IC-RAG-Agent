@@ -58,7 +58,7 @@ Commands:
 
 Options:
   --with-ui          Also run unified chat UI on port 7862
-  --route-only       Route LLM only: gateway runs clarification + rewrite + plan;
+  --route-only       Route LLM only: gateway runs clarification + rewrite + intents (no plan in rewrite endpoint);
                      no downstream workers (uds/rag/sp_api). Use for quick testing.
   --rewrite-only     Alias for --route-only (deprecated, use --route-only)
 

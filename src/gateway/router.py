@@ -12,14 +12,22 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
-from .rewriters import planner_rewrite_enabled, rewrite_intents_only
+from .rewriters import (
+    intent_classification_enabled,
+    rewrite_intents_only,
+    rewrite_with_context,
+)
 from .routing_heuristics import (
     apply_docs_preference as _apply_docs_preference,
     normalize_query,
     route_workflow_heuristic as _route_workflow_heuristic,
 )
 from .schemas import QueryRequest
+
+if TYPE_CHECKING:
+    from .memory import GatewayConversationMemory
 
 logger = logging.getLogger(__name__)
 
@@ -46,54 +54,99 @@ def _normalize(query: str) -> str:
     return normalize_query(query or "")
 
 
-def rewrite_query(request: QueryRequest) -> str:
+def _get_memory_rounds() -> int:
+    """Read GATEWAY_REWRITE_MEMORY_ROUNDS from env (default 3)."""
+    try:
+        return max(1, int(os.getenv("GATEWAY_REWRITE_MEMORY_ROUNDS", "3")))
+    except (ValueError, TypeError):
+        return 3
+
+
+def _format_history_for_llm(history: list) -> str:
     """
-    Normalize and optionally rewrite the incoming query before routing.
+    Format session history for LLM prompt (oldest first, chronological order).
+
+    Args:
+        history: List of turn dicts with query, answer, workflow, timestamp.
+
+    Returns:
+        Formatted string like "Turn 1: User asked "..." -> Answer: "...""
+    """
+    lines = []
+    for idx, turn in enumerate(history, start=1):
+        q = (turn.get("query") or "").strip()
+        a = (turn.get("answer") or "").strip()
+        if not q:
+            continue
+        lines.append(f'Turn {idx}: User asked "{q}" -> Answer: "{a}"')
+    return "\n".join(lines) if lines else ""
+
+
+def rewrite_query(
+    request: QueryRequest,
+    gateway_memory: Optional["GatewayConversationMemory"] = None,
+) -> Tuple[str, Optional[List[str]], int, int]:
+    """
+    Normalize, rewrite (with memory merge), and optionally run intent classification.
+
+    Pipeline: Normalize -> Rewrite (memory merge + optimized retrieval query) -> Intent
+    classification (on optimized query, when enabled).
 
     Flow:
-    1. Always normalize (trim, collapse whitespace).
+    1. Normalize (trim, collapse whitespace). Early exit if empty -> ("", None, 0).
     2. If rewrite_enable:
-       - Resolve backend from request.rewrite_backend or GATEWAY_REWRITE_BACKEND (default "ollama").
-       - If planner enabled: Phase 1 intent classification via rewrite_intents_only.
-         On success: return JSON {"intents": [...]} for build_execution_plan.
-         On failure: return normalized query; build_execution_plan uses heuristic fallback.
-       - Else if backend in ("ollama", "deepseek"): call rewriter; return result or normalized.
-       - Else: return normalized query.
-    3. Else: return normalized query.
+       - Merge short-term memory when session_id and gateway_memory present.
+       - Call rewrite_with_context -> optimized retrieval query.
+       - If intent_classification_enabled: run rewrite_intents_only on optimized query.
+    3. Else: return (normalized, None, 0).
 
     Args:
         request: Parsed QueryRequest from the client.
+        gateway_memory: Optional Redis-backed session memory for conversation context.
 
     Returns:
-        Rewritten query string used for routing and downstream services.
+        (rewritten_query, intents, memory_rounds_used) tuple.
+        memory_rounds_used: number of history turns merged (0 when no session/history).
     """
     normalized = _normalize(request.query or "")
 
+    if not normalized or not normalized.strip():
+        return ("", None, 0, 0)
+
     if not request.rewrite_enable:
-        return normalized
+        return (normalized, None, 0, 0)
 
     backend = (
         (request.rewrite_backend or "").strip().lower()
         or os.getenv("GATEWAY_REWRITE_BACKEND", "ollama").strip().lower()
     )
 
-    # Two-phase flow: planner uses intent classification only (Phase 1).
-    if planner_rewrite_enabled():
-        import json
-        result = rewrite_intents_only(normalized, backend=backend)
+    # Step 1: Rewrite with memory merge -> optimized retrieval query.
+    conversation_context = None
+    memory_rounds_used = 0
+    memory_text_length = 0
+    if gateway_memory and request.session_id:
+        last_n = _get_memory_rounds()
+        history = gateway_memory.get_history(request.session_id, last_n=last_n)
+        if history:
+            conversation_context = _format_history_for_llm(history)
+            memory_rounds_used = len(history)
+            memory_text_length = len(conversation_context or "")
+
+    optimized_query = rewrite_with_context(
+        normalized,
+        conversation_context=conversation_context,
+        backend=backend,
+    )
+
+    # Step 2: Intent classification on optimized retrieval query (when enabled).
+    intents = None
+    if intent_classification_enabled():
+        result = rewrite_intents_only(optimized_query, backend=backend)
         if result and result.get("intents"):
-            return json.dumps(result)
-        # Fallback: return normalized; build_execution_plan uses heuristic multi-intent split.
-        return normalized
+            intents = result["intents"]
 
-    if backend == "ollama":
-        from .rewriters import rewrite_with_ollama
-        return rewrite_with_ollama(normalized)
-    if backend == "deepseek":
-        from .rewriters import rewrite_with_deepseek
-        return rewrite_with_deepseek(normalized)
-
-    return normalized
+    return (optimized_query, intents, memory_rounds_used, memory_text_length)
 
 
 def route_workflow(

@@ -14,6 +14,7 @@ import pytest
 
 from src.gateway.routing_heuristics import (
     apply_docs_preference,
+    format_rewritten_query_bullets,
     normalize_query,
     route_workflow_heuristic,
     split_multi_intent_clauses,
@@ -230,3 +231,31 @@ def test_split_clauses_date_comma_not_split():
     """Comma in date-like patterns (e.g. 'September 1st, 2026') should not split."""
     clauses = split_multi_intent_clauses("sales since September 1st, 2026")
     assert len(clauses) == 1
+
+
+def test_format_rewritten_query_bullets_from_long_query():
+    """Long comma-separated query is formatted as indented bullet points."""
+    q = "how do attention work, summarize IP steps, verify FBA for B09"
+    result = format_rewritten_query_bullets(q, intents=None, min_length=30)
+    assert result is not None
+    lines = result.strip().split("\n")
+    assert len(lines) >= 2
+    assert all("- " in line for line in lines)
+
+
+def test_format_rewritten_query_bullets_from_intents():
+    """Intents list is formatted as indented bullet points."""
+    q = "anything"
+    intents = ["what is FBA", "get order 123", "which table"]
+    result = format_rewritten_query_bullets(q, intents=intents, min_length=10)
+    assert result is not None
+    assert "what is FBA" in result
+    assert "get order 123" in result
+    assert "which table" in result
+    assert "- " in result
+
+
+def test_format_rewritten_query_bullets_short_query_returns_none():
+    """Short single query returns None (no display override)."""
+    result = format_rewritten_query_bullets("what is FBA", min_length=80)
+    assert result is None

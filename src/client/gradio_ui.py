@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -49,6 +50,52 @@ def _clear_all_pending() -> None:
     """Clear all pending queries (e.g., when user clears session)."""
     with _pending_lock:
         _pending_queries.clear()
+
+
+def _format_query_as_bullets(query: str, min_length: int = 60) -> Optional[str]:
+    """
+    Split long or multi-part query into bullet points for display.
+    Client-side fallback when gateway does not return rewritten_query_display.
+    Handles numbered lists, bullet points, comma/semicolon separation.
+    """
+    if not query:
+        return None
+
+    # Check for numbered list (1. ... 2. ...)
+    numbered = re.split(r"\s*\d+\.\s+", query.strip())
+    numbered = [p.strip() for p in numbered if p.strip()]
+    if len(numbered) >= 2:
+        return "\n".join(f"    - {c}" for c in numbered)
+
+    # Check for bullet points (- ... or • ...)
+    bullet_items = re.split(r"\s*[-•]\s+", query.strip())
+    bullet_items = [p.strip() for p in bullet_items if p.strip()]
+    if len(bullet_items) >= 2:
+        return "\n".join(f"    - {c}" for c in bullet_items)
+
+    if len(query) < min_length:
+        return None
+
+    # Split by comma (avoid dates like "Q3 and Q4 2025") or semicolon or "and" before question words.
+    parts = re.split(
+        r",\s*(?!\s*\d{4}\b)|;\s*|\s+and\s+(?=how|what|which|when|show|get|check)",
+        query.strip(),
+        flags=re.I,
+    )
+    clauses = []
+    for p in parts:
+        s = p.strip()
+        if s.lower().startswith("and "):
+            s = s[4:].strip()
+        # Strip trailing "assistant" (LLM echo artifact).
+        if s and s.lower().endswith(" assistant"):
+            s = s[:-9].strip()
+        if s and len(s) > 3:
+            clauses.append(s)
+    if len(clauses) < 2:
+        return None
+    return "\n".join(f"    - {c}" for c in clauses)
+
 
 # Config from env
 GATEWAY_API_URL = os.environ.get("GATEWAY_API_URL", "").rstrip("/")
@@ -147,6 +194,7 @@ def _chat_handler(
             query=raw_query,
             rewrite_enable=True,
             rewrite_backend=(rewrite_backend or "").strip() or None,
+            session_id=session_id or None,
         )
         rewrite_error = rewrite_result.get("error")
         if rewrite_error:
@@ -171,17 +219,37 @@ def _chat_handler(
             return
         else:
             routed_query = str(rewrite_result.get("rewritten_query") or raw_query).strip()
+            # Use bullet-point display: gateway's rewritten_query_display or client-side fallback.
+            gateway_bullets = rewrite_result.get("rewritten_query_display")
+            client_bullets = _format_query_as_bullets(routed_query, min_length=60)
+            display_query = gateway_bullets or client_bullets or routed_query
+            has_bullets = bool(gateway_bullets or client_bullets)
             rewrite_ms = int(rewrite_result.get("rewrite_time_ms") or 0)
             rewrite_backend_value = str(
                 rewrite_result.get("rewrite_backend")
                 or (rewrite_backend or "ollama")
             )
-            rewrite_message = (
-                "Rewrite completed.\n\n"
-                f"- Rewritten Query: `{routed_query}`\n"
-                f"- Rewrite Backend: `{rewrite_backend_value}`\n"
-                f"- Rewrite Time: `{rewrite_ms} ms`"
+            memory_rounds = int(rewrite_result.get("memory_rounds") or 0)
+            memory_text_len = int(rewrite_result.get("memory_text_length") or 0)
+            rewritten_len = int(rewrite_result.get("rewritten_query_length") or 0)
+            workflows_list = rewrite_result.get("workflows") or []
+
+            q_display = (
+                f"- Rewritten Query: (text length: {rewritten_len} chars)\n{display_query}"
+                if has_bullets
+                else f"- Rewritten Query: (text length: {rewritten_len} chars) `{routed_query}`"
             )
+            lines_parts: List[str] = [
+                "- Normalize: Completed",
+                f"- Integrate short-term memory: {memory_rounds} rounds (text length: {memory_text_len} chars)",
+                q_display,
+                f"- Rewrite Backend: `{rewrite_backend_value}`",
+                f"- Rewrite Time: `{rewrite_ms} ms`",
+            ]
+            if workflows_list:
+                workflows_str = ", ".join(workflows_list)
+                lines_parts.append(f"- Intent classification: {workflows_str}")
+            rewrite_message = "\n".join(lines_parts)
             # Include execution plan when available (planner mode)
             plan = rewrite_result.get("plan")
             if plan and isinstance(plan, dict):
