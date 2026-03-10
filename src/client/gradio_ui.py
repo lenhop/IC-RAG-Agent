@@ -429,6 +429,9 @@ CHAT_DIALOG_CSS = """
 #workflow_radio [class*="wrap"] { display: flex !important; flex-direction: column !important; flex-wrap: nowrap !important; align-items: flex-start !important; justify-content: flex-start !important; }
 /* Left column: pack content at top, no stretch */
 #ic_controls_column { justify-content: flex-start !important; align-items: flex-start !important; }
+/* Sign out button: top-right, compact */
+#ic_signout_row { justify-content: flex-end !important; padding: 0 4px !important; margin-bottom: 4px !important; }
+#ic_signout_row button { max-width: 120px !important; }
 """
 
 # JavaScript to auto-scroll chat to bottom when new messages arrive or on submit
@@ -513,7 +516,8 @@ def create_demo() -> gr.Blocks:
 
         # Chat panel: visible when logged in
         with gr.Column(visible=False, elem_id="ic_chat_panel") as chat_panel:
-            signout_btn = gr.Button("Sign Out", variant="secondary")
+            with gr.Row(elem_id="ic_signout_row"):
+                signout_btn = gr.Button("Sign Out", variant="secondary", size="sm")
             with gr.Row():
                 with gr.Column(scale=1, elem_id="ic_controls_column"):
                     gr.Markdown("### Workflow")
@@ -523,18 +527,9 @@ def create_demo() -> gr.Blocks:
                         label="Workflow",
                         info="auto|general|amazon_docs|ic_docs|sp_api|uds",
                     )
-                    rewrite_checkbox = gr.Checkbox(
-                        value=REWRITE_ENABLE_DEFAULT,
-                        label="Rewriting Enable",
-                        info="Enable query rewriting",
-                    )
-                    rewrite_backend_dropdown = gr.Dropdown(
-                        choices=[("Local (Ollama)", "ollama"), ("DeepSeek", "deepseek")],
-                        value=_normalize_rewrite_backend(REWRITE_BACKEND_DEFAULT),
-                        label="Rewrite backend",
-                        info="Local (Ollama) or DeepSeek when rewriting enabled",
-                        interactive=REWRITE_ENABLE_DEFAULT,
-                    )
+                    # Rewriting is always on; backend from env. No UI controls needed.
+                    rewrite_checkbox = gr.State(value=True)
+                    rewrite_backend_dropdown = gr.State(value=_normalize_rewrite_backend(REWRITE_BACKEND_DEFAULT))
                     gr.Markdown("### User")
                     user_display = gr.Markdown("", elem_id="ic_user_display", line_breaks=True)
                     gr.Markdown("### Session")
@@ -664,13 +659,6 @@ def create_demo() -> gr.Blocks:
         clear_btn.click(
             fn=on_clear_session,
             outputs=[session_id_state, session_display],
-        )
-
-        # Keep backend selector disabled when rewriting is disabled.
-        rewrite_checkbox.change(
-            fn=lambda enabled: gr.update(interactive=bool(enabled)),
-            inputs=[rewrite_checkbox],
-            outputs=[rewrite_backend_dropdown],
         )
 
     return demo
