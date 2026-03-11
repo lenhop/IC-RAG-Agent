@@ -29,7 +29,7 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_REWRITE_TIMEOUT = 10
 
 # Prompts loaded from src/prompts/*.txt (cached after first access)
-CLARIFICATION_PROMPT = load_prompt("clarification")
+CLARIFICATION_PROMPT = load_prompt("clarification_detect_ambiguity")
 _GENERATE_QUESTION_PROMPT = load_prompt("clarification_generate_question")
 
 def _is_concrete_documentation_query(query: str) -> bool:
@@ -81,14 +81,26 @@ _HEURISTIC_AMBIGUOUS = [
 ]
 
 
-def _generate_clarification_question_ollama(query: str) -> Optional[str]:
+def _build_user_input(query: str, conversation_context: Optional[str] = None) -> str:
+    """Build the user input string with optional conversation history prefix."""
+    parts = []
+    if conversation_context and conversation_context.strip():
+        parts.append(f"Conversation history:\n{conversation_context.strip()}\n")
+    parts.append(f"User query: {query.strip()}")
+    return "\n".join(parts)
+
+
+def _generate_clarification_question_ollama(
+    query: str, conversation_context: Optional[str] = None
+) -> Optional[str]:
     """Call LLM to generate a contextual clarification question. Returns None on failure."""
     url = os.getenv("GATEWAY_REWRITE_OLLAMA_URL", DEFAULT_OLLAMA_URL)
     mdl = os.getenv("GATEWAY_REWRITE_OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
     timeout = _get_timeout()
+    user_input = _build_user_input(query, conversation_context)
     payload = {
         "model": mdl,
-        "prompt": f"{_GENERATE_QUESTION_PROMPT}{query.strip()}",
+        "prompt": f"{_GENERATE_QUESTION_PROMPT}{user_input}",
         "stream": False,
     }
     try:
@@ -175,14 +187,17 @@ def _extract_first_json_object(text: str) -> Optional[str]:
     return None
 
 
-def _call_clarification_ollama(query: str) -> str:
+def _call_clarification_ollama(
+    query: str, conversation_context: Optional[str] = None
+) -> str:
     """Call Ollama with clarification prompt; return raw response text."""
     url = os.getenv("GATEWAY_REWRITE_OLLAMA_URL", DEFAULT_OLLAMA_URL)
     mdl = os.getenv("GATEWAY_REWRITE_OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
     timeout = _get_timeout()
+    user_input = _build_user_input(query, conversation_context)
     payload = {
         "model": mdl,
-        "prompt": f"{CLARIFICATION_PROMPT}{query}",
+        "prompt": f"{CLARIFICATION_PROMPT}{user_input}",
         "stream": False,
     }
     try:
@@ -200,7 +215,9 @@ def _call_clarification_ollama(query: str) -> str:
         return ""
 
 
-def _call_clarification_deepseek(query: str) -> str:
+def _call_clarification_deepseek(
+    query: str, conversation_context: Optional[str] = None
+) -> str:
     """Call DeepSeek with clarification prompt; return raw response text."""
     api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key or not api_key.strip():
@@ -214,9 +231,10 @@ def _call_clarification_deepseek(query: str) -> str:
         logger.warning("openai client not installed; cannot call DeepSeek clarification")
         return ""
     client = OpenAI(api_key=api_key, base_url=DEEPSEEK_BASE_URL, timeout=timeout)
+    user_input = _build_user_input(query, conversation_context)
     messages = [
         {"role": "system", "content": CLARIFICATION_PROMPT},
-        {"role": "user", "content": query},
+        {"role": "user", "content": user_input},
     ]
     try:
         response = client.chat.completions.create(
@@ -233,13 +251,20 @@ def _call_clarification_deepseek(query: str) -> str:
     return ""
 
 
-def check_ambiguity(query: str, backend: Optional[str] = None) -> dict:
+def check_ambiguity(
+    query: str,
+    backend: Optional[str] = None,
+    conversation_context: Optional[str] = None,
+) -> dict:
     """
     Check if the user query is ambiguous and needs clarification.
 
     Args:
         query: Raw user query text.
         backend: Optional backend override; uses GATEWAY_REWRITE_BACKEND env if None.
+        conversation_context: Optional formatted conversation history (last 3 rounds)
+            from Redis. When provided, the LLM considers prior turns so it won't
+            ask for info the user already supplied in recent conversation.
 
     Returns:
         {"needs_clarification": True, "clarification_question": "..."} when ambiguous,
@@ -254,26 +279,29 @@ def check_ambiguity(query: str, backend: Optional[str] = None) -> dict:
         return {"needs_clarification": False}
 
     # Heuristic fast path: known ambiguous patterns. Use LLM to generate contextual question.
-    heuristic_result = _heuristic_needs_clarification(query)
-    if heuristic_result is not None:
-        fallback_question = heuristic_result.get("clarification_question", "")
-        effective_backend = (backend or "").strip().lower() or os.getenv(
-            "GATEWAY_REWRITE_BACKEND", "ollama"
-        ).strip().lower()
-        if effective_backend == "ollama":
-            llm_question = _generate_clarification_question_ollama(query.strip())
-            if llm_question:
-                return {"needs_clarification": True, "clarification_question": llm_question}
-        return {"needs_clarification": True, "clarification_question": fallback_question}
+    # When conversation_context is present, skip heuristic and let LLM decide
+    # (the user may have already provided the missing info in a prior turn).
+    if not conversation_context:
+        heuristic_result = _heuristic_needs_clarification(query)
+        if heuristic_result is not None:
+            fallback_question = heuristic_result.get("clarification_question", "")
+            effective_backend = (backend or "").strip().lower() or os.getenv(
+                "GATEWAY_REWRITE_BACKEND", "ollama"
+            ).strip().lower()
+            if effective_backend == "ollama":
+                llm_question = _generate_clarification_question_ollama(query.strip())
+                if llm_question:
+                    return {"needs_clarification": True, "clarification_question": llm_question}
+            return {"needs_clarification": True, "clarification_question": fallback_question}
 
     effective_backend = (backend or "").strip().lower() or os.getenv(
         "GATEWAY_REWRITE_BACKEND", "ollama"
     ).strip().lower()
 
     if effective_backend == "ollama":
-        text = _call_clarification_ollama(query.strip())
+        text = _call_clarification_ollama(query.strip(), conversation_context)
     elif effective_backend == "deepseek":
-        text = _call_clarification_deepseek(query.strip())
+        text = _call_clarification_deepseek(query.strip(), conversation_context)
     else:
         logger.warning("check_ambiguity: unknown backend %s; skipping", effective_backend)
         return {"needs_clarification": False}

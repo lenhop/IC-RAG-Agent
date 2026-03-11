@@ -4,7 +4,7 @@ Prompt loader for externalized LLM prompts.
 Reads .txt files from src/prompts/ directory and caches them in memory.
 Usage:
     from src.gateway.prompt_loader import load_prompt
-    prompt = load_prompt("clarification")  # loads src/prompts/clarification.txt
+    prompt = load_prompt("clarification_detect_ambiguity")  # loads src/prompts/clarification_detect_ambiguity.txt
 """
 
 from __future__ import annotations

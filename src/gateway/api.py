@@ -403,6 +403,36 @@ def _clarification_enabled() -> bool:
     return True
 
 
+def _get_clarification_context(
+    memory: "GatewayConversationMemory | None",
+    user_id: str | None,
+    session_id: str | None,
+) -> str | None:
+    """Fetch last 3 rounds of conversation from Redis for clarification context.
+
+    Reuses the same format as router._format_history_for_llm so the LLM sees
+    consistent conversation history across clarification and rewrite steps.
+    """
+    if not memory:
+        return None
+    last_n = 3
+    history: list = []
+    if user_id and str(user_id).strip():
+        history = memory.get_history_by_user(str(user_id).strip(), last_n=last_n)
+    elif session_id and str(session_id).strip():
+        history = memory.get_history(str(session_id).strip(), last_n=last_n)
+    if not history:
+        return None
+    lines = []
+    for idx, turn in enumerate(history, start=1):
+        q = (turn.get("query") or "").strip()
+        a = (turn.get("answer") or "").strip()
+        if not q:
+            continue
+        lines.append(f'Turn {idx}: User asked "{q}" -> Answer: "{a}"')
+    return "\n".join(lines) if lines else None
+
+
 @app.post(
     "/api/v1/rewrite",
     response_model=RewriteResponse,
@@ -425,7 +455,9 @@ async def rewrite(
     # Clarification (required): return early if query is ambiguous
     if _clarification_enabled():
         backend = _resolve_rewrite_backend(request)
-        ambiguity_result = check_ambiguity(original_query, backend)
+        # Fetch last 3 rounds of conversation from Redis for clarification context
+        clarification_context = _get_clarification_context(gateway_memory, effective_user_id, request.session_id)
+        ambiguity_result = check_ambiguity(original_query, backend, conversation_context=clarification_context)
         if ambiguity_result.get("needs_clarification"):
             clarification_question = ambiguity_result.get("clarification_question", "")
             if gateway_memory and effective_user_id:
@@ -561,7 +593,9 @@ async def query(
         # Clarification check (required, before rewrite): return early if query is ambiguous
         if _clarification_enabled():
             backend = _resolve_rewrite_backend(request)
-            ambiguity_result = check_ambiguity(original_query, backend)
+            # Fetch last 3 rounds of conversation from Redis for clarification context
+            clarification_context = _get_clarification_context(gateway_memory, effective_user_id, request.session_id)
+            ambiguity_result = check_ambiguity(original_query, backend, conversation_context=clarification_context)
             if ambiguity_result.get("needs_clarification"):
                 clarification_question = ambiguity_result.get("clarification_question", "")
                 if gateway_memory and effective_user_id:
