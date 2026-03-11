@@ -25,10 +25,13 @@ def load_prompt(name: str) -> str:
     Load a prompt by name (filename without .txt extension).
 
     Reads from src/prompts/{name}.txt, caches after first load.
+    Supports subdirectory paths using forward slash, e.g.:
+        "query_clarification/clarification_detect_ambiguity"
+
     Raises FileNotFoundError if the prompt file does not exist.
 
     Args:
-        name: Prompt name, e.g. "clarification", "rewrite", "route_classification".
+        name: Prompt name, e.g. "rewrite", "query_clarification/clarification_detect_ambiguity".
 
     Returns:
         Prompt text content.

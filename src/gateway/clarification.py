@@ -29,8 +29,8 @@ DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_REWRITE_TIMEOUT = 10
 
 # Prompts loaded from src/prompts/*.txt (cached after first access)
-CLARIFICATION_PROMPT = load_prompt("clarification_detect_ambiguity")
-_GENERATE_QUESTION_PROMPT = load_prompt("clarification_generate_question")
+CLARIFICATION_PROMPT = load_prompt("query_clarification/clarification_detect_ambiguity")
+_GENERATE_QUESTION_PROMPT = load_prompt("query_clarification/clarification_generate_question")
 
 def _is_concrete_documentation_query(query: str) -> bool:
     """

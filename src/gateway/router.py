@@ -32,23 +32,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _route_llm_enabled() -> bool:
-    v = os.getenv("GATEWAY_ROUTE_LLM_ENABLED", "false").strip().lower()
-    return v in ("true", "1", "yes")
-
-
-def _route_llm_backend() -> str:
-    v = os.getenv("GATEWAY_ROUTE_LLM_BACKEND", "ollama").strip().lower()
-    return v if v in ("ollama", "deepseek") else "ollama"
-
-
-def _route_llm_conf_threshold() -> float:
-    try:
-        return float(os.getenv("GATEWAY_ROUTE_LLM_CONF_THRESHOLD", "0.7"))
-    except (ValueError, TypeError):
-        return 0.7
-
-
 def _normalize(query: str) -> str:
     """Trim and collapse whitespace. Always applied before any rewrite."""
     return normalize_query(query or "")
@@ -85,6 +68,7 @@ def _format_history_for_llm(history: list) -> str:
 def rewrite_query(
     request: QueryRequest,
     gateway_memory: Optional["GatewayConversationMemory"] = None,
+    conversation_context: Optional[str] = None,
 ) -> Tuple[str, Optional[List[str]], int, int]:
     """
     Normalize, rewrite (with memory merge), and optionally run intent classification.
@@ -95,7 +79,7 @@ def rewrite_query(
     Flow:
     1. Normalize (trim, collapse whitespace). Early exit if empty -> ("", None, 0).
     2. If rewrite_enable:
-       - Merge short-term memory when session_id and gateway_memory present.
+       - If conversation_context not provided, load from Redis.
        - Call rewrite_with_context -> optimized retrieval query.
        - If intent_classification_enabled: run rewrite_intents_only on optimized query.
     3. Else: return (normalized, None, 0).
@@ -103,9 +87,11 @@ def rewrite_query(
     Args:
         request: Parsed QueryRequest from the client.
         gateway_memory: Optional Redis-backed session memory for conversation context.
+        conversation_context: Optional pre-loaded conversation context string.
+            When provided, skips Redis loading (caller already loaded it).
 
     Returns:
-        (rewritten_query, intents, memory_rounds_used) tuple.
+        (rewritten_query, intents, memory_rounds_used, memory_text_length) tuple.
         memory_rounds_used: number of history turns merged (0 when no session/history).
     """
     normalized = _normalize(request.query or "")
@@ -122,10 +108,14 @@ def rewrite_query(
     )
 
     # Step 1: Rewrite with memory merge -> optimized retrieval query.
-    conversation_context = None
+    # Use pre-loaded context if provided; otherwise load from Redis.
     memory_rounds_used = 0
     memory_text_length = 0
-    if gateway_memory:
+    if conversation_context and conversation_context.strip():
+        # Caller already loaded context — use it directly.
+        memory_rounds_used = conversation_context.strip().count("\n") + 1
+        memory_text_length = len(conversation_context)
+    elif gateway_memory:
         last_n = _get_memory_rounds()
         history: list = []
         if request.user_id and str(request.user_id).strip():
@@ -146,7 +136,7 @@ def rewrite_query(
     # Step 2: Intent classification on optimized retrieval query (when enabled).
     intents = None
     if intent_classification_enabled():
-        result = rewrite_intents_only(optimized_query, backend=backend)
+        result = rewrite_intents_only(optimized_query, backend=backend, conversation_context=conversation_context)
         if result and result.get("intents"):
             intents = result["intents"]
 
@@ -159,58 +149,23 @@ def route_workflow(
     """
     Choose workflow and routing confidence based on query and request.
 
-    Behavior:
     - If client sets workflow != "auto": return that workflow with confidence 1.0.
-    - If workflow == "auto":
-      - If GATEWAY_ROUTE_LLM_ENABLED is false: use heuristic keyword rules only.
-      - If enabled: call Route LLM (backend from request.route_backend or env);
-        if confidence >= GATEWAY_ROUTE_LLM_CONF_THRESHOLD use LLM result,
-        else fall back to heuristic rules.
+    - Otherwise: use heuristic keyword rules.
 
     Args:
         query: Rewritten query text from rewrite_query.
-        request: Original QueryRequest (workflow, route_backend, etc.).
+        request: Original QueryRequest (workflow field).
 
     Returns:
-        (workflow, routing_confidence) tuple.
+        (workflow, confidence, method, backend, llm_confidence) tuple.
     """
     explicit = (request.workflow or "auto").strip().lower()
     if explicit != "auto":
-        # explicit workflow is considered a manual override
         return explicit, 1.0, "manual", None, None
 
-    # Auto routing: either Route LLM (when enabled and confident) or heuristic.
-    backend = (request.route_backend or "").strip() or _route_llm_backend()
-    threshold = _route_llm_conf_threshold()
-
-    if not _route_llm_enabled():
-        wf, conf = _route_workflow_heuristic(query or "")
-        wf = _apply_docs_preference(query or "", wf)
-        return wf, conf, "heuristic", None, None
-
-    # Route LLM path: call LLM; fall back to heuristic if confidence too low.
-    from .route_llm import route_with_llm
-
-    workflow, confidence = route_with_llm(query or "", backend)
-    workflow = _apply_docs_preference(query or "", workflow)
-    if confidence >= threshold:
-        logger.debug(
-            "Route LLM selected workflow=%s confidence=%.2f (>= %.2f)",
-            workflow,
-            confidence,
-            threshold,
-        )
-        return workflow, confidence, "llm", backend, confidence
-
-    # Below threshold or LLM returned safe default: use heuristic.
-    logger.debug(
-        "Route LLM confidence %.2f < %.2f; using heuristic fallback",
-        confidence,
-        threshold,
-    )
-    wf2, conf2 = _route_workflow_heuristic(query or "")
-    wf2 = _apply_docs_preference(query or "", wf2)
-    return wf2, conf2, "heuristic", None, None
+    wf, conf = _route_workflow_heuristic(query or "")
+    wf = _apply_docs_preference(query or "", wf)
+    return wf, conf, "heuristic", None, None
 
 
 __all__ = ["rewrite_query", "route_workflow"]

@@ -45,14 +45,6 @@ class QueryRequest(BaseModel):
             "Ignored when rewrite_enable=False. Defaults to GATEWAY_REWRITE_BACKEND env."
         ),
     )
-    route_backend: Optional[str] = Field(
-        default=None,
-        description=(
-            "Route LLM backend when workflow='auto' and Route LLM is enabled: "
-            "'ollama' or 'deepseek'. Ignored when workflow is set explicitly. "
-            "Defaults to GATEWAY_ROUTE_LLM_BACKEND env."
-        ),
-    )
     session_id: Optional[str] = Field(
         default=None,
         description="Optional session identifier for multi-turn context.",
@@ -66,16 +58,13 @@ class QueryRequest(BaseModel):
         description="If true, client prefers streaming responses (SSE).",
     )
 
-    @field_validator("route_backend", mode="before")
+    @field_validator("rewrite_backend", mode="before")
     @classmethod
-    def _normalize_route_backend(cls, v: Optional[str]) -> Optional[str]:
-        """Normalize to lowercase; map unknown values to None (no client break)."""
+    def _normalize_rewrite_backend(cls, v: Optional[str]) -> Optional[str]:
         if v is None or (isinstance(v, str) and not v.strip()):
             return None
         s = str(v).strip().lower()
-        if s in ("ollama", "deepseek"):
-            return s
-        return None
+        return s if s in ("ollama", "deepseek") else None
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -84,7 +73,6 @@ class QueryRequest(BaseModel):
                 "workflow": "uds",
                 "rewrite_enable": True,
                 "rewrite_backend": "ollama",
-                "route_backend": None,
                 "session_id": "session-1234",
                 "user_id": None,
                 "stream": False,

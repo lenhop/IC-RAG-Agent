@@ -408,21 +408,55 @@ def _get_clarification_context(
     user_id: str | None,
     session_id: str | None,
 ) -> str | None:
-    """Fetch last 3 rounds of conversation from Redis for clarification context.
+    """Fetch conversation history from Redis with adaptive window sizing.
+
+    Window logic:
+    - Load last 4 rounds from Redis (max needed).
+    - If any turn has workflow == "clarification", use all 4 rounds.
+    - Otherwise, trim to 3 rounds.
+
+    Configurable via env:
+    - GATEWAY_MEMORY_ROUNDS_DEFAULT (default 3)
+    - GATEWAY_MEMORY_ROUNDS_WITH_CLARIFICATION (default 4)
 
     Reuses the same format as router._format_history_for_llm so the LLM sees
     consistent conversation history across clarification and rewrite steps.
     """
     if not memory:
         return None
-    last_n = 3
+    try:
+        default_rounds = max(1, int(os.getenv("GATEWAY_MEMORY_ROUNDS_DEFAULT", "3")))
+    except (ValueError, TypeError):
+        default_rounds = 3
+    try:
+        clarification_rounds = max(
+            default_rounds,
+            int(os.getenv("GATEWAY_MEMORY_ROUNDS_WITH_CLARIFICATION", "4")),
+        )
+    except (ValueError, TypeError):
+        clarification_rounds = 4
+
+    # Always fetch the larger window; trim later if no clarification found.
+    fetch_n = clarification_rounds
     history: list = []
     if user_id and str(user_id).strip():
-        history = memory.get_history_by_user(str(user_id).strip(), last_n=last_n)
+        history = memory.get_history_by_user(str(user_id).strip(), last_n=fetch_n)
     elif session_id and str(session_id).strip():
-        history = memory.get_history(str(session_id).strip(), last_n=last_n)
+        history = memory.get_history(str(session_id).strip(), last_n=fetch_n)
     if not history:
         return None
+
+    # Check if any turn is a clarification exchange.
+    has_clarification = any(
+        (turn.get("workflow") or "").strip().lower() == "clarification"
+        for turn in history
+    )
+    effective_rounds = clarification_rounds if has_clarification else default_rounds
+
+    # Trim to effective window (keep most recent turns).
+    if len(history) > effective_rounds:
+        history = history[-effective_rounds:]
+
     lines = []
     for idx, turn in enumerate(history, start=1):
         q = (turn.get("query") or "").strip()
@@ -460,17 +494,8 @@ async def rewrite(
         ambiguity_result = check_ambiguity(original_query, backend, conversation_context=clarification_context)
         if ambiguity_result.get("needs_clarification"):
             clarification_question = ambiguity_result.get("clarification_question", "")
-            if gateway_memory and effective_user_id:
-                try:
-                    gateway_memory.save_turn(
-                        request.session_id or "",
-                        original_query,
-                        clarification_question,
-                        "clarification",
-                        user_id=effective_user_id,
-                    )
-                except Exception as exc:
-                    logger.warning("Gateway memory save_turn failed (non-fatal): %s", exc)
+            # NOTE: /rewrite is a preview endpoint — do NOT save to Redis here.
+            # The /query endpoint is responsible for all conversation logging.
             return RewriteResponse(
                 original_query=original_query,
                 rewritten_query=original_query,
@@ -487,7 +512,7 @@ async def rewrite(
     req_for_rewrite = request.model_copy(update={"user_id": effective_user_id}) if effective_user_id else request
     rewrite_started = time.perf_counter()
     rewritten_query, intents, memory_rounds, memory_text_length = rewrite_query(
-        req_for_rewrite, gateway_memory=gateway_memory
+        req_for_rewrite, gateway_memory=gateway_memory, conversation_context=clarification_context
     )
     rewrite_time_ms = int((time.perf_counter() - rewrite_started) * 1000)
     rewritten_query_length = len(rewritten_query or "")
@@ -524,17 +549,9 @@ async def rewrite(
                 if wf:
                     workflows = [wf]
 
-    if gateway_memory and effective_user_id:
-        try:
-            gateway_memory.save_turn(
-                request.session_id or "",
-                original_query,
-                rewritten_query,
-                "rewrite",
-                user_id=effective_user_id,
-            )
-        except Exception as exc:
-            logger.warning("Gateway memory save_turn failed (non-fatal): %s", exc)
+    # NOTE: /rewrite is a preview endpoint — do NOT save to Redis here.
+    # The /query endpoint is responsible for all conversation logging.
+
     # Enforce bullet-point display for long/multi-part queries (LLM often ignores format).
     rewritten_query_display = format_rewritten_query_bullets(
         rewritten_query, intents=intents, min_length=60
@@ -630,14 +647,26 @@ async def query(
         req_for_rewrite = request.model_copy(update={"user_id": effective_user_id}) if effective_user_id else request
         rewrite_started = time.perf_counter()
         rewritten_query, intents, _, _ = rewrite_query(
-            req_for_rewrite, gateway_memory=gateway_memory
+            req_for_rewrite, gateway_memory=gateway_memory, conversation_context=clarification_context
         )
         rewrite_time_ms = int((time.perf_counter() - rewrite_started) * 1000)
 
         # Skip downstream when normalized query is empty.
         if not rewritten_query or not rewritten_query.strip():
+            empty_answer = "Please provide a non-empty query."
+            if gateway_memory and effective_user_id:
+                try:
+                    gateway_memory.save_turn(
+                        request.session_id or "",
+                        original_query,
+                        empty_answer,
+                        "general",
+                        user_id=effective_user_id,
+                    )
+                except Exception as exc:
+                    logger.warning("Gateway memory save_turn failed (non-fatal): %s", exc)
             return QueryResponse(
-                answer="Please provide a non-empty query.",
+                answer=empty_answer,
                 workflow="general",
                 routing_confidence=0.0,
                 sources=[],
@@ -650,7 +679,36 @@ async def query(
                 },
             )
 
-        execution_plan = build_execution_plan(request, rewritten_query, intents=intents)
+        execution_plan, field_clarification = build_execution_plan(
+            request, rewritten_query, intents=intents, conversation_context=clarification_context
+        )
+
+        # Phase 5: per-intent required field validation — return clarification if fields missing.
+        if field_clarification:
+            if gateway_memory and effective_user_id:
+                try:
+                    gateway_memory.save_turn(
+                        request.session_id or "",
+                        original_query,
+                        field_clarification,
+                        "clarification",
+                        user_id=effective_user_id,
+                    )
+                except Exception as exc:
+                    logger.warning("Gateway memory save_turn failed (non-fatal): %s", exc)
+            return QueryResponse(
+                answer=field_clarification,
+                workflow="clarification",
+                routing_confidence=0.0,
+                sources=[],
+                request_id=request_id,
+                error=None,
+                debug={"original_query": original_query, "clarification_required": True},
+                clarification_required=True,
+                clarification_question=field_clarification,
+                pending_query=original_query,
+            )
+
         route_input_query = _extract_route_input_query(execution_plan, original_query)
 
         if _is_rewrite_only_mode():
@@ -694,7 +752,7 @@ async def query(
             route_source = "planner"
             routing_confidence = 1.0
             workflow = _derive_workflow(execution_plan, [], fallback=workflow)
-            route_backend = (request.route_backend or "").strip().lower() or None
+            route_backend = None
             route_llm_confidence = None
         else:
             (

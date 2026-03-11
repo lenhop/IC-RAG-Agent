@@ -5,9 +5,6 @@ LLM-based query rewriting for the gateway. Supports:
 - Ollama (local): HTTP POST to Ollama /api/generate
 - DeepSeek (remote): OpenAI-compatible chat completions API
 
-Planner mode (GATEWAY_REWRITE_PLANNER_ENABLED): outputs JSON task decomposition
-for hybrid queries. Otherwise: simple rewrite.
-
 On failure: returns original query, logs error, does not raise.
 """
 
@@ -27,9 +24,8 @@ from .prompt_loader import load_prompt
 logger = logging.getLogger(__name__)
 
 # Prompts loaded from src/prompts/*.txt (cached after first access)
-REWRITE_PROMPT = load_prompt("rewrite")
-INTENT_CLASSIFICATION_PROMPT = load_prompt("intent_classification")
-REWRITE_PLANNER_PROMPT = load_prompt("rewrite_planner")
+REWRITE_PROMPT = load_prompt("query_rewriting/rewrite_query_clean")
+INTENT_CLASSIFICATION_PROMPT = load_prompt("intent_classification/intent_split_query")
 
 # Environment defaults
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api/generate"
@@ -37,7 +33,6 @@ DEFAULT_OLLAMA_MODEL = "qwen3:1.7b"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-chat"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_REWRITE_TIMEOUT = 10
-DEFAULT_MAX_PLANNER_TASKS = 8
 VALID_WORKFLOWS = {"general", "amazon_docs", "ic_docs", "sp_api", "uds"}
 VALID_MERGE_STRATEGIES = {"none", "concat", "compare", "synthesize"}
 
@@ -50,46 +45,32 @@ def _get_rewrite_timeout() -> int:
         return DEFAULT_REWRITE_TIMEOUT
 
 
-def planner_rewrite_enabled() -> bool:
-    """Return True when planner-style rewrite prompt is enabled."""
-    value = os.getenv("GATEWAY_REWRITE_PLANNER_ENABLED", "").strip().lower()
-    return value in ("1", "true", "yes", "on")
-
-
 def intent_classification_enabled() -> bool:
     """
     Return True when intent classification should run on the optimized retrieval query.
 
-    Enabled when GATEWAY_INTENT_CLASSIFICATION_ENABLED or GATEWAY_REWRITE_PLANNER_ENABLED
-    (backward compatibility).
+    Enabled via GATEWAY_INTENT_CLASSIFICATION_ENABLED env var.
     """
     ic = os.getenv("GATEWAY_INTENT_CLASSIFICATION_ENABLED", "").strip().lower()
-    if ic in ("1", "true", "yes", "on"):
-        return True
-    return planner_rewrite_enabled()
+    return ic in ("1", "true", "yes", "on")
 
 
-def _get_rewrite_prompt() -> str:
-    """Resolve active rewrite prompt based on environment toggle."""
-    if planner_rewrite_enabled():
-        return REWRITE_PLANNER_PROMPT
-    return REWRITE_PROMPT
-
-
-def _planner_max_tasks() -> int:
-    """Read max planner tasks guard from env with a safe default."""
-    try:
-        return max(1, int(os.getenv("GATEWAY_REWRITE_PLANNER_MAX_TASKS", str(DEFAULT_MAX_PLANNER_TASKS))))
-    except ValueError:
-        return DEFAULT_MAX_PLANNER_TASKS
-
-
-def rewrite_intents_only(query: str, backend: Optional[str] = None) -> Optional[dict]:
+def rewrite_intents_only(
+    query: str,
+    backend: Optional[str] = None,
+    conversation_context: Optional[str] = None,
+) -> Optional[dict]:
     """
     Phase 1 intent classification: call LLM to list distinct sub-questions only.
 
     Returns {"intents": ["...", "..."]} on success, None on failure.
     Uses same backends as rewrite (ollama/deepseek) and env for URL/model.
+
+    Args:
+        query: Rewritten query text.
+        backend: Optional backend override.
+        conversation_context: Optional formatted conversation history from Redis.
+            When provided, the LLM uses prior turns for better intent decomposition.
     """
     if not query or not query.strip():
         return None
@@ -99,9 +80,9 @@ def rewrite_intents_only(query: str, backend: Optional[str] = None) -> Optional[
     ).strip().lower()
 
     if effective_backend == "ollama":
-        text = _call_intents_ollama(query.strip())
+        text = _call_intents_ollama(query.strip(), conversation_context)
     elif effective_backend == "deepseek":
-        text = _call_intents_deepseek(query.strip())
+        text = _call_intents_deepseek(query.strip(), conversation_context)
     else:
         logger.warning("rewrite_intents_only: unknown backend %s; skipping", effective_backend)
         return None
@@ -159,14 +140,19 @@ def rewrite_intents_only(query: str, backend: Optional[str] = None) -> Optional[
     return {"intents": normalized}
 
 
-def _call_intents_ollama(query: str) -> str:
+def _call_intents_ollama(query: str, conversation_context: Optional[str] = None) -> str:
     """Call Ollama with intent classification prompt; return raw response text."""
     url = os.getenv("GATEWAY_REWRITE_OLLAMA_URL", DEFAULT_OLLAMA_URL)
     mdl = os.getenv("GATEWAY_REWRITE_OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
     timeout = _get_rewrite_timeout()
+    user_input = query
+    if conversation_context and conversation_context.strip():
+        user_input = f"Conversation history:\n{conversation_context.strip()}\n\nUser question: {query}"
+    else:
+        user_input = f"User question: {query}"
     payload = {
         "model": mdl,
-        "prompt": f"{INTENT_CLASSIFICATION_PROMPT}\n\nUser question: {query}",
+        "prompt": f"{INTENT_CLASSIFICATION_PROMPT}\n\n{user_input}",
         "stream": False,
     }
     try:
@@ -184,7 +170,7 @@ def _call_intents_ollama(query: str) -> str:
         return ""
 
 
-def _call_intents_deepseek(query: str) -> str:
+def _call_intents_deepseek(query: str, conversation_context: Optional[str] = None) -> str:
     """Call DeepSeek with intent classification prompt; return raw response text."""
     api_key = os.getenv("DEEPSEEK_API_KEY")
     if not api_key or not api_key.strip():
@@ -198,9 +184,12 @@ def _call_intents_deepseek(query: str) -> str:
         logger.warning("openai client not installed; cannot call DeepSeek intent classification")
         return ""
     client = OpenAI(api_key=api_key, base_url=DEEPSEEK_BASE_URL, timeout=timeout)
+    user_content = query
+    if conversation_context and conversation_context.strip():
+        user_content = f"Conversation history:\n{conversation_context.strip()}\n\nUser question: {query}"
     messages = [
         {"role": "system", "content": INTENT_CLASSIFICATION_PROMPT},
-        {"role": "user", "content": query},
+        {"role": "user", "content": user_content},
     ]
     try:
         response = client.chat.completions.create(
@@ -263,7 +252,7 @@ def _normalize_plan(plan: RewritePlan, fallback_query: str) -> Optional[RewriteP
     dedupe_keys = set()
     normalized_groups = []
     total_tasks = 0
-    max_tasks = _planner_max_tasks()
+    max_tasks = int(os.getenv("GATEWAY_REWRITE_PLANNER_MAX_TASKS", "8"))
 
     for group_idx, group in enumerate(plan.task_groups, start=1):
         normalized_tasks = []
@@ -421,7 +410,7 @@ def rewrite_with_ollama(query: str, model: Optional[str] = None) -> str:
 
     payload = {
         "model": mdl,
-        "prompt": f"{_get_rewrite_prompt()}\n\nUser question: {query.strip()}",
+        "prompt": f"{REWRITE_PROMPT}\n\nUser question: {query.strip()}",
         "stream": False,
     }
 
@@ -640,7 +629,7 @@ def rewrite_with_deepseek(query: str, model: Optional[str] = None) -> str:
     )
 
     messages = [
-        {"role": "system", "content": _get_rewrite_prompt()},
+        {"role": "system", "content": REWRITE_PROMPT},
         {"role": "user", "content": query.strip()},
     ]
 
@@ -671,9 +660,7 @@ def rewrite_with_deepseek(query: str, model: Optional[str] = None) -> str:
 __all__ = [
     "INTENT_CLASSIFICATION_PROMPT",
     "REWRITE_PROMPT",
-    "REWRITE_PLANNER_PROMPT",
     "intent_classification_enabled",
-    "planner_rewrite_enabled",
     "parse_rewrite_plan_text",
     "rewrite_intents_only",
     "rewrite_with_context",
