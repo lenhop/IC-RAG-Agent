@@ -14,11 +14,20 @@ import os
 import re
 import threading
 import time
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 from uuid import uuid4
 
 import gradio as gr
+
+# Load .env from project root so UNIFIED_CHAT_* and skip-login credentials are available
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+try:
+    from dotenv import load_dotenv
+    load_dotenv(_PROJECT_ROOT / ".env")
+except ImportError:
+    pass
 
 from .api_client import GatewayClient
 
@@ -97,7 +106,64 @@ def _format_query_as_bullets(query: str, min_length: int = 60) -> Optional[str]:
     return "\n".join(f"    - {c}" for c in clauses)
 
 
-# Config from env
+def _to_single_line(text: str) -> str:
+    """Normalize any model text into a single display-safe line."""
+    if not text:
+        return ""
+    one_line = re.sub(r"\s+", " ", text).strip()
+    # Avoid markdown code-span breakage when model outputs backticks.
+    return one_line.replace("`", "'")
+
+
+def _format_intent_classification_lines(
+    intent_details_list: List[Dict[str, Any]],
+    intents_list: List[str],
+    workflows_list: List[str],
+) -> List[str]:
+    """
+    Build a readable markdown block for intent classification.
+
+    Layout goals:
+    - First row: show the sub-intent text only.
+    - Second row: show Keyword/Vector/Final on an indented gray background.
+    - Keep one block per sub-intent for fast scanning.
+    """
+    lines: List[str] = []
+    if not (intent_details_list or intents_list or workflows_list):
+        return lines
+
+    lines.append("- Intent classification list:")
+    if intent_details_list:
+        for detail in intent_details_list:
+            intent_text = (detail.get("intent") or "").strip()
+            if not intent_text:
+                continue
+            final_wf = (detail.get("workflow") or "general").strip() or "general"
+            keyword_wf = (detail.get("keyword") or "—").strip()
+            vector_wf = (detail.get("vector") or "—").strip()
+
+            # Row 1: intent text only.
+            lines.append(f"  - {intent_text}")
+            # Row 2: classification row with indentation and gray background.
+            lines.append(
+                "    <div style=\"margin: 2px 0 8px 1.6em; padding: 4px 8px; "
+                "background-color: #f1f3f5; border-radius: 6px; color: #4b5563;\">"
+                f"Keyword: {keyword_wf}, Vector: {vector_wf}, Final: {final_wf}"
+                "</div>"
+            )
+    else:
+        for item in intents_list:
+            line = (item or "").strip()
+            if line:
+                lines.append(f"  - {line}")
+
+    if workflows_list:
+        workflows_str = ", ".join(workflows_list)
+        lines.append(f"- Intent classification result: {workflows_str}")
+    return lines
+
+
+# Config from env (after load_dotenv above so .env is applied)
 GATEWAY_API_URL = os.environ.get("GATEWAY_API_URL", "").rstrip("/")
 GATEWAY_MOCK = os.environ.get("GATEWAY_MOCK", "").lower() in ("true", "1", "yes")
 GRADIO_PORT = int(os.environ.get("UNIFIED_CHAT_GRADIO_PORT", "7862"))
@@ -111,6 +177,10 @@ REWRITE_ONLY_TEST_MODE = (
     os.environ.get("UNIFIED_CHAT_REWRITE_ONLY_MODE", "").lower() in ("true", "1", "yes")
     or os.environ.get("GATEWAY_REWRITE_ONLY_MODE", "").lower() in ("true", "1", "yes")
 )
+SKIP_LOGIN = os.environ.get("UNIFIED_CHAT_SKIP_LOGIN", "").lower() in ("true", "1", "yes")
+# Default credentials when SKIP_LOGIN: auto sign-in so token/user_id are set (e.g. for history).
+DEFAULT_SKIP_LOGIN_USER = os.environ.get("UNIFIED_CHAT_SKIP_LOGIN_USER", "lenhe")
+DEFAULT_SKIP_LOGIN_PASSWORD = os.environ.get("UNIFIED_CHAT_SKIP_LOGIN_PASSWORD", "juvale`123")
 
 # Workflow options: (label, value) for Dropdown
 WORKFLOW_CHOICES = [
@@ -174,6 +244,59 @@ def _do_signout() -> tuple[None, None, dict, dict]:
     client = GatewayClient(base_url=GATEWAY_API_URL or None)
     client.signout_sync()
     return None, None, gr.update(visible=True), gr.update(visible=False)
+
+
+def _auto_signin_if_skip_login() -> tuple:
+    """
+    When SKIP_LOGIN is True, sign in with default credentials and return state updates.
+    Used on demo load so token/user_info and history are set without showing login.
+    Returns (token, user_info, login_visible, chat_visible, signin_msg, user_md, chat_history, chatbot_state).
+    """
+    if not SKIP_LOGIN:
+        return (
+            None,
+            None,
+            gr.update(visible=True),
+            gr.update(visible=False),
+            "",
+            "",
+            gr.update(),
+            [],
+        )
+    token, user, msg, show_chat, show_login = _do_signin(
+        DEFAULT_SKIP_LOGIN_USER, DEFAULT_SKIP_LOGIN_PASSWORD
+    )
+    user_md = (
+        f"**UserName:** {user.get('user_name', '')}\n**Role:** {user.get('role', 'general')}"
+        if user else ""
+    )
+    chat_history: List[Dict[str, str]] = []
+    if token and show_chat:
+        client = GatewayClient(base_url=GATEWAY_API_URL or None)
+        try:
+            hist_result = client.get_user_history_sync(token, last_n=3)
+            if not hist_result.get("error"):
+                raw = hist_result.get("history", [])
+                for h in raw:
+                    q, a = h.get("query", ""), h.get("answer", "")
+                    if q or a:
+                        chat_history.append({"role": "user", "content": q})
+                        chat_history.append({"role": "assistant", "content": a})
+        except Exception as e:
+            logger.debug("Auto sign-in: load history failed (non-fatal): %s", e)
+    # In skip-login mode always show chat panel (never show login form).
+    login_vis = False if SKIP_LOGIN else show_login
+    chat_vis = True if SKIP_LOGIN else show_chat
+    return (
+        token,
+        user,
+        gr.update(visible=login_vis),
+        gr.update(visible=chat_vis),
+        msg or "",
+        user_md,
+        gr.update(value=chat_history),
+        chat_history,
+    )
 
 
 def _get_gateway_status() -> str:
@@ -278,12 +401,10 @@ def _chat_handler(
             )
             return
         else:
-            routed_query = str(rewrite_result.get("rewritten_query") or raw_query).strip()
-            # Use bullet-point display: gateway's rewritten_query_display or client-side fallback.
-            gateway_bullets = rewrite_result.get("rewritten_query_display")
-            client_bullets = _format_query_as_bullets(routed_query, min_length=60)
-            display_query = gateway_bullets or client_bullets or routed_query
-            has_bullets = bool(gateway_bullets or client_bullets)
+            routed_query = _to_single_line(str(rewrite_result.get("rewritten_query") or raw_query))
+            # Rewrite stage outputs one sentence; do not split for display (splitting is intent-classification step).
+            display_query = routed_query
+            has_bullets = False
             rewrite_ms = int(rewrite_result.get("rewrite_time_ms") or 0)
             rewrite_backend_value = str(
                 rewrite_result.get("rewrite_backend")
@@ -292,6 +413,8 @@ def _chat_handler(
             memory_rounds = int(rewrite_result.get("memory_rounds") or 0)
             memory_text_len = int(rewrite_result.get("memory_text_length") or 0)
             rewritten_len = int(rewrite_result.get("rewritten_query_length") or 0)
+            intents_list = rewrite_result.get("intents") or []
+            intent_details_list = rewrite_result.get("intent_details") or []
             workflows_list = rewrite_result.get("workflows") or []
 
             q_display = (
@@ -306,9 +429,13 @@ def _chat_handler(
                 f"- Rewrite Backend: `{rewrite_backend_value}`",
                 f"- Rewrite Time: `{rewrite_ms} ms`",
             ]
-            if workflows_list:
-                workflows_str = ", ".join(workflows_list)
-                lines_parts.append(f"- Intent classification: {workflows_str}")
+            lines_parts.extend(
+                _format_intent_classification_lines(
+                    intent_details_list=intent_details_list,
+                    intents_list=intents_list,
+                    workflows_list=workflows_list,
+                )
+            )
             rewrite_message = "\n".join(lines_parts)
             # Include execution plan when available (planner mode)
             plan = rewrite_result.get("plan")
@@ -327,7 +454,21 @@ def _chat_handler(
             yield rewrite_message
 
     if REWRITE_ONLY_TEST_MODE:
-        # Quick-test mode: stop after rewriting and skip all routing/downstream calls.
+        # Persist turn to Redis so conversation history is available on next login.
+        if routed_query and (user_id or auth_token):
+            try:
+                client.query_sync(
+                    query=routed_query,
+                    workflow=workflow or "auto",
+                    rewrite_enable=False,
+                    rewrite_backend=None,
+                    session_id=session_id or None,
+                    user_id=user_id,
+                    token=auth_token,
+                )
+            except Exception as exc:
+                logger.debug("Rewrite-only save turn failed (non-fatal): %s", exc)
+        # Quick-test mode: stop after rewriting and skip displaying downstream.
         if rewrite_message:
             yield (
                 f"{rewrite_message}\n\n"
@@ -499,8 +640,8 @@ def create_demo() -> gr.Blocks:
         auth_token_state = gr.State(value=None)
         user_info_state = gr.State(value=None)
 
-        # Login panel: visible when not logged in
-        with gr.Column(visible=True, elem_id="ic_login_panel") as login_panel:
+        # Login panel: visible when not logged in (hidden when UNIFIED_CHAT_SKIP_LOGIN=true).
+        with gr.Column(visible=not SKIP_LOGIN, elem_id="ic_login_panel") as login_panel:
             with gr.Tabs():
                 with gr.Tab("Sign In"):
                     signin_user = gr.Textbox(label="User Name", placeholder="Enter user name")
@@ -514,8 +655,8 @@ def create_demo() -> gr.Blocks:
                     reg_btn = gr.Button("Register", variant="primary")
                     reg_msg = gr.Markdown("")
 
-        # Chat panel: visible when logged in
-        with gr.Column(visible=False, elem_id="ic_chat_panel") as chat_panel:
+        # Chat panel: visible when logged in (or when SKIP_LOGIN for dev).
+        with gr.Column(visible=SKIP_LOGIN, elem_id="ic_chat_panel") as chat_panel:
             with gr.Row(elem_id="ic_signout_row"):
                 signout_btn = gr.Button("Sign Out", variant="secondary", size="sm")
             with gr.Row():
@@ -569,7 +710,7 @@ def create_demo() -> gr.Blocks:
             chat_history: List[Dict[str, str]] = []
             if token and show_chat:
                 client = GatewayClient(base_url=GATEWAY_API_URL or None)
-                hist_result = client.get_user_history_sync(token, last_n=5)
+                hist_result = client.get_user_history_sync(token, last_n=3)
                 if not hist_result.get("error"):
                     raw = hist_result.get("history", [])
                     for h in raw:
@@ -577,6 +718,8 @@ def create_demo() -> gr.Blocks:
                         if q or a:
                             chat_history.append({"role": "user", "content": q})
                             chat_history.append({"role": "assistant", "content": a})
+            # Update both chatbot display and ChatInterface internal state so history
+            # persists after the next user message (submit uses chatbot_state, not chatbot).
             return (
                 token,
                 user,
@@ -585,6 +728,7 @@ def create_demo() -> gr.Blocks:
                 msg,
                 user_md,
                 gr.update(value=chat_history),
+                chat_history,
             )
 
         def on_register(ru: str, rp: str, re: str):
@@ -596,7 +740,7 @@ def create_demo() -> gr.Blocks:
             chat_history: List[Dict[str, str]] = []
             if token and show_chat:
                 client = GatewayClient(base_url=GATEWAY_API_URL or None)
-                hist_result = client.get_user_history_sync(token, last_n=5)
+                hist_result = client.get_user_history_sync(token, last_n=3)
                 if not hist_result.get("error"):
                     raw = hist_result.get("history", [])
                     for h in raw:
@@ -604,6 +748,7 @@ def create_demo() -> gr.Blocks:
                         if q or a:
                             chat_history.append({"role": "user", "content": q})
                             chat_history.append({"role": "assistant", "content": a})
+            # Update both chatbot display and ChatInterface internal state.
             return (
                 token,
                 user,
@@ -612,6 +757,7 @@ def create_demo() -> gr.Blocks:
                 msg,
                 user_md,
                 gr.update(value=chat_history),
+                chat_history,
             )
 
         def on_signout():
@@ -629,6 +775,23 @@ def create_demo() -> gr.Blocks:
                 signin_msg,
                 user_display,
                 chatbot,
+                chat.chatbot_state,
+            ],
+        )
+
+        # When SKIP_LOGIN: on load, sign in with default user so token/user_id and history are set.
+        demo.load(
+            fn=_auto_signin_if_skip_login,
+            inputs=[],
+            outputs=[
+                auth_token_state,
+                user_info_state,
+                login_panel,
+                chat_panel,
+                signin_msg,
+                user_display,
+                chatbot,
+                chat.chatbot_state,
             ],
         )
         reg_btn.click(
@@ -642,6 +805,7 @@ def create_demo() -> gr.Blocks:
                 reg_msg,
                 user_display,
                 chatbot,
+                chat.chatbot_state,
             ],
         )
         signout_btn.click(

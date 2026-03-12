@@ -15,7 +15,11 @@ import pytest
 # Skip entire module if gradio not installed
 pytest.importorskip("gradio")
 
-from src.client.gradio_ui import _chat_handler, create_demo
+from src.client.gradio_ui import (
+    _chat_handler,
+    _format_intent_classification_lines,
+    create_demo,
+)
 
 
 def _collect_chat_outputs(result):
@@ -324,3 +328,32 @@ def test_create_demo_returns_blocks():
     import gradio as gr
     assert demo is not None
     assert isinstance(demo, gr.Blocks)
+
+
+def test_format_intent_classification_lines_readable_layout():
+    """Intent classification lines should render intent row + gray classification row."""
+    lines = _format_intent_classification_lines(
+        intent_details_list=[
+            {
+                "workflow": "general",
+                "intent": "how does chunking strategy affect rag quality",
+                "keyword": "general",
+                "vector": "general",
+            },
+            {
+                "workflow": "sp_api",
+                "intent": "check inventory levels for asin b09xyz1234 at each fulfillment center",
+                "keyword": "sp_api",
+                "vector": "general",
+            },
+        ],
+        intents_list=[],
+        workflows_list=["general", "sp_api"],
+    )
+    text = "\n".join(lines)
+    assert "- Intent classification list:" in text
+    assert "- how does chunking strategy affect rag quality" in text
+    assert "- check inventory levels for asin b09xyz1234 at each fulfillment center" in text
+    assert "Keyword: sp_api, Vector: general, Final: sp_api" in text
+    assert "background-color: #f1f3f5;" in text
+    assert "- Intent classification result: general, sp_api" in text

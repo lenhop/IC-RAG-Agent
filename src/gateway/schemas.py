@@ -242,6 +242,18 @@ class RewriteResponse(BaseModel):
         ge=0,
         description="Character count of the rewritten query.",
     )
+    intents: Optional[List[str]] = Field(
+        default=None,
+        description="Intent classification list: split sub-questions from rewritten query (for UI bullet list).",
+    )
+    intent_details: Optional[List[Dict[str, str]]] = Field(
+        default=None,
+        description=(
+            "Per sub-intent classification details. "
+            "Each item: {intent, workflow, keyword, vector}. "
+            "workflow is the final per-intent classification result."
+        ),
+    )
     workflows: Optional[List[str]] = Field(
         default=None,
         description="Intent classification result: workflow names (e.g. general, amazon_docs, uds, sp_api).",

@@ -26,6 +26,9 @@ This folder contains executable shell entrypoints for local runtime and operatio
     - `./bin/project_stack.sh start --route-only`
     - `./bin/project_stack.sh restart --route-only`
     - `./bin/project_stack.sh start --with-ui --route-only`
+    - `./bin/project_stack.sh restart --route-only --with-ui --no-login` — route-only + UI, skip login (dev).
+  - Shortcut for the above:
+    - `./bin/restart_route_ui.sh` — same as `restart --route-only --with-ui --no-login`.
 - `run_rag_api.sh`
   - Run RAG API service with Uvicorn.
   - Usage:

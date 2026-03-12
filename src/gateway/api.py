@@ -18,6 +18,7 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import os
+import re
 import time
 import uuid
 from typing import Any, Dict, List, Tuple
@@ -31,7 +32,6 @@ from .memory import GatewayConversationMemory
 from .router import route_workflow, rewrite_query
 from .routing_heuristics import (
     apply_docs_preference,
-    format_rewritten_query_bullets,
     route_workflow_heuristic,
     split_multi_intent_clauses,
 )
@@ -485,6 +485,7 @@ async def rewrite(
     """
     original_query = (request.query or "").strip()
     effective_user_id = _resolve_user_id(request, _user)
+    clarification_context: str | None = None
 
     # Clarification (required): return early if query is ambiguous
     if _clarification_enabled():
@@ -511,51 +512,104 @@ async def rewrite(
     # Ensure router receives user_id for memory merge (from JWT or request body)
     req_for_rewrite = request.model_copy(update={"user_id": effective_user_id}) if effective_user_id else request
     rewrite_started = time.perf_counter()
-    rewritten_query, intents, memory_rounds, memory_text_length = rewrite_query(
+    rewritten_query, _, memory_rounds, memory_text_length = rewrite_query(
         req_for_rewrite, gateway_memory=gateway_memory, conversation_context=clarification_context
     )
+    # Hard guard: rewrite stage must return a single line; intent splitting happens later.
+    rewritten_query = re.sub(r"\s+", " ", (rewritten_query or "")).strip()
     rewrite_time_ms = int((time.perf_counter() - rewrite_started) * 1000)
     rewritten_query_length = len(rewritten_query or "")
 
-    # Derive workflow names from intents for UI display (lightweight heuristic).
+    # Intent list for UI: always run split_intents when we have a rewritten query so the list is shown.
+    # Dual retrieval (keyword + vector) and workflows from resolve_intent only when enabled.
+    intents = None
+    intent_details: List[Dict[str, str]] = []
     workflows: List[str] = []
-    if intents:
-        seen: set[str] = set()
-        for intent in intents:
-            q = (intent or "").strip()
-            if not q:
-                continue
-            wf, _ = route_workflow_heuristic(q)
-            wf = apply_docs_preference(q, wf)
-            if wf and wf not in seen:
-                seen.add(wf)
-                workflows.append(wf)
-    else:
-        # When intent classification returned None, split multi-part query and route each clause.
-        q = (rewritten_query or "").strip()
-        if q:
-            clauses = split_multi_intent_clauses(q)
-            if len(clauses) >= 2:
-                seen: set[str] = set()
-                for clause in clauses:
-                    wf, _ = route_workflow_heuristic(clause)
-                    wf = apply_docs_preference(clause, wf)
-                    if wf and wf not in seen:
-                        seen.add(wf)
-                        workflows.append(wf)
-            else:
-                wf, _ = route_workflow_heuristic(q)
-                wf = apply_docs_preference(q, wf)
-                if wf:
-                    workflows = [wf]
+    if rewritten_query and rewritten_query.strip():
+        try:
+            from .intent_classifier import split_intents, get_keyword_vector_results, resolve_intent
+            intents = split_intents(rewritten_query)
+            use_dual_retrieval = os.getenv("GATEWAY_INTENT_CLASSIFICATION_ENABLED", "").lower() in ("1", "true", "yes", "on")
+            if intents:
+                for intent in intents:
+                    q = (intent or "").strip()
+                    if not q:
+                        continue
+                    if use_dual_retrieval:
+                        keyword_wf, vector_wf = get_keyword_vector_results(q)
+                        final_wf = resolve_intent(keyword_wf, vector_wf)
+                        intent_details.append(
+                            {
+                                "intent": q,
+                                "keyword": keyword_wf,
+                                "vector": vector_wf,
+                                "workflow": final_wf or "general",
+                            }
+                        )
+                        if final_wf and final_wf not in workflows:
+                            workflows.append(final_wf)
+                    else:
+                        wf, _ = route_workflow_heuristic(q)
+                        wf = apply_docs_preference(q, wf)
+                        intent_details.append(
+                            {
+                                "intent": q,
+                                "keyword": "—",
+                                "vector": "—",
+                                "workflow": wf or "general",
+                            }
+                        )
+                        if wf and wf not in workflows:
+                            workflows.append(wf)
+            if not workflows and (intents or []):
+                # Fallback: single intent or split failed to produce workflows
+                q = (intents[0] if intents else rewritten_query or "").strip()
+                if q:
+                    wf, _ = route_workflow_heuristic(q)
+                    wf = apply_docs_preference(q, wf)
+                    if wf:
+                        workflows = [wf]
+        except Exception as exc:
+            logger.warning("Intent split or dual retrieval failed (rewrite response): %s", exc)
+            # Heuristic fallback so at least result line shows
+            q = (rewritten_query or "").strip()
+            if q:
+                clauses = split_multi_intent_clauses(q)
+                if len(clauses) >= 2:
+                    seen: set[str] = set()
+                    for clause in clauses:
+                        wf, _ = route_workflow_heuristic(clause)
+                        wf = apply_docs_preference(clause, wf)
+                        intent_details.append(
+                            {
+                                "intent": clause,
+                                "keyword": "—",
+                                "vector": "—",
+                                "workflow": wf or "general",
+                            }
+                        )
+                        if wf and wf not in seen:
+                            seen.add(wf)
+                            workflows.append(wf)
+                else:
+                    wf, _ = route_workflow_heuristic(q)
+                    wf = apply_docs_preference(q, wf)
+                    intent_details.append(
+                        {
+                            "intent": q,
+                            "keyword": "—",
+                            "vector": "—",
+                            "workflow": wf or "general",
+                        }
+                    )
+                    if wf:
+                        workflows = [wf]
 
     # NOTE: /rewrite is a preview endpoint — do NOT save to Redis here.
     # The /query endpoint is responsible for all conversation logging.
 
-    # Enforce bullet-point display for long/multi-part queries (LLM often ignores format).
-    rewritten_query_display = format_rewritten_query_bullets(
-        rewritten_query, intents=intents, min_length=60
-    )
+    # Rewrite stage outputs one sentence only; do not show as bullet list (splitting is intent-classification step).
+    rewritten_query_display = None
     return RewriteResponse(
         original_query=original_query,
         rewritten_query=rewritten_query,
@@ -566,6 +620,8 @@ async def rewrite(
         memory_rounds=memory_rounds,
         memory_text_length=memory_text_length,
         rewritten_query_length=rewritten_query_length,
+        intents=intents if intents else None,
+        intent_details=intent_details if intent_details else None,
         workflows=workflows if workflows else None,
         rewritten_query_display=rewritten_query_display,
     )
@@ -597,6 +653,7 @@ async def query(
     request_id = str(uuid.uuid4())
     original_query = (request.query or "").strip()
     effective_user_id = _resolve_user_id(request, _user)
+    clarification_context: str | None = None
     rewritten_query = original_query
     rewrite_time_ms = 0
     route_source = "unknown"
@@ -642,14 +699,25 @@ async def query(
                     pending_query=original_query,
                 )
 
-        # Route LLM: rewrite + intent classification -> rewritten_query, intents
-        # Dispatcher: build_execution_plan -> execution_plan
+        # Route LLM: rewrite -> rewritten_query; then intent splitting when enabled.
         req_for_rewrite = request.model_copy(update={"user_id": effective_user_id}) if effective_user_id else request
         rewrite_started = time.perf_counter()
-        rewritten_query, intents, _, _ = rewrite_query(
+        rewritten_query, _, _, _ = rewrite_query(
             req_for_rewrite, gateway_memory=gateway_memory, conversation_context=clarification_context
         )
+        rewritten_query = re.sub(r"\s+", " ", (rewritten_query or "")).strip()
         rewrite_time_ms = int((time.perf_counter() - rewrite_started) * 1000)
+
+        # Intent classification (plan: split then dual retrieval per clause).
+        # When enabled, split rewritten query into sub-questions and pass to dispatcher.
+        intents = None
+        if rewritten_query and rewritten_query.strip():
+            if os.getenv("GATEWAY_INTENT_CLASSIFICATION_ENABLED", "").lower() in ("1", "true", "yes", "on"):
+                try:
+                    from .intent_classifier import split_intents
+                    intents = split_intents(rewritten_query)
+                except Exception as exc:
+                    logger.warning("Intent split failed (non-fatal): %s", exc)
 
         # Skip downstream when normalized query is empty.
         if not rewritten_query or not rewritten_query.strip():
@@ -717,7 +785,7 @@ async def query(
                     gateway_memory.save_turn(
                         request.session_id or "",
                         original_query,
-                        rewritten_query,
+                        "(Rewrite-only; no execution.)",
                         "rewrite_only",
                         user_id=effective_user_id,
                     )

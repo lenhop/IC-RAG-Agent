@@ -45,6 +45,7 @@ mkdir -p "${LOG_DIR}" "${PID_DIR}"
 
 WITH_UI="false"
 REWRITE_ONLY_MODE="false"
+NO_LOGIN="false"
 
 print_usage() {
   cat <<'EOF'
@@ -61,12 +62,12 @@ Options:
   --route-only       Route LLM only: gateway runs clarification + rewrite + intents (no plan in rewrite endpoint);
                      no downstream workers (uds/rag/sp_api). Use for quick testing.
   --rewrite-only     Alias for --route-only (deprecated, use --route-only)
+  --no-login         With --with-ui: skip login and show chat directly (dev convenience).
 
 Examples:
   ./bin/project_stack.sh start
   ./bin/project_stack.sh restart --with-ui
-  ./bin/project_stack.sh start --route-only
-  ./bin/project_stack.sh restart --route-only
+  ./bin/project_stack.sh restart --route-only --with-ui --no-login
   ./bin/project_stack.sh status
 EOF
 }
@@ -156,10 +157,12 @@ service_start_cmd() {
       echo "${PYTHON_BIN} -m uvicorn src.sp_api.fast_api:app --host 0.0.0.0 --port 8003"
       ;;
     ui)
+      local no_login_env=""
+      [[ "${NO_LOGIN}" == "true" ]] && no_login_env="UNIFIED_CHAT_SKIP_LOGIN=true "
       if [[ "${REWRITE_ONLY_MODE}" == "true" ]]; then
-        echo "GATEWAY_API_URL=http://127.0.0.1:8000 GATEWAY_MOCK=false UNIFIED_CHAT_REWRITE_ONLY_MODE=true UNIFIED_CHAT_REWRITE_ENABLE=true UNIFIED_CHAT_REWRITE_BACKEND=ollama CLIENT_GRADIO_PORT=7862 ${PYTHON_BIN} scripts/run_unified_chat.py"
+        echo "GATEWAY_API_URL=http://127.0.0.1:8000 GATEWAY_MOCK=false ${no_login_env}UNIFIED_CHAT_REWRITE_ONLY_MODE=true UNIFIED_CHAT_REWRITE_ENABLE=true UNIFIED_CHAT_REWRITE_BACKEND=ollama UNIFIED_CHAT_GRADIO_PORT=7862 ${PYTHON_BIN} scripts/run_unified_chat.py"
       else
-        echo "GATEWAY_API_URL=http://127.0.0.1:8000 GATEWAY_MOCK=false CLIENT_GRADIO_PORT=7862 ${PYTHON_BIN} scripts/run_unified_chat.py"
+        echo "GATEWAY_API_URL=http://127.0.0.1:8000 GATEWAY_MOCK=false ${no_login_env}UNIFIED_CHAT_GRADIO_PORT=7862 ${PYTHON_BIN} scripts/run_unified_chat.py"
       fi
       ;;
     *)
@@ -376,6 +379,9 @@ main() {
         ;;
       --route-only|--rewrite-only)
         REWRITE_ONLY_MODE="true"
+        ;;
+      --no-login)
+        NO_LOGIN="true"
         ;;
       --help|-h)
         print_usage

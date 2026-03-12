@@ -63,6 +63,36 @@ def test_rewrite_endpoint_returns_rewrite_metadata(mock_rewrite):
     assert data["rewrite_time_ms"] >= 0
 
 
+@patch("src.gateway.api.rewrite_query", return_value=("split me", None, 0, 0))
+@patch("src.gateway.intent_classifier.resolve_intent", return_value="sp_api")
+@patch("src.gateway.intent_classifier.get_keyword_vector_results", return_value=("sp_api", "general"))
+@patch("src.gateway.intent_classifier.split_intents", return_value=["check order status for 112-123"])
+def test_rewrite_endpoint_returns_per_intent_workflow_label(
+    mock_split, mock_kv, mock_resolve, mock_rewrite, monkeypatch
+):
+    """Rewrite endpoint should include final per-intent workflow in intent_details."""
+    monkeypatch.setenv("GATEWAY_INTENT_CLASSIFICATION_ENABLED", "true")
+    payload = {
+        "query": "raw query",
+        "workflow": "auto",
+        "rewrite_enable": True,
+        "rewrite_backend": "ollama",
+        "session_id": None,
+        "stream": False,
+    }
+    resp = client.post("/api/v1/rewrite", json=payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert isinstance(data.get("intent_details"), list)
+    assert len(data["intent_details"]) == 1
+    detail = data["intent_details"][0]
+    assert detail["intent"] == "check order status for 112-123"
+    assert detail["keyword"] == "sp_api"
+    assert detail["vector"] == "general"
+    assert detail["workflow"] == "sp_api"
+    assert data["workflows"] == ["sp_api"]
+
+
 @patch("src.gateway.api.rewrite_query")
 @patch("src.gateway.api.check_ambiguity")
 @patch("src.gateway.api._clarification_enabled", return_value=True)

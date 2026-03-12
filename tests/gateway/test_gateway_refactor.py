@@ -254,3 +254,68 @@ def test_intent_result_has_vector_distance():
     )
     assert r.vector_distance == 0.25
     assert r.source == "keyword"
+
+
+# ---------------------------------------------------------------------------
+# 11. Intent split fallback behavior (LLM single item / invalid JSON)
+# ---------------------------------------------------------------------------
+
+
+def test_split_intents_llm_single_item_uses_heuristic(monkeypatch):
+    """When LLM returns one long item, split_intents should apply heuristic multi-clause split."""
+    from src.gateway import intent_classifier as ic
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "response": (
+                    '{"intents":["what is few-shot learning and when is it useful, '
+                    "what are amazon's fba small and light program eligibility and fee structure, "
+                    "get competitive buy box pricing for asin b08pqr7890, "
+                    "what columns does amz_order have for tracking shipment status, "
+                    "compare fba vs fbm fulfillment cost per unit for the past quarter, "
+                    'and list all pending customer returns for my account"]}'
+                )
+            }
+
+    monkeypatch.setattr(ic, "load_prompt", lambda *_args, **_kwargs: "prompt")
+    monkeypatch.setattr(ic.requests, "post", lambda *_args, **_kwargs: _Resp())
+
+    query = (
+        "what is few-shot learning and when is it useful, what are amazon's fba "
+        "small and light program eligibility and fee structure, get competitive "
+        "buy box pricing for asin b08pqr7890, what columns does amz_order have "
+        "for tracking shipment status, compare fba vs fbm fulfillment cost per "
+        "unit for the past quarter, and list all pending customer returns for my account"
+    )
+    intents = ic.split_intents(query)
+    assert isinstance(intents, list)
+    assert len(intents) >= 6
+    assert any("few-shot learning" in part for part in intents)
+    assert any("buy box pricing" in part for part in intents)
+    assert any("pending customer returns" in part for part in intents)
+
+
+def test_split_intents_invalid_json_uses_heuristic(monkeypatch):
+    """When LLM output is not parseable JSON, split_intents should still split long multi-clause query."""
+    from src.gateway import intent_classifier as ic
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"response": "not-a-json-response"}
+
+    monkeypatch.setattr(ic, "load_prompt", lambda *_args, **_kwargs: "prompt")
+    monkeypatch.setattr(ic.requests, "post", lambda *_args, **_kwargs: _Resp())
+
+    query = "show fba fees last month, get order status for 112-123, and list pending returns"
+    intents = ic.split_intents(query)
+    assert len(intents) >= 3
+    assert intents[0].lower().startswith("show fba fees")
+    assert any("order status" in part.lower() for part in intents)
+    assert any("pending returns" in part.lower() for part in intents)

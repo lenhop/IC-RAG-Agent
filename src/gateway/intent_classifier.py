@@ -24,6 +24,7 @@ import csv
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -83,12 +84,65 @@ def _get_embedding_model() -> str:
 # Intent splitting
 # ---------------------------------------------------------------------------
 
+# Pattern to split by comma when followed by a new question-like clause (avoids splitting dates like "January 1, 2025").
+_SPLIT_COMMA_QUESTION = re.compile(
+    r",\s+(?=what|how|get|show|list|compare|when|which|where|who|why|tell|give|check|find|return|describe|explain)",
+    flags=re.I,
+)
+
+
+def _heuristic_split_multi_intent(query: str) -> List[str]:
+    """
+    Split a long comma- or and-separated query into clauses without using the LLM.
+    Used when the LLM returns a single intent but the query clearly has multiple parts.
+    Avoids splitting inside dates (e.g. "January 1, 2025" or "Q1, Q2 2025").
+    """
+    if not query or not query.strip():
+        return []
+    q = query.strip()
+    # Split by comma when followed by question-style clause.
+    parts = _SPLIT_COMMA_QUESTION.split(q)
+    # Also split " X and what/where/how/..." into separate clauses.
+    expanded = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        # Split "clause1 and clause2" when "and" is followed by question word.
+        sub = re.split(r"\s+and\s+(?=what|how|get|show|list|compare|when|which|where|who|why|tell|give|check|find|return|describe|explain)", p, flags=re.I)
+        for s in sub:
+            s = s.strip().rstrip(",").strip()
+            if s and len(s) > 2:
+                expanded.append(s)
+    # Merge back segment that is only a number (e.g. year from "January 1, 2025").
+    result = []
+    for i, seg in enumerate(expanded):
+        if seg.isdigit() and len(seg) == 4 and result:
+            result[-1] = f"{result[-1]}, {seg}"
+        else:
+            result.append(seg)
+    return result
+
+
+def _fallback_split(query: str) -> List[str]:
+    """When LLM fails or returns one item, try heuristic split for long comma/and-separated queries."""
+    q = (query or "").strip()
+    if not q:
+        return []
+    # Do not over-gate by length: short multi-clause requests should still split.
+    if "," in q or " and " in q.lower():
+        heuristic = _heuristic_split_multi_intent(q)
+        if len(heuristic) >= 2:
+            return heuristic
+    return [q]
+
+
 def split_intents(query: str) -> List[str]:
     """
     Split a rewritten query into distinct single-intent sub-questions.
 
     Uses qwen3:1.7b with intent_split_query.txt prompt.
-    Returns a list with the original query as sole item on any failure.
+    When the LLM returns one item or fails, tries heuristic split for long comma/and-separated queries.
 
     Args:
         query: Normalized/rewritten query text (no splitting done yet).
@@ -109,19 +163,19 @@ def split_intents(query: str) -> List[str]:
         resp = requests.post(
             url,
             json={"model": model, "prompt": prompt, "stream": False},
-            timeout=10,
+            timeout=15,
         )
         if resp.status_code != 200:
-            logger.warning("Intent split HTTP %s; returning original query", resp.status_code)
-            return [query.strip()]
+            logger.warning("Intent split HTTP %s; trying heuristic fallback", resp.status_code)
+            return _fallback_split(query)
         data = resp.json()
         text = (data.get("response") or "").strip()
     except Exception as exc:
-        logger.warning("Intent split LLM call failed: %s; returning original query", exc)
-        return [query.strip()]
+        logger.warning("Intent split LLM call failed: %s; trying heuristic fallback", exc)
+        return _fallback_split(query)
 
     if not text:
-        return [query.strip()]
+        return _fallback_split(query)
 
     # Strip markdown fences if present.
     raw = text.strip()
@@ -140,15 +194,15 @@ def split_intents(query: str) -> List[str]:
             try:
                 parsed = json.loads(raw[start:end + 1])
             except ValueError:
-                logger.warning("Intent split JSON parse failed; returning original query")
-                return [query.strip()]
+                logger.warning("Intent split JSON parse failed; trying heuristic fallback")
+                return _fallback_split(query)
         else:
-            logger.warning("Intent split no JSON found; returning original query")
-            return [query.strip()]
+            logger.warning("Intent split no JSON found; trying heuristic fallback")
+            return _fallback_split(query)
 
     intents = parsed.get("intents")
     if not isinstance(intents, list) or not intents:
-        return [query.strip()]
+        return _fallback_split(query)
 
     # Deduplicate and filter blanks.
     seen: set = set()
@@ -160,7 +214,15 @@ def split_intents(query: str) -> List[str]:
                 seen.add(s.lower())
                 result.append(s)
 
-    return result if result else [query.strip()]
+    if not result:
+        return _fallback_split(query)
+    # When LLM returns only one intent but query looks multi-part, try heuristic split.
+    if len(result) == 1 and ("," in query or " and " in query.lower()):
+        heuristic = _heuristic_split_multi_intent(query)
+        if len(heuristic) >= 2:
+            logger.info("Intent split: LLM returned 1 item; using heuristic split (%d clauses)", len(heuristic))
+            return heuristic
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +419,30 @@ def resolve_intent(keyword_result: str, vector_result: str) -> str:
     if vector_result != "hybrid":
         return vector_result
     return "general"
+
+
+def get_keyword_vector_results(query: str) -> tuple[str, str]:
+    """
+    Return raw keyword and vector classification results for a single query.
+    Used to display both retrieval results per sub-intent in the UI.
+
+    Args:
+        query: Sub-query text (one intent clause).
+
+    Returns:
+        (keyword_workflow, vector_workflow) e.g. ("amazon_docs", "amazon_docs").
+        On vector failure, vector_workflow is "general".
+    """
+    if not query or not query.strip():
+        return "general", "general"
+    q = query.strip()
+    keyword_workflow = _keyword_match_intent(q)
+    try:
+        vector_workflow, _, _ = _vector_match_intent(q)
+    except Exception as exc:
+        logger.debug("Vector match failed for '%s': %s", q[:50], exc)
+        vector_workflow = "general"
+    return keyword_workflow, vector_workflow
 
 
 # ---------------------------------------------------------------------------
