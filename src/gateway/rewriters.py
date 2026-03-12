@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Optional
 
 import requests
@@ -319,6 +320,102 @@ def _strip_echoed_context_from_rewrite(response: str, fallback_query: str) -> st
     return r
 
 
+def _collapse_rewrite_to_single_sentence(text: str) -> str:
+    """
+    Enforce rewrite stage output as a single line (no splitting).
+
+    Per Rewriting_Responsibility: rewrite outputs plain text, one clean sentence.
+    If the LLM returns multiple lines or bullet-like items, collapse to one line
+    so that intent splitting is done only in the intent classification step.
+    """
+    if not text or not text.strip():
+        return text or ""
+    line = text.strip()
+    # Collapse newlines to space so we never pass multiple sub-sentences downstream.
+    line = re.sub(r"\s*\n+\s*", " ", line)
+    line = re.sub(r"\s+", " ", line).strip()
+    return line if line else text.strip()
+
+
+def _apply_normalization_fixes(text: str) -> str:
+    """
+    Apply deterministic normalization when the LLM echoes or under-corrects.
+
+    Fixes: common typos, repeated punctuation, leading filler, lowercase.
+    Per Rewriting_Responsibility: normalize lowercase, fix typos, remove filler.
+    """
+    if not text or not text.strip():
+        return text or ""
+    s = text.strip()
+    # Collapse multiple ? or ! to single
+    s = re.sub(r"\?+", "?", s)
+    s = re.sub(r"!+", "!", s)
+    # Common typos (word-boundary for u/ur to avoid breaking "product", "your")
+    replacements = [
+        (r"\bwat\b", "what"),
+        (r"\binvetory\b", "inventory"),
+        (r"\binvnetory\b", "inventory"),
+        (r"\btehm\b", "them"),
+        (r"\bpls\b", "please"),
+        (r"\bthx\b", "thanks"),
+        (r"\bu\b", "you"),
+        (r"\bur\b", "your"),
+    ]
+    for pattern, repl in replacements:
+        s = re.sub(pattern, repl, s, flags=re.IGNORECASE)
+    # Remove leading filler (hey, hey,)
+    s = re.sub(r"^\s*hey\s*,?\s*", "", s, flags=re.IGNORECASE).strip()
+    # Trailing filler
+    s = re.sub(r"\s*(thx|thanks)\s*[.!?]*\s*$", "", s, flags=re.IGNORECASE).strip()
+    # Lowercase per Rewriting_Responsibility (ASINs often accepted in lowercase)
+    s = s.lower()
+    # Final whitespace collapse
+    s = re.sub(r"\s+", " ", s).strip()
+    return s if s else text.strip()
+
+
+def _is_rewrite_responsibility_compliant(text: str) -> bool:
+    """
+    Check rewritten output against Rewriting_Responsibility constraints.
+
+    Responsibilities enforced here:
+    - plain text only (no JSON / markdown fences)
+    - no user/assistant trace labels
+    - no explicit split-list output (numbered or bulleted multi-item form)
+    """
+    candidate = (text or "").strip()
+    if not candidate:
+        return False
+    lower_text = candidate.lower()
+    if "```" in candidate:
+        return False
+    if candidate.startswith("{") or candidate.startswith("["):
+        return False
+    if '"intents"' in lower_text or '"task_groups"' in lower_text or '"workflow"' in lower_text:
+        return False
+    if "user:" in lower_text or "assistant:" in lower_text:
+        return False
+    # Detect obvious list-style splitting like: "1. ... 2. ..." or "- ... - ..."
+    if re.search(r"\b1\.\s+\S+.*\b2\.\s+\S+", candidate):
+        return False
+    if re.search(r"(?:^|\s)-\s+\S+.*(?:\s-\s+\S+)", candidate):
+        return False
+    return True
+
+
+def _enforce_rewrite_responsibility(rewritten_text: str, fallback_query: str) -> str:
+    """
+    Enforce rewrite-stage responsibilities with safe fallback behavior.
+    """
+    collapsed = _collapse_rewrite_to_single_sentence(rewritten_text)
+    if _is_rewrite_responsibility_compliant(collapsed):
+        return collapsed
+    logger.warning(
+        "Rewrite output violates rewriting responsibility; fallback to normalized original query."
+    )
+    return _collapse_rewrite_to_single_sentence(fallback_query)
+
+
 def rewrite_with_context(
     query: str,
     conversation_context: Optional[str] = None,
@@ -365,7 +462,9 @@ def rewrite_with_context(
     else:
         logger.warning("rewrite_with_context: unknown backend %s; returning original", effective_backend)
         return query.strip()
-    return _strip_echoed_context_from_rewrite(raw, query.strip())
+    cleaned = _strip_echoed_context_from_rewrite(raw, query.strip())
+    out = _enforce_rewrite_responsibility(cleaned, query.strip())
+    return _apply_normalization_fixes(out)
 
 
 def _rewrite_with_ollama_prompt(

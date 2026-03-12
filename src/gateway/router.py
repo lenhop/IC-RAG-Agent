@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
 from .rewriters import rewrite_with_context
@@ -61,6 +62,76 @@ def _format_history_for_llm(history: list) -> str:
     return "\n".join(lines) if lines else ""
 
 
+def _merge_conversation_context(
+    preloaded_context: Optional[str],
+    memory_context: Optional[str],
+) -> Optional[str]:
+    """
+    Merge caller-provided context with Redis memory context (deduplicated).
+
+    This ensures rewrite always benefits from recent conversation history even
+    when an upstream caller already passed a partial context payload.
+    """
+    preloaded = (preloaded_context or "").strip()
+    memory = (memory_context or "").strip()
+    if not preloaded and not memory:
+        return None
+    if not preloaded:
+        return memory
+    if not memory:
+        return preloaded
+
+    def _parse_turns(block: str) -> List[Tuple[str, str]]:
+        """
+        Parse context lines to (query, answer) pairs.
+
+        Expected line format:
+            Turn N: User asked "..." -> Answer: "..."
+        """
+        turns: List[Tuple[str, str]] = []
+        pattern = re.compile(r'^Turn\s+\d+:\s+User asked\s+"(.*)"\s+->\s+Answer:\s+"(.*)"$')
+        for raw_line in block.splitlines():
+            line = (raw_line or "").strip()
+            if not line:
+                continue
+            m = pattern.match(line)
+            if m:
+                q = (m.group(1) or "").strip()
+                a = (m.group(2) or "").strip()
+                if q:
+                    turns.append((q, a))
+                continue
+            # Best-effort fallback for non-standard lines.
+            turns.append((line, ""))
+        return turns
+
+    merged_turns: List[Tuple[str, str]] = []
+    seen_keys: set[str] = set()
+    for block in (preloaded, memory):
+        for query, answer in _parse_turns(block):
+            key = f"{query.lower()}::{answer.lower()}"
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            merged_turns.append((query, answer))
+
+    if not merged_turns:
+        return None
+    normalized_lines = [
+        f'Turn {idx}: User asked "{q}" -> Answer: "{a}"'
+        for idx, (q, a) in enumerate(merged_turns, start=1)
+    ]
+    return "\n".join(normalized_lines)
+
+
+def _count_context_rounds(context: Optional[str]) -> int:
+    """Best-effort count of conversation rounds from formatted context lines."""
+    text = (context or "").strip()
+    if not text:
+        return 0
+    return len([ln for ln in text.splitlines() if ln.strip()])
+
+
 def rewrite_query(
     request: QueryRequest,
     gateway_memory: Optional["GatewayConversationMemory"] = None,
@@ -95,14 +166,11 @@ def rewrite_query(
     )
 
     # Step 1: Rewrite with memory merge -> optimized retrieval query.
-    # Use pre-loaded context if provided; otherwise load from Redis.
+    # Always merge pre-loaded context with Redis memory when available.
     memory_rounds_used = 0
     memory_text_length = 0
-    if conversation_context and conversation_context.strip():
-        # Caller already loaded context — use it directly.
-        memory_rounds_used = conversation_context.strip().count("\n") + 1
-        memory_text_length = len(conversation_context)
-    elif gateway_memory:
+    memory_context: Optional[str] = None
+    if gateway_memory:
         last_n = _get_memory_rounds()
         history: list = []
         if request.user_id and str(request.user_id).strip():
@@ -110,9 +178,13 @@ def rewrite_query(
         elif request.session_id and str(request.session_id).strip():
             history = gateway_memory.get_history(request.session_id, last_n=last_n)
         if history:
-            conversation_context = _format_history_for_llm(history)
+            memory_context = _format_history_for_llm(history)
             memory_rounds_used = len(history)
-            memory_text_length = len(conversation_context or "")
+    conversation_context = _merge_conversation_context(conversation_context, memory_context)
+    if conversation_context and conversation_context.strip():
+        memory_text_length = len(conversation_context)
+        if memory_rounds_used <= 0:
+            memory_rounds_used = _count_context_rounds(conversation_context)
 
     optimized_query = rewrite_with_context(
         normalized,

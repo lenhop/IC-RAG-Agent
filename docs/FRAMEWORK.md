@@ -9,7 +9,7 @@ This document describes the system framework for the IC-RAG-Agent project using 
 
 ---
 
-### 1. System Overview
+## 1. System Overview
 
 IC-RAG-Agent is an **Intent Classification + Retrieval-Augmented Generation** system with a **Unified Gateway** routing queries to five backend workflows:
 
@@ -19,49 +19,40 @@ IC-RAG-Agent is an **Intent Classification + Retrieval-Augmented Generation** sy
 - **SP-API Agent** – Seller Operations via Amazon SP-API (ReAct + LangGraph workflow)
 - **Client** – Unified Gradio Chat UI calling the gateway
 
-#### Framework
+### 1.1 Framework
 
-```mermaid
-%%{init: {'themeVariables': {'nodeSpacing': 20, 'rankSpacing': 25}}}%%
-flowchart TB
-    subgraph UI["Client Layer"]
-        ChatBox[UI Chat Box]
-    end
+![Framework](image/framework.png)
 
-    subgraph RouteLLM["Route LLM (Decision-maker)"]
-        direction LR
-        C1[Clarification    ]
-        C2[Rewriting        ]
-        C3[Intent Classif.  ]
-        C1 --> C2 --> C3
-    end
+**Route LLM vs Dispatcher**
 
-    subgraph Dispatcher["Dispatcher (Project Manager)"]
-        direction LR
-        D1[Task Planning   ]
-        D2[Task Allocation ]
-        D3[Parallel Control]
-        D4[Result Summary  ]
-        D1 --> D2 --> D3 --> D4
-    end
+The gateway is organized into two conceptual groups:
 
-    subgraph Worker["Worker (Executor)"]
-        direction LR
-        W1[RAG     ]
-        W2[UDS     ]
-        W3[SP-API  ]
-        W1 --> W2 --> W3
-    end
+| Group          | Responsibility                                  | Description                                                  |
+| -------------- | ----------------------------------------------- | ------------------------------------------------------------ |
+| **Route LLM**  | Clarification, Rewriting, Intent Classification | Three steps: (1) Clarification, (2) Rewriting (normalize, memory merge, rewrite with context), (3) Intent classification. Outputs rewritten query + intents. |
+| **Dispatcher** | Build Plan, Execute, Merge                      | Builds execution plan from rewritten query + intents; invokes worker agents; executes tasks in parallel within groups; merges results. |
 
-    ChatBox --> RouteLLM
-    RouteLLM -->|Output Intent List| Dispatcher
-    Dispatcher -->|Tasks| Worker
+**Route LLM** outputs: rewritten query, intents (list of sub-questions).
 
-```
+**Dispatcher** inputs: rewritten query, intents. Builds execution plan (task_groups with workflow + query per task). Outputs: task_results, merged_answer, aggregated sources.
 
 
 
-#### Workflow
+### 1.2 Roles
+
+![role](image/roles.png)
+
+| Role                             | Responsibility                                               | Module           |
+| -------------------------------- | ------------------------------------------------------------ | ---------------- |
+| **Decision Maker (Reason LLM)**  | Clarify needs, rewrite query, identify intents               | Route LLM        |
+| **Project Manager (Supervisor)** | Build execution plan, assign tasks, supervise, aggregate results | Dispatcher       |
+| **Worker**                       | Execute tasks, report results                                | RAG, SP-API, UDS |
+
+**Design:** Route LLM outputs rewritten query + intents. Dispatcher builds execution plan (intent → workflow mapping) and executes tasks.
+
+
+
+### 1.3 Workflow
 
 ```mermaid
 %%{init: {'themeVariables': {'fontSize': '11px'}, 'flowchart': {'curve': 'linear'}}}%%
@@ -119,7 +110,7 @@ flowchart TB
 
 ---
 
-## 1.1 Five Workflows
+**Five Workflows**
 
 | # | Workflow | Gateway Route | Backend | Port | Data Source | Status |
 |---|----------|---------------|---------|------|-------------|--------|
@@ -131,30 +122,231 @@ flowchart TB
 
 > **IC docs:** Not ready yet — Chroma not populated. Gateway returns a friendly message; set `IC_DOCS_ENABLED=true` once populated.
 
-### 1.2 Gateway Grouping: Route LLM vs Dispatcher
 
-The gateway is organized into two conceptual groups:
 
-| Group | Responsibility | Modules | Description |
-|-------|----------------|---------|-------------|
-| **Route LLM** | Clarification, Rewriting, Intent Classification | `clarification.py`, `rewriters.py`, `router.py`, `route_llm.py` | Three steps: (1) Clarification, (2) Rewriting (normalize, memory merge, rewrite with context), (3) Intent classification. Outputs rewritten query + intents. |
-| **Dispatcher** | Build Plan, Execute, Merge | `api.py`, `dispatcher.py`, `services.py` | Builds execution plan from rewritten query + intents; invokes worker agents; executes tasks in parallel within groups; merges results. |
+## 2. Chat UI
 
-**Route LLM** outputs: rewritten query, intents (list of sub-questions).
+The Chat UI is a unified Gradio front-end for authenticated multi-turn conversation with the gateway.
 
-**Dispatcher** inputs: rewritten query, intents. Builds execution plan (task_groups with workflow + query per task). Outputs: task_results, merged_answer, aggregated sources.
+![chat ui](image/chatUI.png)
 
-### 1.3 Role Analogy (Target Design)
+### 2.1 Responsibilities
 
-| Role | Responsibility | Module |
-|------|----------------|--------|
-| **Decision Maker (Reason LLM)** | Clarify needs, rewrite query, identify intents | Route LLM |
-| **Project Manager (Supervisor)** | Build execution plan, assign tasks, supervise, aggregate results | Dispatcher |
-| **Worker** | Execute tasks, report results | RAG, SP-API, UDS |
+| Responsibility | Behavior |
+|---|---|
+| Authentication | Supports sign-in and register; stores JWT in `auth_token_state`; toggles login/chat panels by auth status. |
+| Session management | Maintains `session_id_state`; supports Clear Session (new UUID) and clears pending clarification cache. |
+| Rewriting preview | Calls `/api/v1/rewrite` before `/api/v1/query`; displays Normalize, memory rounds, rewritten query, backend, rewrite latency, and intent classification summary. |
+| Clarification follow-up | When clarification is required, stores `pending_query`; merges follow-up text with pending query on next submission. |
+| User-scoped memory preload | After successful sign-in/register, fetches the last 3 rounds of conversation from Redis and preloads them into the chatbot. |
+| Final answer display | Shows merged answer plus trace metadata (`routed_input`, rewrite backend/time, route source/confidence). |
 
-**Design:** Route LLM outputs rewritten query + intents. Dispatcher builds execution plan (intent → workflow mapping) and executes tasks. See [ARCHITECTURE_DECISIONS.md](ARCHITECTURE_DECISIONS.md) for rationale.
+### 2.2 UI Structure
 
-### 1.4 Memory Strategy
+- **Login Panel**
+  - Tabs: `Sign In`, `Register`
+  - Inputs: user name, password, optional email (register)
+  - Output: status markdown message
+
+- **Chat Panel**
+  - Left column: workflow selector (`auto/general/amazon_docs/ic_docs/sp_api/uds`), user summary, session ID, clear session, gateway status
+  - Right column: chatbot plus input box
+  - Sign-out button at top-left of chat panel
+
+### 2.3 Runtime State Model
+
+| State | Purpose |
+|---|---|
+| `auth_token_state` | JWT token for authenticated API calls |
+| `user_info_state` | user metadata (`user_id`, `user_name`, `role`) |
+| `session_id_state` | conversation session identifier |
+| `_pending_queries` (in-memory map) | client-side cache for clarification merge flow |
+
+### 2.4 End-to-End Interaction
+
+```mermaid
+sequenceDiagram
+    participant User
+    participant UI as Gradio Chat UI
+    participant GW as Gateway API
+
+    User->>UI: Sign in / Register
+    UI->>GW: POST auth endpoint
+    GW-->>UI: access_token + user
+    UI->>GW: GET user history (last 3 rounds)
+    GW-->>UI: history[]
+    UI-->>User: preload previous turns
+
+    User->>UI: Submit query
+    UI->>GW: POST /api/v1/rewrite (rewrite preview)
+    alt clarification required
+        GW-->>UI: clarification_question + pending_query
+        UI-->>User: ask follow-up question
+        User->>UI: provide missing info
+        UI->>GW: POST /api/v1/rewrite (merged pending_query + follow-up)
+    else clear
+        GW-->>UI: rewritten_query + workflows + rewrite metrics
+    end
+
+    UI->>GW: POST /api/v1/query (rewrite disabled to avoid double rewrite)
+    GW-->>UI: answer + debug trace + plan/task_results (if multi-task)
+    UI-->>User: final answer + trace
+```
+
+### 2.5 Chat Box UX Decisions
+
+- Present conversation history on each login: every time the user signs in or registers, the chat box loads and displays the last 3 rounds of conversation from Redis so the user can continue in context.
+- Rewriting is always enabled in UI (no toggle exposed to users).
+- Rewritten query is rendered as a single-line trace value; intent splitting is handled downstream by intent classification and dispatcher.
+- Chat container uses fixed-height flex layout and internal scrolling to keep input box visible.
+- Auto-scroll is enforced with MutationObserver-based JavaScript to keep latest messages in view after send/receive.
+
+
+
+## 3. ROUTE LLM
+
+### 3.1 Query Clarification
+
+First step of Route LLM; runs **before** rewriting. Detects ambiguous or incomplete queries and asks the user for missing information instead of guessing.
+
+1. **Purpose**
+
+   - Avoid rewriter and downstream guessing missing details (bias risk).
+   - Get concrete identifiers (Order ID, ASIN, date range, fee type, store) so routing and execution are correct.
+
+2. **When it runs**
+
+   - On every rewrite/query request when clarification is enabled (default: on; configurable).
+   - Same backend as rewriting (Ollama or DeepSeek).
+
+3. **Inputs**
+
+   - Current query (raw user message).
+   - Optional conversation context: last 3–4 rounds from Redis. If present, do not ask again for info already given.
+
+4. **Logic**
+
+   - Skip for self-contained questions: documentation, policy, compliance, requirements, “what does Amazon say.”
+   - Heuristic fast path: when no context, check known ambiguous patterns (e.g. inventory without ASIN/store, order without Order ID, fees without type/period, sales without date). Use fixed question or LLM-generated one.
+   - LLM check: when context exists or heuristic does not apply, LLM decides clear vs needs_clarification and returns a short question. Output is structured (needs_clarification, clarification_question).
+   - On LLM/backend failure: proceed without clarification (do not block).
+
+5. **Outputs**
+
+   - Clear: needs_clarification false → continue to rewriting and intent classification.
+   - Ambiguous: needs_clarification true, clarification_question, pending_query. Client shows question; next user message is merged with pending_query and re-sent.
+
+6. **What clarification does NOT do**
+
+   - Does not rewrite the query.
+   - Does not assign workflows or execute tasks.
+   - Does not split intents; it only asks for missing info and returns a question.
+
+
+
+### 3.2 Query Rewriting
+
+Second step of Route LLM; runs **after** clarification (when the query is clear). Produces one clean, normalized sentence for downstream intent classification. Does not split intents or assign workflows.
+
+1. **Responsibilities (from Rewriting_Responsibility)**
+
+   - **Normalization:** lowercase, remove extra spaces and line breaks, unify punctuation, correct obvious typos (optional).
+   - **Context completion:** resolve references (it / this / that → explicit entities); fill omitted information from conversation context.
+   - **Rewrite for clarity:** colloquial → formal/standard; do not change meaning; **do not split sentences**.
+   - **Remove useless tokens:** modal particles, polite phrases (optional).
+
+2. **What rewriting does NOT do**
+
+   - Does NOT split multi-intent queries into sub-questions.
+   - Does NOT assign workflows or routing.
+   - Does NOT output JSON or structured plans.
+   - Output is always **plain text** — one clean, normalized sentence.
+
+3. **When it runs**
+
+   - After clarification (or when clarification is skipped). Only when rewrite is enabled (e.g. client sends rewrite_enable true).
+   - Backend: Ollama or DeepSeek (same as clarification; configurable).
+
+4. **Inputs**
+
+   - **Current query:** normalized raw query (trim, collapse whitespace) from the previous step.
+   - **Conversation context:** optional. Preloaded context (e.g. from clarification) is merged with Redis memory (user or session); turns are deduplicated and renumbered. Last N rounds (configurable) are formatted as "Turn K: User asked \"...\" -> Answer \"...\"" for the LLM.
+
+5. **Pipeline (high level)**
+
+   - Normalize query (trim, collapse whitespace). If empty, return empty; if rewrite disabled, return normalized.
+   - Load and merge conversation context (preloaded + Redis); format for LLM.
+   - Call LLM with rewrite prompt: rules (normalize, resolve refs, fill from context, clarity, preserve entities, no split, one line only). Input = context + current query.
+   - Post-process: strip echoed trace/labels from LLM output; collapse newlines to one line; check responsibility compliance (plain text, no JSON/list). If non-compliant, fallback to normalized original query.
+   - Return single-line rewritten query.
+
+6. **Output**
+
+   - One plain-text sentence. Passed to intent classification (which may split into sub-questions). On LLM/backend failure, returns normalized original query.
+
+7. **Boundary with Intent Classification**
+
+   - Intent splitting (multi-intent → sub-questions) is **not** part of rewriting; it is Step 1 of the Intent Classification workflow. Rewriting outputs a single sentence; the intent classifier consumes it and may split it there.
+
+
+
+### 3.3 Intent Classification
+
+Classify sub-intents from the rewritten query into executable workflows.
+
+```mermaid
+flowchart TD
+    A[Input: Rewritten Query] --> B[Intent Splitting<br/>Model: qwen3:1.7b]
+    B --> C[Intent Clause List]
+    C --> D{For each clause}
+    D --> E1[Keyword Retrieval<br/>Rule-based]
+    D --> E2[Vector Retrieval<br/>Embedding: all-minilm]
+    E1 --> F{Result Check}
+    E2 --> F
+    F -->|same and not hybrid| G[Use consistent result]
+    F -->|different or hybrid| H[Fallback Resolver]
+    G --> I[Final per-intent workflow]
+    H --> I
+    I --> J[Aggregate workflows + intent details]
+    J --> K[Planner/Dispatcher execution]
+```
+
+**Workflow steps**
+
+1. Receive rewritten query (single line from 3.2) as input.
+2. Split into intent clauses using qwen3:1.7b; output a list of sub-intents.
+3. For each clause, run dual retrieval in parallel: keyword (rule-based) and vector (all-minilm + Chroma).
+4. Compare keyword vs vector; if same and neither is `hybrid`, use that result.
+5. If different or either is `hybrid`, run fallback resolver.
+6. Fallback priority: keyword (if not hybrid) → vector (if not hybrid) → `general`.
+7. Aggregate all final workflows into a deduplicated list plus per-intent details.
+8. Pass to Planner/Dispatcher for plan build, task execution, and result merge.
+
+**Fallback examples**
+
+| Keyword | Vector | Final |
+|---------|--------|-------|
+| uds | uds | uds |
+| uds | sp_api | uds |
+| hybrid | sp_api | sp_api |
+| amazon_docs | hybrid | amazon_docs |
+| hybrid | hybrid | general |
+
+**Runtime flags**
+
+| Flag | Effect |
+|------|--------|
+| `GATEWAY_INTENT_CLASSIFICATION_ENABLED=true` | dual retrieval + fallback resolver |
+| `GATEWAY_INTENT_CLASSIFICATION_ENABLED=false` | keep split list, heuristic workflow assignment |
+| `GATEWAY_VECTOR_INTENT_ENABLED=true` | vector-intent path in planner execution |
+
+Out of scope: rewriting text, clarification questions, downstream execution.
+
+
+
+
+
+## 4. Memory Strategy
 
 | Layer | Store | Purpose |
 |-------|-------|---------|
@@ -163,157 +355,11 @@ The gateway is organized into two conceptual groups:
 
 **Usage:** RAG Pipeline, UDS Agent, and SP-API Agent use Redis for short-term memory (session history, cache). Query logs and long-term analytics are stored in ClickHouse.
 
----
+## 
 
-## 2. Architecture Layers
 
-```mermaid
-flowchart TB
-    subgraph L0["Client Layer"]
-        Gradio[Gradio Chat UI]
-        APIClient[GatewayClient<br/>api_client.py]
-    end
 
-    subgraph L1["Gateway Layer"]
-        GatewayAPI[FastAPI Gateway]
-        subgraph RL["Route LLM (3 steps)"]
-            Clarify[Clarification<br/>check_ambiguity]
-            Rewriters[Rewriting: Normalize, Memory Merge, Rewrite<br/>Ollama / DeepSeek]
-            IntentClass[Intent Classification]
-        end
-        subgraph Disp["Dispatcher (Build Plan, Execute)"]
-            DispatcherMod[dispatcher.py<br/>build_execution_plan]
-            Orch[Orchestrator<br/>api.py]
-            Services[Service Dispatch<br/>services.py]
-        end
-        LogUtils[Logging Utils]
-    end
 
-    subgraph L2["API Layer"]
-        UDS_API[UDS FastAPI :8001]
-        RAG_API[RAG FastAPI :8002]
-        SP_API[SP-API FastAPI :8003]
-    end
-
-    subgraph L3["Agent Layer"]
-        ReAct[ReAct Agent Core]
-        UDS_Intent[UDS Intent Classifier]
-        RAG_Intent[RAG Intent Methods ×4]
-        Planner[Task Planner]
-    end
-
-    subgraph L4["Tool Layer"]
-        UDS_Tools[UDS Tools<br/>Schema 4 + Query 4 + Analysis 5 + Viz 3]
-        SP_Tools[SP-API Tools<br/>10 tools]
-    end
-
-    subgraph L5["Data Layer"]
-        ClickHouse[(ClickHouse)]
-        ChromaDB[(ChromaDB)]
-        Redis[(Redis Cache)]
-    end
-
-    subgraph L6["LLM Layer"]
-        Ollama[Ollama<br/>Qwen3, qwen2.5]
-        DeepSeek[DeepSeek API]
-        HF[HuggingFace<br/>MiniLM, DistilBERT]
-    end
-
-    L0 --> L1 --> L2 --> L3 --> L4 --> L5
-    L3 --> L6
-```
-
----
-
-## 3. Module Structure
-
-```mermaid
-flowchart LR
-    subgraph src["src/"]
-        subgraph gateway["gateway/"]
-            subgraph route_llm["Route LLM"]
-                gw_clarify[clarification.py]
-                gw_router[router.py]
-                gw_rewriters[rewriters.py]
-                gw_route_llm[route_llm.py]
-            end
-            subgraph dispatcher["Dispatcher"]
-                gw_api[api.py]
-                gw_services[services.py]
-            end
-            gw_schemas[schemas.py]
-            gw_log[logging_utils.py]
-        end
-
-        subgraph client["client/"]
-            cl_api[api_client.py]
-            cl_ui[gradio_ui.py]
-        end
-
-        subgraph uds["uds/"]
-            u_api[api.py]
-            u_agent[uds_agent.py]
-            u_client[uds_client.py]
-            u_intent[intent_classifier.py]
-            u_planner[task_planner.py]
-            u_formatter[result_formatter.py]
-            u_cache[cache.py]
-            u_error[error_handler.py]
-            u_schemas[schemas.py]
-            u_tools[tools/]
-            u_maint[maintenance/]
-            u_data[data/]
-        end
-
-        subgraph rag["rag/"]
-            r_api[rag_api.py]
-            r_pipeline[query_pipeline.py]
-            r_intent_m[intent_methods.py]
-            r_aggregator[intent_aggregator.py]
-            r_classifier[intent_classifier.py]
-            r_rewrite[query_rewriting.py]
-            r_chroma[chroma_loaders.py]
-            r_embed[embeddings.py]
-            r_ingest[ingest_pipeline.py]
-            r_eval[evaluation/]
-        end
-
-        subgraph agent_mod["agent/"]
-            a_react[react_agent.py]
-            a_models[models.py]
-            a_logger[agent_logger.py]
-            a_except[exceptions.py]
-            a_tools[tools/]
-        end
-
-        subgraph sp_api["sp_api/"]
-            s_api[fast_api.py]
-            s_agent[sp_api_agent.py]
-            s_client[sp_api_client.py]
-            s_workflow[workflow.py<br/>LangGraph]
-            s_ltm[long_term_memory.py<br/>ChromaDB]
-            s_stm[short_term_memory.py<br/>Redis]
-            s_schemas[schemas.py]
-            s_tools[tools/ ×10]
-        end
-    end
-
-    subgraph external["external/"]
-        ai_toolkit[ai-toolkit<br/>BaseTool, ToolExecutor]
-        ic_skill[IC-Agent-Skill]
-        llama[llama.cpp]
-    end
-
-    u_agent --> a_react
-    s_agent --> a_react
-    a_react --> ai_toolkit
-    cl_ui --> cl_api
-    cl_api --> gw_api
-    gw_api --> gw_router
-    gw_api --> gw_services
-    gw_router --> gw_route_llm
-    gw_router --> gw_rewriters
-```
 
 ---
 
@@ -367,36 +413,7 @@ sequenceDiagram
 ## 5. Routing Logic
 
 ```mermaid
-flowchart TD
-    Q[User Query] --> CLARIFY{GATEWAY_CLARIFICATION_ENABLED?}
-    CLARIFY -->|No| WF
-    CLARIFY -->|Yes| AMBIG{check_ambiguity<br/>LLM}
-    AMBIG -->|needs_clarification| ASK[Return clarification_question<br/>pending_query; user follows up]
-    AMBIG -->|clear| WF
-    
-    WF[workflow field?] -->|explicit: general/uds/sp_api/...| MANUAL[Manual Override<br/>confidence=1.0]
-    WF -->|auto| AUTO{Planner enabled?}
-    
-    AUTO -->|Yes| PLAN[Parse planner JSON<br/>or heuristic multi-task]
-    AUTO -->|No| ROUTE{Route LLM<br/>enabled?}
-    
-    PLAN --> CORRECT[Plan Correction<br/>heuristic override ≥0.9]
-    CORRECT --> EXEC[Execute plan]
-    
-    ROUTE -->|No| HEUR[Keyword Heuristic]
-    ROUTE -->|Yes| LLM[Route LLM<br/>Ollama / DeepSeek]
-    
-    LLM --> CONF{confidence ≥<br/>threshold?}
-    CONF -->|Yes| USE_LLM[Use LLM result]
-    CONF -->|No| HEUR
-    
-    HEUR --> PRIORITY[Priority-ordered keyword blocks]
-    PRIORITY -->|sp_api 0.92| SP_H[order status, inventory health, buy box, etc.]
-    PRIORITY -->|uds 0.92| UD_H[top 5, products by, by refund, etc.]
-    PRIORITY -->|uds 0.85| UD_M[table, schema, trend, total, etc.]
-    PRIORITY -->|amazon_docs 0.9| AM[policy, fees, guidelines, etc.]
-    PRIORITY -->|sp_api 0.85| SP_M[sp-api, fba, shipment, catalog]
-    PRIORITY -->|no match| W1[general 0.7]
+
 ```
 
 ### 5.1 Clarification (Question User)

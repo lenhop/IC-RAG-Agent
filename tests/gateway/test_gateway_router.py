@@ -94,6 +94,75 @@ def test_rewrite_query_with_history_when_user_id_present(mock_rewrite_context):
     mock_memory.get_history.assert_not_called()
 
 
+@patch("src.gateway.router.rewrite_with_context", return_value="merged-context rewrite")
+def test_rewrite_query_merges_preloaded_and_memory_context(mock_rewrite_context):
+    """rewrite_query should merge caller-provided context with Redis memory context."""
+    from unittest.mock import MagicMock
+
+    mock_memory = MagicMock()
+    mock_memory.get_history_by_user.return_value = [
+        {"query": "what was the ad spend last week", "answer": "ad spend was 1200", "workflow": "uds"},
+    ]
+    req = QueryRequest(
+        query="how about this week",
+        workflow="auto",
+        rewrite_enable=True,
+        session_id="sess-1",
+        user_id="user-1",
+        stream=False,
+    )
+    preloaded_context = 'Turn 1: User asked "what is fba" -> Answer: "fulfilled by amazon"'
+    rewritten, intents, memory_rounds, memory_text_len = rewrite_query(
+        req,
+        gateway_memory=mock_memory,
+        conversation_context=preloaded_context,
+    )
+
+    assert rewritten == "merged-context rewrite"
+    assert intents is None
+    assert memory_rounds == 1
+    assert memory_text_len > 0
+    kwargs = mock_rewrite_context.call_args.kwargs
+    merged_context = kwargs.get("conversation_context") or ""
+    assert 'what is fba' in merged_context
+    assert 'what was the ad spend last week' in merged_context
+
+
+@patch("src.gateway.router.rewrite_with_context", return_value="merged-context rewrite")
+def test_rewrite_query_merges_context_without_duplicate_turns(mock_rewrite_context):
+    """Merged context should dedupe same turn and re-number turns cleanly."""
+    from unittest.mock import MagicMock
+
+    mock_memory = MagicMock()
+    mock_memory.get_history_by_user.return_value = [
+        {"query": "what is fba", "answer": "fulfilled by amazon", "workflow": "ic_docs"},
+        {"query": "what was ad spend last week", "answer": "1200 usd", "workflow": "uds"},
+    ]
+    req = QueryRequest(
+        query="continue",
+        workflow="auto",
+        rewrite_enable=True,
+        session_id="sess-1",
+        user_id="user-1",
+        stream=False,
+    )
+    preloaded_context = (
+        'Turn 1: User asked "what is fba" -> Answer: "fulfilled by amazon"\n'
+        'Turn 2: User asked "what is acs" -> Answer: "amazon charge summary"'
+    )
+    rewrite_query(req, gateway_memory=mock_memory, conversation_context=preloaded_context)
+
+    kwargs = mock_rewrite_context.call_args.kwargs
+    merged_context = kwargs.get("conversation_context") or ""
+    lines = [ln.strip() for ln in merged_context.splitlines() if ln.strip()]
+    # Should have 3 unique turns: existing duplicate from memory is removed.
+    assert len(lines) == 3
+    assert lines[0].startswith('Turn 1: ')
+    assert lines[1].startswith('Turn 2: ')
+    assert lines[2].startswith('Turn 3: ')
+    assert merged_context.count('what is fba') == 1
+
+
 @patch("src.gateway.router.rewrite_with_context", return_value="rewritten no context")
 def test_rewrite_query_without_history_when_session_absent(mock_rewrite_context):
     """When session_id and user_id absent, rewrite_with_context gets no conversation_context."""

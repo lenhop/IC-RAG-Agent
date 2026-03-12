@@ -16,9 +16,11 @@ from src.gateway.rewriters import (
     INTENT_CLASSIFICATION_PROMPT,
     REWRITE_PROMPT,
     REWRITE_PLANNER_PROMPT,
+    _enforce_rewrite_responsibility,
     _strip_echoed_context_from_rewrite,
     parse_rewrite_plan_text,
     rewrite_intents_only,
+    rewrite_with_context,
     rewrite_with_ollama,
     rewrite_with_deepseek,
 )
@@ -348,3 +350,18 @@ def test_strip_echoed_context_returns_response_when_clean():
     clean = "how do attention work, summarize IP steps"
     result = _strip_echoed_context_from_rewrite(clean, "fallback")
     assert result == clean
+
+
+def test_enforce_rewrite_responsibility_rejects_json_output():
+    """Structured JSON-like rewrite output should fallback to original query."""
+    bad_output = '{"intents":["q1","q2"]}'
+    result = _enforce_rewrite_responsibility(bad_output, "original query")
+    assert result == "original query"
+
+
+@patch("src.gateway.rewriters._rewrite_with_ollama_prompt", return_value="line1\nline2")
+def test_rewrite_with_context_collapses_multiline_output(mock_rewrite_prompt):
+    """rewrite_with_context should always return single-line text."""
+    result = rewrite_with_context("what is fba", backend="ollama")
+    assert "\n" not in result
+    assert result == "line1 line2"
