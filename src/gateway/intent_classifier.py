@@ -1,19 +1,20 @@
 """
-Gateway-level vector intent classifier.
+Gateway-level intent classifier.
 
-Uses all-minilm embeddings + Chroma intent_registry for fast intent matching,
-with qwen3:1.7b LLM verification for ambiguous cases.
-
-Architecture:
-1. Embed query via Ollama all-minilm
-2. Query Chroma intent_registry collection, Top3
-3. Confidence thresholds:
-   - distance < HIGH_CONF (0.3): use Top1 directly
-   - distance HIGH_CONF ~ LOW_CONF (0.3-0.7): LLM verifies from Top3
-   - distance > LOW_CONF (0.7): fallback to keyword heuristics
+Pipeline:
+1. split_intents(query)  — qwen3:1.7b splits rewritten query into sub-questions
+2. classify_intent(sub_query) — for each sub-question:
+   a. Embed via Ollama all-minilm
+   b. Query Chroma intent_registry Top3
+   c. Confidence thresholds:
+      - distance < HIGH_CONF (0.3): use Top1 directly
+      - distance HIGH_CONF ~ LOW_CONF (0.3-0.7): LLM verifies from Top3
+      - distance > LOW_CONF (0.7): fallback to keyword heuristics
 
 Usage:
-    from src.gateway.intent_classifier import classify_intent
+    from src.gateway.intent_classifier import split_intents, classify_intent
+    clauses = split_intents("check order 112-123 and show FBA fees last month")
+    # ["check order status for 112-123", "show FBA fees last month"]
     result = classify_intent("check order status for 112-1234567-8901234")
     # IntentResult(intent_name="order_query", workflow="sp_api", distance=0.15, ...)
 """
@@ -74,6 +75,86 @@ def _get_ollama_model() -> str:
 
 def _get_embedding_model() -> str:
     return os.getenv("GATEWAY_INTENT_EMBEDDING_MODEL", "all-minilm")
+
+
+def split_intents(query: str) -> List[str]:
+    """
+    Split a rewritten query into distinct single-intent sub-questions.
+
+    Uses qwen3:1.7b with intent_split_query.txt prompt.
+    Returns a list with the original query as sole item on any failure.
+
+    Args:
+        query: Normalized/rewritten query text (no splitting done yet).
+
+    Returns:
+        List of single-intent sub-question strings.
+    """
+    if not query or not query.strip():
+        return []
+
+    prompt_template = load_prompt("intent_classification/intent_split_query")
+    prompt = f"{prompt_template}\n\nInput: {query.strip()}"
+
+    url = f"{_get_ollama_url()}/api/generate"
+    model = _get_ollama_model()
+
+    try:
+        resp = requests.post(
+            url,
+            json={"model": model, "prompt": prompt, "stream": False},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            logger.warning("Intent split HTTP %s; returning original query", resp.status_code)
+            return [query.strip()]
+        data = resp.json()
+        text = (data.get("response") or "").strip()
+    except Exception as exc:
+        logger.warning("Intent split LLM call failed: %s; returning original query", exc)
+        return [query.strip()]
+
+    if not text:
+        return [query.strip()]
+
+    # Strip markdown fences if present.
+    raw = text.strip()
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        if len(lines) >= 2 and lines[-1].strip() == "```":
+            raw = "\n".join(lines[1:-1]).strip()
+
+    # Parse JSON {"intents": [...]}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                parsed = json.loads(raw[start:end + 1])
+            except ValueError:
+                logger.warning("Intent split JSON parse failed; returning original query")
+                return [query.strip()]
+        else:
+            logger.warning("Intent split no JSON found; returning original query")
+            return [query.strip()]
+
+    intents = parsed.get("intents")
+    if not isinstance(intents, list) or not intents:
+        return [query.strip()]
+
+    # Deduplicate and filter blanks.
+    seen: set = set()
+    result = []
+    for item in intents:
+        if isinstance(item, str):
+            s = item.strip()
+            if s and s.lower() not in seen:
+                seen.add(s.lower())
+                result.append(s)
+
+    return result if result else [query.strip()]
 
 
 def _embed_query(query: str) -> List[float]:

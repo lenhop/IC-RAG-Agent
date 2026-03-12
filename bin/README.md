@@ -39,6 +39,16 @@ This folder contains executable shell entrypoints for local runtime and operatio
 - `ollama_pull_with_proxy.sh`
   - Pull Ollama models with proxy-friendly setup.
 
+## ChromaDB / Vector Registry
+
+- `load_vector_registry.sh`
+  - Load `vector_intent_registry.csv` into ChromaDB. Requires Ollama with `all-minilm` for embeddings.
+  - Usage:
+    - `./bin/load_vector_registry.sh --local` — load to local ChromaDB (default when ECS fails)
+    - `GATEWAY_REWRITE_OLLAMA_URL=http://${CH_HOST}:11434 ./bin/load_vector_registry.sh --local` — use ECS Ollama when local Ollama is not running
+    - `CHA_HOST` and `CHA_PORT` in .env — attempt ECS ChromaDB first; falls back to local on connection failure
+  - Transfer local to ECS: `python scripts/load_vector_registry.py` (local), then `python scripts/transfer_chroma_to_ecs.py vector_intent_registry` (uses CHA_HOST, CHA_PORT from .env)
+
 ## Deployment and Ops
 
 - `uds_ops.sh`

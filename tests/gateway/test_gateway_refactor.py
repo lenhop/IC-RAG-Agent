@@ -1,0 +1,180 @@
+"""
+Unit tests for gateway refactor:
+- Prompt files load correctly from new paths
+- route_llm is gone (no import, no env flag)
+- route_backend removed from QueryRequest schema
+- route_workflow always returns heuristic
+- rewriters / intent_classifier import cleanly
+"""
+import importlib
+import os
+import sys
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+# Ensure project root is on path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+
+# ---------------------------------------------------------------------------
+# 1. Prompt files exist at new paths
+# ---------------------------------------------------------------------------
+
+PROMPTS_ROOT = Path(__file__).parent.parent.parent / "src" / "prompts"
+
+@pytest.mark.parametrize("rel_path", [
+    "query_clarification/clarification_detect_ambiguity.txt",
+    "query_clarification/clarification_generate_question.txt",
+    "query_rewriting/rewrite_query_clean.txt",
+    "intent_classification/intent_verify_candidate.txt",
+])
+def test_prompt_file_exists(rel_path):
+    p = PROMPTS_ROOT / rel_path
+    assert p.is_file(), f"Missing prompt file: {p}"
+    assert p.stat().st_size > 0, f"Prompt file is empty: {p}"
+
+
+def test_retired_prompts_not_in_active_dir():
+    """Retired prompts must not exist outside bak/."""
+    for name in ("intent_classification.txt", "intent_verify.txt",
+                 "route_classification.txt", "intent_route_single.txt",
+                 "intent_split_query.txt"):
+        active = PROMPTS_ROOT / name
+        assert not active.exists(), f"Retired prompt still in active dir: {active}"
+        # Also not in intent_classification/ subfolder
+        sub = PROMPTS_ROOT / "intent_classification" / name
+        assert not sub.exists(), f"Retired prompt still in intent_classification/: {sub}"
+
+
+# ---------------------------------------------------------------------------
+# 2. prompt_loader loads all active prompts without error
+# ---------------------------------------------------------------------------
+
+def test_prompt_loader_loads_all_active():
+    from src.gateway.prompt_loader import load_prompt, clear_cache
+    clear_cache()
+    names = [
+        "query_clarification/clarification_detect_ambiguity",
+        "query_clarification/clarification_generate_question",
+        "query_rewriting/rewrite_query_clean",
+        "intent_classification/intent_verify_candidate",
+    ]
+    for name in names:
+        text = load_prompt(name)
+        assert isinstance(text, str) and len(text) > 10, f"Prompt '{name}' loaded empty"
+
+
+def test_prompt_loader_raises_for_retired():
+    from src.gateway.prompt_loader import load_prompt, clear_cache
+    clear_cache()
+    for name in ("intent_classification/intent_route_single",
+                 "intent_classification/intent_split_query"):
+        with pytest.raises(FileNotFoundError):
+            load_prompt(name)
+
+
+# ---------------------------------------------------------------------------
+# 3. route_llm module is gone
+# ---------------------------------------------------------------------------
+
+def test_route_llm_module_deleted():
+    route_llm_path = Path(__file__).parent.parent.parent / "src" / "gateway" / "route_llm.py"
+    assert not route_llm_path.exists(), "route_llm.py should have been deleted"
+
+
+def test_route_llm_not_importable():
+    with pytest.raises(ModuleNotFoundError):
+        import src.gateway.route_llm  # noqa: F401
+
+
+# ---------------------------------------------------------------------------
+# 4. QueryRequest schema has no route_backend field
+# ---------------------------------------------------------------------------
+
+def test_schema_no_route_backend():
+    from src.gateway.schemas import QueryRequest
+    fields = QueryRequest.model_fields
+    assert "route_backend" not in fields, "route_backend should be removed from QueryRequest"
+
+
+def test_schema_still_has_rewrite_backend():
+    from src.gateway.schemas import QueryRequest
+    assert "rewrite_backend" in QueryRequest.model_fields
+
+
+def test_schema_accepts_request_without_route_backend():
+    from src.gateway.schemas import QueryRequest
+    req = QueryRequest(query="test query")
+    assert req.query == "test query"
+    assert req.workflow == "auto"
+
+
+# ---------------------------------------------------------------------------
+# 5. router.route_workflow always uses heuristic (no LLM call)
+# ---------------------------------------------------------------------------
+
+def test_route_workflow_manual_override():
+    from src.gateway.router import route_workflow
+    from src.gateway.schemas import QueryRequest
+    req = QueryRequest(query="test", workflow="uds")
+    wf, conf, source, backend, llm_conf = route_workflow("test", req)
+    assert wf == "uds"
+    assert conf == 1.0
+    assert source == "manual"
+
+
+def test_route_workflow_auto_uses_heuristic():
+    from src.gateway.router import route_workflow
+    from src.gateway.schemas import QueryRequest
+    req = QueryRequest(query="what is FBA", workflow="auto")
+    wf, conf, source, backend, llm_conf = route_workflow("what is FBA", req)
+    assert source == "heuristic"
+    assert wf in {"general", "amazon_docs", "ic_docs", "sp_api", "uds"}
+    assert backend is None
+    assert llm_conf is None
+
+
+def test_route_workflow_no_llm_even_with_env_flag():
+    """Even if someone sets GATEWAY_ROUTE_LLM_ENABLED, it must be ignored."""
+    from src.gateway.router import route_workflow
+    from src.gateway.schemas import QueryRequest
+    req = QueryRequest(query="check order status", workflow="auto")
+    with patch.dict(os.environ, {"GATEWAY_ROUTE_LLM_ENABLED": "true"}):
+        wf, conf, source, backend, llm_conf = route_workflow("check order status", req)
+    # Should still be heuristic — the flag no longer exists in router
+    assert source == "heuristic"
+
+
+# ---------------------------------------------------------------------------
+# 6. rewriters module imports and loads prompts correctly
+# ---------------------------------------------------------------------------
+
+def test_rewriters_import():
+    from src.gateway import rewriters
+    assert hasattr(rewriters, "REWRITE_PROMPT")
+    assert not hasattr(rewriters, "INTENT_CLASSIFICATION_PROMPT")
+    assert not hasattr(rewriters, "intent_classification_enabled")
+    assert not hasattr(rewriters, "rewrite_intents_only")
+    assert len(rewriters.REWRITE_PROMPT) > 10
+
+
+# ---------------------------------------------------------------------------
+# 7. intent_classifier imports and loads prompt correctly
+# ---------------------------------------------------------------------------
+
+def test_intent_classifier_import():
+    from src.gateway import intent_classifier
+    assert hasattr(intent_classifier, "classify_intent")
+    assert hasattr(intent_classifier, "IntentResult")
+
+
+def test_intent_classifier_prompt_path():
+    """Verify _llm_verify loads from the new path (no FileNotFoundError at import)."""
+    from src.gateway.prompt_loader import load_prompt, clear_cache
+    clear_cache()
+    # This is what intent_classifier._llm_verify calls
+    text = load_prompt("intent_classification/intent_verify_candidate")
+    assert "{candidates}" in text
+    assert "{query}" in text

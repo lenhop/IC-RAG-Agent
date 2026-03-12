@@ -25,7 +25,6 @@ logger = logging.getLogger(__name__)
 
 # Prompts loaded from src/prompts/*.txt (cached after first access)
 REWRITE_PROMPT = load_prompt("query_rewriting/rewrite_query_clean")
-INTENT_CLASSIFICATION_PROMPT = load_prompt("intent_classification/intent_split_query")
 
 # Environment defaults
 DEFAULT_OLLAMA_URL = "http://localhost:11434/api/generate"
@@ -45,165 +44,12 @@ def _get_rewrite_timeout() -> int:
         return DEFAULT_REWRITE_TIMEOUT
 
 
-def intent_classification_enabled() -> bool:
-    """
-    Return True when intent classification should run on the optimized retrieval query.
-
-    Enabled via GATEWAY_INTENT_CLASSIFICATION_ENABLED env var.
-    """
-    ic = os.getenv("GATEWAY_INTENT_CLASSIFICATION_ENABLED", "").strip().lower()
-    return ic in ("1", "true", "yes", "on")
 
 
-def rewrite_intents_only(
-    query: str,
-    backend: Optional[str] = None,
-    conversation_context: Optional[str] = None,
-) -> Optional[dict]:
-    """
-    Phase 1 intent classification: call LLM to list distinct sub-questions only.
-
-    Returns {"intents": ["...", "..."]} on success, None on failure.
-    Uses same backends as rewrite (ollama/deepseek) and env for URL/model.
-
-    Args:
-        query: Rewritten query text.
-        backend: Optional backend override.
-        conversation_context: Optional formatted conversation history from Redis.
-            When provided, the LLM uses prior turns for better intent decomposition.
-    """
-    if not query or not query.strip():
-        return None
-
-    effective_backend = (backend or "").strip().lower() or os.getenv(
-        "GATEWAY_REWRITE_BACKEND", "ollama"
-    ).strip().lower()
-
-    if effective_backend == "ollama":
-        text = _call_intents_ollama(query.strip(), conversation_context)
-    elif effective_backend == "deepseek":
-        text = _call_intents_deepseek(query.strip(), conversation_context)
-    else:
-        logger.warning("rewrite_intents_only: unknown backend %s; skipping", effective_backend)
-        return None
-
-    if not text or not text.strip():
-        return None
-
-    raw = _strip_markdown_fences(text)
-    parsed = None
-    try:
-        parsed = json.loads(raw)
-    except ValueError:
-        candidate = _extract_first_json_object(raw)
-        if candidate:
-            try:
-                parsed = json.loads(candidate)
-            except ValueError:
-                parsed = None
-
-    if not isinstance(parsed, dict):
-        return None
-
-    # Accept "intents", "extracted_intents", or extract from task_groups.
-    intents = parsed.get("intents") or parsed.get("extracted_intents")
-    if not isinstance(intents, list) or not intents:
-        # Fallback: collect queries from task_groups if LLM returned full planner format.
-        groups = parsed.get("task_groups") or []
-        intents = []
-        for g in groups:
-            if isinstance(g, dict):
-                for t in (g.get("tasks") or []):
-                    if isinstance(t, dict) and isinstance(t.get("query"), str):
-                        intents.append((t.get("query") or "").strip())
-    if not isinstance(intents, list) or not intents:
-        return None
-
-    # Normalize: filter empty, strip, dedupe
-    seen = set()
-    normalized = []
-    for item in intents:
-        if not isinstance(item, str):
-            continue
-        s = (item or "").strip()
-        if not s:
-            continue
-        key = s.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        normalized.append(s)
-
-    if not normalized:
-        return None
-
-    return {"intents": normalized}
 
 
-def _call_intents_ollama(query: str, conversation_context: Optional[str] = None) -> str:
-    """Call Ollama with intent classification prompt; return raw response text."""
-    url = os.getenv("GATEWAY_REWRITE_OLLAMA_URL", DEFAULT_OLLAMA_URL)
-    mdl = os.getenv("GATEWAY_REWRITE_OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)
-    timeout = _get_rewrite_timeout()
-    user_input = query
-    if conversation_context and conversation_context.strip():
-        user_input = f"Conversation history:\n{conversation_context.strip()}\n\nUser question: {query}"
-    else:
-        user_input = f"User question: {query}"
-    payload = {
-        "model": mdl,
-        "prompt": f"{INTENT_CLASSIFICATION_PROMPT}\n\n{user_input}",
-        "stream": False,
-    }
-    try:
-        resp = requests.post(url, json=payload, timeout=timeout)
-    except (requests.ConnectionError, requests.Timeout, requests.RequestException) as exc:
-        logger.warning("Ollama intent classification failed: %s", exc)
-        return ""
-    if resp.status_code != 200:
-        logger.warning("Ollama intent classification HTTP %s", resp.status_code)
-        return ""
-    try:
-        data = resp.json()
-        return (data.get("response") or "").strip()
-    except (ValueError, TypeError):
-        return ""
 
 
-def _call_intents_deepseek(query: str, conversation_context: Optional[str] = None) -> str:
-    """Call DeepSeek with intent classification prompt; return raw response text."""
-    api_key = os.getenv("DEEPSEEK_API_KEY")
-    if not api_key or not api_key.strip():
-        logger.warning("DEEPSEEK_API_KEY not set; cannot call DeepSeek intent classification")
-        return ""
-    mdl = os.getenv("GATEWAY_REWRITE_DEEPSEEK_MODEL", DEFAULT_DEEPSEEK_MODEL)
-    timeout = _get_rewrite_timeout()
-    try:
-        from openai import OpenAI
-    except ImportError:
-        logger.warning("openai client not installed; cannot call DeepSeek intent classification")
-        return ""
-    client = OpenAI(api_key=api_key, base_url=DEEPSEEK_BASE_URL, timeout=timeout)
-    user_content = query
-    if conversation_context and conversation_context.strip():
-        user_content = f"Conversation history:\n{conversation_context.strip()}\n\nUser question: {query}"
-    messages = [
-        {"role": "system", "content": INTENT_CLASSIFICATION_PROMPT},
-        {"role": "user", "content": user_content},
-    ]
-    try:
-        response = client.chat.completions.create(
-            model=mdl,
-            messages=messages,
-            max_tokens=256,
-            temperature=0.3,
-        )
-        choice = response.choices[0] if response.choices else None
-        if choice and choice.message and choice.message.content:
-            return (choice.message.content or "").strip()
-    except Exception as exc:
-        logger.warning("DeepSeek intent classification failed: %s", exc)
-    return ""
 
 
 def _strip_markdown_fences(text: str) -> str:
@@ -658,11 +504,8 @@ def rewrite_with_deepseek(query: str, model: Optional[str] = None) -> str:
 
 
 __all__ = [
-    "INTENT_CLASSIFICATION_PROMPT",
     "REWRITE_PROMPT",
-    "intent_classification_enabled",
     "parse_rewrite_plan_text",
-    "rewrite_intents_only",
     "rewrite_with_context",
     "rewrite_with_ollama",
     "rewrite_with_deepseek",

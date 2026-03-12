@@ -14,11 +14,7 @@ import logging
 import os
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
-from .rewriters import (
-    intent_classification_enabled,
-    rewrite_intents_only,
-    rewrite_with_context,
-)
+from .rewriters import rewrite_with_context
 from .routing_heuristics import (
     apply_docs_preference as _apply_docs_preference,
     normalize_query,
@@ -71,28 +67,19 @@ def rewrite_query(
     conversation_context: Optional[str] = None,
 ) -> Tuple[str, Optional[List[str]], int, int]:
     """
-    Normalize, rewrite (with memory merge), and optionally run intent classification.
+    Normalize and rewrite query with optional conversation context.
 
-    Pipeline: Normalize -> Rewrite (memory merge + optimized retrieval query) -> Intent
-    classification (on optimized query, when enabled).
+    Pipeline: Normalize -> Rewrite (memory merge + optimized retrieval query).
 
     Flow:
-    1. Normalize (trim, collapse whitespace). Early exit if empty -> ("", None, 0).
+    1. Normalize (trim, collapse whitespace). Early exit if empty -> ("", None, 0, 0).
     2. If rewrite_enable:
-       - If conversation_context not provided, load from Redis.
+       - Load conversation context from Redis if not pre-loaded.
        - Call rewrite_with_context -> optimized retrieval query.
-       - If intent_classification_enabled: run rewrite_intents_only on optimized query.
-    3. Else: return (normalized, None, 0).
-
-    Args:
-        request: Parsed QueryRequest from the client.
-        gateway_memory: Optional Redis-backed session memory for conversation context.
-        conversation_context: Optional pre-loaded conversation context string.
-            When provided, skips Redis loading (caller already loaded it).
+    3. Else: return (normalized, None, 0, 0).
 
     Returns:
-        (rewritten_query, intents, memory_rounds_used, memory_text_length) tuple.
-        memory_rounds_used: number of history turns merged (0 when no session/history).
+        (rewritten_query, None, memory_rounds_used, memory_text_length) tuple.
     """
     normalized = _normalize(request.query or "")
 
@@ -133,14 +120,7 @@ def rewrite_query(
         backend=backend,
     )
 
-    # Step 2: Intent classification on optimized retrieval query (when enabled).
-    intents = None
-    if intent_classification_enabled():
-        result = rewrite_intents_only(optimized_query, backend=backend, conversation_context=conversation_context)
-        if result and result.get("intents"):
-            intents = result["intents"]
-
-    return (optimized_query, intents, memory_rounds_used, memory_text_length)
+    return (optimized_query, None, memory_rounds_used, memory_text_length)
 
 
 def route_workflow(

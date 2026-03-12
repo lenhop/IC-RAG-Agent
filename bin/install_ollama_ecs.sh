@@ -1,7 +1,7 @@
 #!/bin/bash
 # Install Ollama on Alibaba ECS (Linux amd64)
 # Run on the ECS: bash install_ollama_ecs.sh
-# Or: ssh len 'bash -s' < scripts/install_ollama_ecs.sh
+# Or: ssh len 'bash -s' < bin/install_ollama_ecs.sh
 
 set -e
 

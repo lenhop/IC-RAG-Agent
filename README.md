@@ -90,13 +90,13 @@ The gateway routes queries to RAG, UDS, and SP-API backends. Route LLM (clarific
 When running gateway locally against ECS backends, use ECS Ollama for Route LLM. Add to `.env`:
 
 ```bash
-GATEWAY_REWRITE_OLLAMA_URL=http://8.163.3.40:11434/api/generate
+GATEWAY_REWRITE_OLLAMA_URL=http://${CH_HOST}:11434/api/generate
 GATEWAY_REWRITE_OLLAMA_MODEL=qwen3:1.7b
-GATEWAY_ROUTE_LLM_OLLAMA_URL=http://8.163.3.40:11434
+GATEWAY_ROUTE_LLM_OLLAMA_URL=http://${CH_HOST}:11434
 GATEWAY_ROUTE_LLM_OLLAMA_MODEL=qwen3:1.7b
 ```
 
-Test connectivity: `./scripts/test_ecs_ollama_connection.sh`
+Where `CH_HOST` is the ECS host already set in `.env`. Test connectivity: `./bin/test_ecs_ollama_connection.sh`
 
 ### Auth (Login / Register)
 
@@ -446,8 +446,6 @@ IC-RAG-Agent/
 │   ├── chroma_loaders.py       # Bootstrap, FAQ, CSV/doc -> Chroma
 │   └── rag_api.py              # FastAPI server
 ├── scripts/
-│   ├── install_ollama_ecs.sh        # Install Ollama on ECS (native)
-│   ├── test_ecs_ollama_connection.sh # Test ECS Ollama connectivity from local
 │   ├── load_to_chroma.py            # documents, fqa, keywords, csv -> Chroma
 │   ├── query_rag.py                 # Query interface
 │   ├── run_evaluation.py            # E2E RAG evaluation (retrieval, generation, report)
@@ -456,7 +454,9 @@ IC-RAG-Agent/
 ├── bin/
 │   ├── project_stack.sh             # Start/restart gateway, UDS, RAG, SP-API, UI
 │   ├── run_rag_api.sh               # RAG API launcher (backend)
-│   └── uds_ops.sh                   # deploy/rollback/status/logs/setup
+│   ├── uds_ops.sh                   # deploy/rollback/status/logs/setup
+│   ├── install_ollama_ecs.sh        # Install Ollama on ECS (native)
+│   └── test_ecs_ollama_connection.sh # Test ECS Ollama connectivity from local
 ├── tests/
 │   ├── test_intent_*.py        # Intent classification tests
 │   ├── test_hybrid_*.py        # Hybrid mode tests

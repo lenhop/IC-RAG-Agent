@@ -99,7 +99,8 @@ async def lifespan(app: FastAPI):
             from .sp_api_client import SPAPIClient, SPAPICredentials
             import redis
             creds = SPAPICredentials.from_env()
-            redis_client = redis.Redis(host="localhost", port=6379, db=0, decode_responses=True)
+            _redis_url = os.environ.get("SP_API_REDIS_URL", "redis://localhost:6379/0")
+            redis_client = redis.from_url(_redis_url, decode_responses=True)
             redis_client.ping()  # Verify Redis is reachable
             client = SPAPIClient(creds, redis_client)
             _memory = ConversationMemory(redis_client)
@@ -127,7 +128,8 @@ async def lifespan(app: FastAPI):
             logging.error(f"Failed to initialize agent: {e}")
             try:
                 import redis
-                redis_client = redis.Redis(host="localhost", port=6379, db=0, decode_responses=True)
+                _redis_url = os.environ.get("SP_API_REDIS_URL", "redis://localhost:6379/0")
+                redis_client = redis.from_url(_redis_url, decode_responses=True)
                 _memory = ConversationMemory(redis_client)
             except Exception:
                 _memory = None

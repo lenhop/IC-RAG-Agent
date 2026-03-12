@@ -26,7 +26,7 @@ Transfer ChromaDB data from local persistent storage to ECS ChromaDB server, ena
 - **Docker**: `chromadb/chroma:latest` in [docker-compose.yml](docker/docker-compose.yml)
 - **Port**: 8000 (host 8001 in compose to avoid conflict)
 - **Connection**: `chromadb.HttpClient(host="<ECS_HOST>", port=8000)` or `chromadb.HttpClient(host="chromadb", port=8000)` when gateway runs in same Docker network
-- **ECS host**: Use `8.163.3.40` or container name `chromadb` if in same stack
+- **ECS host**: Use `$CH_HOST` or container name `chromadb` if in same stack
 
 ## Migration Strategy
 
@@ -84,7 +84,7 @@ Local PersistentClient          ECS HttpClient
 
 | Var | Description | Example |
 |-----|-------------|---------|
-| `CHROMA_ECS_HOST` | ECS ChromaDB host | `8.163.3.40` or `chromadb` |
+| `CHROMA_ECS_HOST` | ECS ChromaDB host | `$CHA_HOST` or `chromadb` |
 | `CHROMA_ECS_PORT` | ECS ChromaDB port | `8000` |
 | `CHROMA_ECS_SSL` | Use HTTPS | `false` |
 

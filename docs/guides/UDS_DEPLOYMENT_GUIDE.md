@@ -295,7 +295,7 @@ server {
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| UDS_CH_HOST / CH_HOST | 8.163.3.40 | ClickHouse host |
+| UDS_CH_HOST / CH_HOST | (from .env) | ClickHouse host |
 | UDS_CH_PORT / CH_PORT | 8123 | ClickHouse HTTP port |
 | UDS_CH_USER / CH_USER | ic_agent | ClickHouse user |
 | UDS_CH_PASSWORD / CH_PASSWORD | ic_agent_2026 | ClickHouse password |

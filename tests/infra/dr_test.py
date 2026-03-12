@@ -48,9 +48,9 @@ class TestDatabaseFailover:
         # Now test recovery with valid connection
         try:
             client = UDSClient(
-                host=os.getenv('CLICKHOUSE_HOST', '8.163.3.40'),
-                port=int(os.getenv('CLICKHOUSE_PORT', '8123')),
-                database=os.getenv('CLICKHOUSE_DATABASE', 'ic_agent')
+                host=os.getenv('CH_HOST'),
+                port=int(os.getenv('CH_PORT', '8123')),
+                database=os.getenv('CH_DATABASE', 'ic_agent')
             )
             
             result = client.query("SELECT 1")
@@ -70,9 +70,9 @@ class TestDatabaseFailover:
             
             # This should timeout
             client = UDSClient(
-                host=os.getenv('CLICKHOUSE_HOST', '8.163.3.40'),
-                port=int(os.getenv('CLICKHOUSE_PORT', '8123')),
-                database=os.getenv('CLICKHOUSE_DATABASE', 'ic_agent'),
+                host=os.getenv('CH_HOST'),
+                port=int(os.getenv('CH_PORT', '8123')),
+                database=os.getenv('CH_DATABASE', 'ic_agent'),
                 timeout=1  # 1 second timeout
             )
             
@@ -85,9 +85,9 @@ class TestDatabaseFailover:
         # Test retry with normal timeout
         try:
             client = UDSClient(
-                host=os.getenv('CLICKHOUSE_HOST', '8.163.3.40'),
-                port=int(os.getenv('CLICKHOUSE_PORT', '8123')),
-                database=os.getenv('CLICKHOUSE_DATABASE', 'ic_agent'),
+                host=os.getenv('CH_HOST'),
+                port=int(os.getenv('CH_PORT', '8123')),
+                database=os.getenv('CH_DATABASE', 'ic_agent'),
                 timeout=30  # 30 second timeout
             )
             
@@ -331,9 +331,9 @@ class TestBackupRestore:
             from src.uds.uds_client import UDSClient
             
             client = UDSClient(
-                host=os.getenv('CLICKHOUSE_HOST', '8.163.3.40'),
-                port=int(os.getenv('CLICKHOUSE_PORT', '8123')),
-                database=os.getenv('CLICKHOUSE_DATABASE', 'ic_agent')
+                host=os.getenv('CH_HOST'),
+                port=int(os.getenv('CH_PORT', '8123')),
+                database=os.getenv('CH_DATABASE', 'ic_agent')
             )
             
             # Create backup

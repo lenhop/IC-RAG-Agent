@@ -12,8 +12,8 @@ Usage:
   python scripts/transfer_chroma_to_ecs.py documents --dry-run
 
 Env:
-  CHROMA_ECS_HOST - ECS ChromaDB host (default: localhost)
-  CHROMA_ECS_PORT - ECS ChromaDB port (default: 8001 for local Docker)
+  CHA_HOST, CHROMA_ECS_HOST - ECS ChromaDB host (default: localhost)
+  CHA_PORT, CHROMA_ECS_PORT - ECS ChromaDB port (default: 8001 for local Docker)
   CHROMA_ECS_SSL  - Use HTTPS (default: false)
   CHROMA_DOCUMENTS_PATH, CHROMA_FQA_PATH, CHROMA_KEYWORD_PATH - local paths
 """
@@ -54,6 +54,11 @@ PRESETS = {
         "keyword",
         "CHROMA_KEYWORD_PATH",
         str(PROJECT_ROOT / "data" / "chroma_db" / "keyword"),
+    ),
+    "vector_intent_registry": (
+        "vector_intent_registry",
+        "VECTOR_CHROMA_PATH",
+        str(PROJECT_ROOT / "data" / "chroma_db" / "intent_registry"),
     ),
 }
 
@@ -225,7 +230,7 @@ def main() -> int:
         "collections",
         nargs="*",
         choices=list(PRESETS.keys()),
-        help="Collections to transfer: documents, fqa, keywords",
+        help="Collections to transfer: documents, fqa, keywords, vector_intent_registry",
     )
     parser.add_argument(
         "--all",
@@ -234,14 +239,14 @@ def main() -> int:
     )
     parser.add_argument(
         "--target-host",
-        default=os.getenv("CHROMA_ECS_HOST", "localhost"),
-        help="ECS ChromaDB host (default: CHROMA_ECS_HOST or localhost)",
+        default=os.getenv("CHA_HOST") or os.getenv("CHROMA_ECS_HOST", "localhost"),
+        help="ECS ChromaDB host (default: CHA_HOST or CHROMA_ECS_HOST or localhost)",
     )
     parser.add_argument(
         "--target-port",
         type=int,
-        default=int(os.getenv("CHROMA_ECS_PORT", "8001")),
-        help="ECS ChromaDB port (default: CHROMA_ECS_PORT or 8001)",
+        default=int(os.getenv("CHA_PORT") or os.getenv("CHROMA_ECS_PORT") or "8001"),
+        help="ECS ChromaDB port (default: CHA_PORT or CHROMA_ECS_PORT or 8001)",
     )
     parser.add_argument(
         "--target-ssl",

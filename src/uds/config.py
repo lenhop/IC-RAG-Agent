@@ -17,11 +17,11 @@ class UDSConfig:
     """UDS database configuration."""
 
     # ClickHouse connection (UDS/ic_agent database)
-    CH_HOST = os.getenv("UDS_CH_HOST", os.getenv("CH_HOST", "8.163.3.40"))
+    CH_HOST = os.getenv("UDS_CH_HOST", os.getenv("CH_HOST"))
     CH_PORT = int(os.getenv("UDS_CH_PORT", os.getenv("CH_PORT", "8123")))
-    CH_USER = os.getenv("UDS_CH_USER", os.getenv("CH_USER", "ic_agent"))
-    CH_PASSWORD = os.getenv("UDS_CH_PASSWORD", os.getenv("CH_PASSWORD", "ic_agent_2026"))
-    CH_DATABASE = os.getenv("UDS_CH_DATABASE", os.getenv("CH_DATABASE", "ic_agent"))
+    CH_USER = os.getenv("UDS_CH_USER", os.getenv("CH_USER"))
+    CH_PASSWORD = os.getenv("UDS_CH_PASSWORD", os.getenv("CH_PASSWORD"))
+    CH_DATABASE = os.getenv("UDS_CH_DATABASE", os.getenv("CH_DATABASE"))
 
     # Query settings
     QUERY_TIMEOUT = int(os.getenv("UDS_QUERY_TIMEOUT", "300"))  # 5 minutes
