@@ -3,28 +3,29 @@ Gateway-level intent classifier.
 
 Pipeline:
 1. split_intents(query)  — qwen3:1.7b splits rewritten query into sub-questions
-2. classify_intent(sub_query) — for each sub-question:
-   a. Embed via Ollama all-minilm
-   b. Query Chroma intent_registry Top3
-   c. Confidence thresholds:
-      - distance < HIGH_CONF (0.3): use Top1 directly
-      - distance HIGH_CONF ~ LOW_CONF (0.3-0.7): LLM verifies from Top3
-      - distance > LOW_CONF (0.7): fallback to keyword heuristics
+2. classify_intent(sub_query) — for each sub-question, runs dual retrieval:
+   a. Keyword matching (rule-based, no model) → workflow or "hybrid"
+   b. Vector matching (Ollama all-minilm → Chroma vector_intent_registry) → workflow or "hybrid"
+   c. resolve_intent(keyword, vector):
+      - If both agree and neither is hybrid → use it
+      - Else fallback: keyword (if not hybrid) → vector (if not hybrid) → "general"
 
 Usage:
     from src.gateway.intent_classifier import split_intents, classify_intent
     clauses = split_intents("check order 112-123 and show FBA fees last month")
     # ["check order status for 112-123", "show FBA fees last month"]
     result = classify_intent("check order status for 112-1234567-8901234")
-    # IntentResult(intent_name="order_query", workflow="sp_api", distance=0.15, ...)
+    # IntentResult(intent_name="order_query", workflow="sp_api", ...)
 """
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -48,7 +49,8 @@ class IntentResult:
     confidence: str  # "high", "medium", "low"
     required_fields: List[str] = field(default_factory=list)
     clarification_template: str = ""
-    source: str = "vector"  # "vector", "llm_verified", "heuristic_fallback"
+    source: str = "vector"  # "keyword", "vector", "fallback"
+    vector_distance: Optional[float] = None  # raw distance from vector retrieval, for observability
 
 
 def _get_high_conf_threshold() -> float:
@@ -76,6 +78,10 @@ def _get_ollama_model() -> str:
 def _get_embedding_model() -> str:
     return os.getenv("GATEWAY_INTENT_EMBEDDING_MODEL", "all-minilm")
 
+
+# ---------------------------------------------------------------------------
+# Intent splitting
+# ---------------------------------------------------------------------------
 
 def split_intents(query: str) -> List[str]:
     """
@@ -157,6 +163,77 @@ def split_intents(query: str) -> List[str]:
     return result if result else [query.strip()]
 
 
+# ---------------------------------------------------------------------------
+# Keyword intent matching (rule-based, no model)
+# ---------------------------------------------------------------------------
+
+_keyword_map_cache: Optional[List[Dict[str, str]]] = None
+
+
+def _load_keyword_map() -> List[Dict[str, str]]:
+    """Load keyword → intent mapping from keyword_intents.csv (lazy, cached)."""
+    global _keyword_map_cache
+    if _keyword_map_cache is not None:
+        return _keyword_map_cache
+
+    csv_path = Path(__file__).parent.parent / "prompts" / "retrieval" / "keyword_intents.csv"
+    rows: List[Dict[str, str]] = []
+    try:
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                kw = (row.get("keyword") or "").strip().lower()
+                intent = (row.get("intent") or "").strip().lower()
+                if kw and intent:
+                    rows.append({"keyword": kw, "intent": intent})
+    except Exception as exc:
+        logger.warning("Failed to load keyword_intents.csv: %s", exc)
+
+    # Sort longest keywords first so more specific phrases match before shorter ones.
+    rows.sort(key=lambda r: len(r["keyword"]), reverse=True)
+    _keyword_map_cache = rows
+    return rows
+
+
+def _keyword_match_intent(query: str) -> str:
+    """
+    Rule-based keyword intent matching.
+
+    Scans the query for known keywords and collects all matching workflows.
+    - 0 matches  → "general"
+    - 1 workflow → that workflow
+    - ≥2 distinct workflows → "hybrid"
+
+    Args:
+        query: The sub-query text (lowercased internally).
+
+    Returns:
+        One of: "general", "amazon_docs", "uds", "sp_api", "hybrid"
+    """
+    if not query or not query.strip():
+        return "general"
+
+    q = query.lower()
+    keyword_map = _load_keyword_map()
+
+    matched_workflows: set = set()
+    for entry in keyword_map:
+        if entry["keyword"] in q:
+            matched_workflows.add(entry["intent"])
+            # Early exit: once we have 2+ distinct workflows it's hybrid.
+            if len(matched_workflows) >= 2:
+                return "hybrid"
+
+    if not matched_workflows:
+        return "general"
+
+    return matched_workflows.pop()
+
+
+# ---------------------------------------------------------------------------
+# Vector intent matching
+# ---------------------------------------------------------------------------
+
 def _embed_query(query: str) -> List[float]:
     """Embed a single query via Ollama /api/embed."""
     url = f"{_get_ollama_url()}/api/embed"
@@ -190,108 +267,28 @@ def _query_chroma(query_embedding: List[float], n_results: int = 3) -> Dict[str,
     return results
 
 
-def _llm_verify(
-    query: str,
-    candidates: List[Dict[str, Any]],
-    conversation_context: Optional[str] = None,
-) -> Optional[str]:
-    """Call qwen3:1.7b to pick the best intent from Top3 candidates.
-
-    Returns the chosen intent_name, or None on failure.
+def _vector_match_intent(query: str) -> tuple[str, float, Optional[Dict[str, Any]]]:
     """
-    prompt_template = load_prompt("intent_classification/intent_verify_candidate")
-
-    candidates_text = ""
-    for i, c in enumerate(candidates, 1):
-        candidates_text += f"{i}. {c['intent_name']} (workflow: {c['workflow']}, distance: {c['distance']:.3f})\n"
-
-    prompt = prompt_template.replace("{candidates}", candidates_text.strip())
-    prompt = prompt.replace("{query}", query)
-
-    if conversation_context and conversation_context.strip():
-        prompt = f"Conversation history:\n{conversation_context.strip()}\n\n{prompt}"
-
-    url = f"{_get_ollama_url()}/api/generate"
-    model = _get_ollama_model()
-
-    try:
-        resp = requests.post(
-            url,
-            json={"model": model, "prompt": prompt, "stream": False},
-            timeout=10,
-        )
-        if resp.status_code != 200:
-            logger.warning("LLM verify HTTP %s", resp.status_code)
-            return None
-        data = resp.json()
-        text = (data.get("response") or "").strip()
-    except Exception as exc:
-        logger.warning("LLM intent verify failed: %s", exc)
-        return None
-
-    if not text:
-        return None
-
-    # Parse JSON response.
-    raw = text.strip()
-    if raw.startswith("```"):
-        lines = raw.splitlines()
-        if len(lines) >= 2 and lines[-1].strip() == "```":
-            raw = "\n".join(lines[1:-1]).strip()
-
-    try:
-        parsed = json.loads(raw)
-    except ValueError:
-        # Try extracting first JSON object.
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start >= 0 and end > start:
-            try:
-                parsed = json.loads(raw[start : end + 1])
-            except ValueError:
-                return None
-        else:
-            return None
-
-    intent = parsed.get("intent")
-    if isinstance(intent, str) and intent.strip() and intent.strip() != "none":
-        return intent.strip()
-    return None
-
-
-def classify_intent(
-    query: str,
-    conversation_context: Optional[str] = None,
-) -> Optional[IntentResult]:
-    """
-    Classify a query's intent using vector similarity + optional LLM verification.
-
-    Args:
-        query: The rewritten/normalized query text.
-        conversation_context: Optional formatted conversation history for LLM context.
+    Vector-based intent matching via Chroma.
 
     Returns:
-        IntentResult on success, None if classification fails entirely.
+        (workflow, distance, top1_candidate_dict)
+        workflow is "general" on failure or low confidence.
     """
-    if not query or not query.strip():
-        return None
-
     high_threshold = _get_high_conf_threshold()
     low_threshold = _get_low_conf_threshold()
 
-    # Step 1: Embed query.
     try:
         query_embedding = _embed_query(query.strip())
     except Exception as exc:
-        logger.warning("Intent classification embedding failed: %s", exc)
-        return None
+        logger.warning("Vector embed failed: %s", exc)
+        return "general", 1.0, None
 
-    # Step 2: Query Chroma for Top3.
     try:
         results = _query_chroma(query_embedding, n_results=3)
     except Exception as exc:
-        logger.warning("Intent classification Chroma query failed: %s", exc)
-        return None
+        logger.warning("Chroma query failed: %s", exc)
+        return "general", 1.0, None
 
     ids = (results.get("ids") or [[]])[0]
     distances = (results.get("distances") or [[]])[0]
@@ -299,15 +296,14 @@ def classify_intent(
     documents = (results.get("documents") or [[]])[0]
 
     if not ids or not distances:
-        logger.info("No intent matches found in Chroma for query: %s", query[:80])
-        return None
+        return "general", 1.0, None
 
     # Build candidate list.
     candidates = []
     for i in range(len(ids)):
         meta = metadatas[i] if i < len(metadatas) else {}
         candidates.append({
-            "intent_name": meta.get("intent_name", "unknown"),
+            "intent_name": meta.get("intent_name", meta.get("intent", "unknown")),
             "workflow": meta.get("workflow", "general"),
             "distance": distances[i],
             "required_fields": json.loads(meta.get("required_fields", "[]")),
@@ -319,61 +315,138 @@ def classify_intent(
     top1_distance = top1["distance"]
 
     logger.info(
-        "Intent vector match: query='%s' top1=%s (dist=%.3f) top2=%s (dist=%.3f) top3=%s (dist=%.3f)",
+        "Vector match: query='%s' top1=%s (dist=%.3f) top2=%s (dist=%.3f) top3=%s (dist=%.3f)",
         query[:60],
-        top1["intent_name"], top1_distance,
-        candidates[1]["intent_name"] if len(candidates) > 1 else "n/a",
+        top1["workflow"], top1_distance,
+        candidates[1]["workflow"] if len(candidates) > 1 else "n/a",
         candidates[1]["distance"] if len(candidates) > 1 else 0,
-        candidates[2]["intent_name"] if len(candidates) > 2 else "n/a",
+        candidates[2]["workflow"] if len(candidates) > 2 else "n/a",
         candidates[2]["distance"] if len(candidates) > 2 else 0,
     )
 
-    # Step 3: Apply confidence thresholds.
-    if top1_distance < high_threshold:
-        # High confidence — use Top1 directly.
-        return IntentResult(
-            intent_name=top1["intent_name"],
-            workflow=top1["workflow"],
-            distance=top1_distance,
-            confidence="high",
-            required_fields=top1["required_fields"],
-            clarification_template=top1["clarification_template"],
-            source="vector",
-        )
-
+    # Below low threshold → has a match.
     if top1_distance <= low_threshold:
-        # Ambiguous — LLM verifies from Top3.
-        verified = _llm_verify(query.strip(), candidates, conversation_context)
-        if verified:
-            # Find the verified candidate in our list.
-            for c in candidates:
-                if c["intent_name"] == verified:
-                    return IntentResult(
-                        intent_name=c["intent_name"],
-                        workflow=c["workflow"],
-                        distance=c["distance"],
-                        confidence="medium",
-                        required_fields=c["required_fields"],
-                        clarification_template=c["clarification_template"],
-                        source="llm_verified",
-                    )
-            # LLM returned a name not in candidates — use Top1 as fallback.
-            logger.warning("LLM verified intent '%s' not in candidates; using Top1", verified)
+        return top1["workflow"], top1_distance, top1
 
-        # LLM failed or returned unknown — use Top1 with medium confidence.
-        return IntentResult(
-            intent_name=top1["intent_name"],
-            workflow=top1["workflow"],
-            distance=top1_distance,
-            confidence="medium",
-            required_fields=top1["required_fields"],
-            clarification_template=top1["clarification_template"],
-            source="vector",
-        )
+    # Above low threshold → no reliable match.
+    return "general", top1_distance, top1
 
-    # Low confidence — no reliable match.
+
+# ---------------------------------------------------------------------------
+# Fallback resolution
+# ---------------------------------------------------------------------------
+
+def resolve_intent(keyword_result: str, vector_result: str) -> str:
+    """
+    Resolve final workflow from keyword and vector results.
+
+    Priority:
+      1. keyword result (if not hybrid)
+      2. vector result (if not hybrid)
+      3. "general" (final default)
+
+    Args:
+        keyword_result: workflow from keyword matching, or "hybrid"
+        vector_result:  workflow from vector matching, or "hybrid"
+
+    Returns:
+        Final workflow string.
+    """
+    if keyword_result != "hybrid":
+        return keyword_result
+    if vector_result != "hybrid":
+        return vector_result
+    return "general"
+
+
+# ---------------------------------------------------------------------------
+# Main classification entry point
+# ---------------------------------------------------------------------------
+
+def classify_intent(
+    query: str,
+    conversation_context: Optional[str] = None,
+) -> Optional[IntentResult]:
+    """
+    Classify a query's intent using parallel keyword + vector dual retrieval.
+
+    Steps:
+      1. Keyword matching (rule-based) → workflow or "hybrid"
+      2. Vector matching (all-minilm → Chroma) → workflow or "hybrid"
+      3. If both agree and neither is hybrid → use directly
+      4. Else → resolve_intent(keyword, vector) for fallback
+
+    Args:
+        query: The rewritten/normalized query text.
+        conversation_context: Unused (kept for API compatibility).
+
+    Returns:
+        IntentResult on success, None if classification fails entirely.
+    """
+    if not query or not query.strip():
+        return None
+
+    q = query.strip()
+
+    # Step 1: Keyword matching (fast, no I/O).
+    keyword_workflow = _keyword_match_intent(q)
+
+    # Step 2: Vector matching.
+    vector_workflow, vector_distance, vector_top1 = _vector_match_intent(q)
+
     logger.info(
-        "Intent classification low confidence (dist=%.3f > %.3f) for query: %s",
-        top1_distance, low_threshold, query[:80],
+        "Dual retrieval: query='%s' keyword=%s vector=%s (dist=%.3f)",
+        q[:60], keyword_workflow, vector_workflow, vector_distance,
     )
-    return None
+
+    # Step 3: Determine if fallback is needed.
+    needs_fallback = (keyword_workflow != vector_workflow) or \
+                     (keyword_workflow == "hybrid") or \
+                     (vector_workflow == "hybrid")
+
+    if not needs_fallback:
+        # Both agree, neither is hybrid.
+        final_workflow = keyword_workflow
+        source = "keyword"
+        confidence = "high" if vector_distance < _get_high_conf_threshold() else "medium"
+    else:
+        final_workflow = resolve_intent(keyword_workflow, vector_workflow)
+        # Determine source for observability.
+        if keyword_workflow != "hybrid":
+            source = "keyword"
+        elif vector_workflow != "hybrid":
+            source = "vector"
+        else:
+            source = "fallback"
+        confidence = "medium"
+
+    logger.info(
+        "Intent resolved: workflow=%s source=%s fallback=%s",
+        final_workflow, source, needs_fallback,
+    )
+
+    # Step 4: Build IntentResult.
+    # Pull required_fields and clarification_template from vector top1 if available
+    # and the final workflow matches; otherwise use empty defaults.
+    required_fields: List[str] = []
+    clarification_template: str = ""
+
+    if vector_top1 and vector_top1.get("workflow") == final_workflow:
+        required_fields = vector_top1.get("required_fields") or []
+        clarification_template = vector_top1.get("clarification_template") or ""
+
+    # If final workflow is "general" or "hybrid", no fields needed.
+    if final_workflow in ("general", "hybrid"):
+        required_fields = []
+        clarification_template = ""
+
+    return IntentResult(
+        intent_name=vector_top1.get("intent_name", final_workflow) if vector_top1 else final_workflow,
+        workflow=final_workflow,
+        distance=vector_distance,
+        confidence=confidence,
+        required_fields=required_fields,
+        clarification_template=clarification_template,
+        source=source,
+        vector_distance=vector_distance,
+    )

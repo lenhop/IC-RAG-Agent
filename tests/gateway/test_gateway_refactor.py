@@ -39,8 +39,7 @@ def test_prompt_file_exists(rel_path):
 def test_retired_prompts_not_in_active_dir():
     """Retired prompts must not exist outside bak/."""
     for name in ("intent_classification.txt", "intent_verify.txt",
-                 "route_classification.txt", "intent_route_single.txt",
-                 "intent_split_query.txt"):
+                 "route_classification.txt", "intent_route_single.txt"):
         active = PROMPTS_ROOT / name
         assert not active.exists(), f"Retired prompt still in active dir: {active}"
         # Also not in intent_classification/ subfolder
@@ -69,10 +68,17 @@ def test_prompt_loader_loads_all_active():
 def test_prompt_loader_raises_for_retired():
     from src.gateway.prompt_loader import load_prompt, clear_cache
     clear_cache()
-    for name in ("intent_classification/intent_route_single",
-                 "intent_classification/intent_split_query"):
+    for name in ("intent_classification/intent_route_single",):
         with pytest.raises(FileNotFoundError):
             load_prompt(name)
+
+
+def test_intent_split_query_prompt_exists():
+    """intent_split_query.txt is still active (used by split_intents)."""
+    from src.gateway.prompt_loader import load_prompt, clear_cache
+    clear_cache()
+    text = load_prompt("intent_classification/intent_split_query")
+    assert isinstance(text, str) and len(text) > 10
 
 
 # ---------------------------------------------------------------------------
@@ -178,3 +184,73 @@ def test_intent_classifier_prompt_path():
     text = load_prompt("intent_classification/intent_verify_candidate")
     assert "{candidates}" in text
     assert "{query}" in text
+
+
+# ---------------------------------------------------------------------------
+# 8. Keyword intent matching
+# ---------------------------------------------------------------------------
+
+def test_keyword_match_single_workflow():
+    from src.gateway.intent_classifier import _keyword_match_intent
+    assert _keyword_match_intent("check order status for 112-1234567") == "sp_api"
+    assert _keyword_match_intent("show me FBA fees for last month") == "uds"
+    assert _keyword_match_intent("what is RAG") == "general"
+    assert _keyword_match_intent("FBA storage fee policy") == "amazon_docs"
+
+
+def test_keyword_match_hybrid():
+    from src.gateway.intent_classifier import _keyword_match_intent
+    # Hits both sp_api (order status) and uds (fba fees)
+    result = _keyword_match_intent("check order status and show fba fees last month")
+    assert result == "hybrid"
+
+
+def test_keyword_match_empty():
+    from src.gateway.intent_classifier import _keyword_match_intent
+    assert _keyword_match_intent("") == "general"
+    assert _keyword_match_intent("   ") == "general"
+
+
+# ---------------------------------------------------------------------------
+# 9. resolve_intent fallback logic
+# ---------------------------------------------------------------------------
+
+def test_resolve_intent_consistent():
+    from src.gateway.intent_classifier import resolve_intent
+    assert resolve_intent("uds", "uds") == "uds"
+    assert resolve_intent("sp_api", "sp_api") == "sp_api"
+
+
+def test_resolve_intent_keyword_priority():
+    from src.gateway.intent_classifier import resolve_intent
+    assert resolve_intent("uds", "sp_api") == "uds"
+    assert resolve_intent("uds", "hybrid") == "uds"
+
+
+def test_resolve_intent_vector_fallback():
+    from src.gateway.intent_classifier import resolve_intent
+    assert resolve_intent("hybrid", "uds") == "uds"
+    assert resolve_intent("hybrid", "sp_api") == "sp_api"
+
+
+def test_resolve_intent_both_hybrid():
+    from src.gateway.intent_classifier import resolve_intent
+    assert resolve_intent("hybrid", "hybrid") == "general"
+
+
+# ---------------------------------------------------------------------------
+# 10. IntentResult has vector_distance field
+# ---------------------------------------------------------------------------
+
+def test_intent_result_has_vector_distance():
+    from src.gateway.intent_classifier import IntentResult
+    r = IntentResult(
+        intent_name="fee_analysis",
+        workflow="uds",
+        distance=0.25,
+        confidence="high",
+        source="keyword",
+        vector_distance=0.25,
+    )
+    assert r.vector_distance == 0.25
+    assert r.source == "keyword"
