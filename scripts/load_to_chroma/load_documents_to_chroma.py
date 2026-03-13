@@ -7,6 +7,9 @@ Behavior:
 - File type: PDF only
 - Target: local PersistentClient at data/chroma_db/documents
 - Truncate before load: always enabled
+- Default embedding: local Ollama (DOC_LOAD_EMBED_MODEL=ollama); requires ollama serve
+  and an embed model (e.g. ollama pull all-minilm). Override with --embed-model minilm
+  if Ollama is unavailable.
 """
 
 from __future__ import annotations
@@ -34,7 +37,30 @@ DEFAULT_CHUNK_SIZE = int(os.getenv("DOC_LOAD_CHUNK_SIZE", "1024"))
 DEFAULT_CHUNK_OVERLAP = int(os.getenv("DOC_LOAD_CHUNK_OVERLAP", "100"))
 DEFAULT_MIN_CHUNK_LENGTH = int(os.getenv("DOC_LOAD_MIN_CHUNK_LENGTH", "20"))
 DEFAULT_BATCH_SIZE = int(os.getenv("DOC_LOAD_EMBED_BATCH_SIZE", "16"))
-DEFAULT_EMBED_MODEL = os.getenv("DOC_LOAD_EMBED_MODEL", "minilm")
+# Default aligns with intent registry: local Ollama + same embed model family.
+DEFAULT_EMBED_MODEL = os.getenv("DOC_LOAD_EMBED_MODEL", "ollama")
+
+
+def _ollama_base_url() -> str:
+    """Normalize GATEWAY_REWRITE_OLLAMA_URL to Ollama API base (no /api/generate)."""
+    url = (os.getenv("GATEWAY_REWRITE_OLLAMA_URL") or "http://localhost:11434").rstrip("/")
+    for suffix in ("/api/generate", "/api"):
+        if url.endswith(suffix):
+            url = url[: -len(suffix)]
+            break
+    return url.rstrip("/")
+
+
+def _embed_kwargs_for_model(embed_model: str) -> dict:
+    """Build create_embeddings kwargs for Ollama (URL + model from env)."""
+    if (embed_model or "").strip().lower() != "ollama":
+        return {}
+    model = (
+        os.getenv("DOC_LOAD_OLLAMA_MODEL")
+        or os.getenv("GATEWAY_INTENT_EMBEDDING_MODEL")
+        or "all-minilm"
+    )
+    return {"ollama_model": model, "ollama_base_url": _ollama_base_url()}
 
 
 def main() -> int:
@@ -42,7 +68,8 @@ def main() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Load PDF documents into local ChromaDB (truncate before load)."
+        description="Load PDF documents into local ChromaDB (truncate before load). "
+        "Default embed backend: Ollama (run: ollama serve; ollama pull all-minilm)."
     )
     parser.add_argument("--doc-root", default=DEFAULT_DOC_ROOT, help="PDF root directory")
     parser.add_argument("--chroma-path", default=DEFAULT_CHROMA_PATH, help="Local Chroma path")
@@ -55,11 +82,13 @@ def main() -> int:
         "--embed-model",
         choices=("minilm", "ollama", "qwen3"),
         default=DEFAULT_EMBED_MODEL,
+        help="Embedding backend (default: ollama local)",
     )
     parser.add_argument("--limit", type=int, default=None, metavar="N")
     args = parser.parse_args()
 
     start_time = datetime.now()
+    embed_extra = _embed_kwargs_for_model(args.embed_model)
     try:
         stored = load_documents_to_chroma(
             doc_root=args.doc_root,
@@ -71,6 +100,7 @@ def main() -> int:
             chunk_overlap=args.chunk_overlap,
             min_chunk_length=args.min_chunk_length,
             embed_model=args.embed_model,
+            embed_kwargs_extra=embed_extra or None,
             batch_size=args.batch_size,
             reset_db=True,
             limit_files=args.limit,

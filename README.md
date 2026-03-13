@@ -360,8 +360,10 @@ RAG_DOMAIN_KEYWORDS=FBA,FBM,Amazon,eBay,inventory
 ### Ingest Documents
 
 ```bash
+# Prerequisites: ollama serve; ollama pull all-minilm (default embed model)
 # Load documents into ChromaDB (prints chunk count on success)
 python scripts/load_to_chroma/load_documents_to_chroma.py
+# Offline / no Ollama: DOC_LOAD_EMBED_MODEL=minilm python scripts/load_to_chroma/load_documents_to_chroma.py --embed-model minilm
 ```
 
 ### Run Queries

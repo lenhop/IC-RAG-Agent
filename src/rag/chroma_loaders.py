@@ -212,7 +212,8 @@ def load_documents_to_chroma(
     chunk_size: int = 1024,
     chunk_overlap: int = 100,
     min_chunk_length: int = 20,
-    embed_model: str = "minilm",
+    embed_model: str = "ollama",
+    embed_kwargs_extra: Optional[dict] = None,
     batch_size: int = 16,
     reset_db: bool = False,
     limit_files: Optional[int] = None,
@@ -228,7 +229,8 @@ def load_documents_to_chroma(
         chunk_size: Chunk size in characters.
         chunk_overlap: Chunk overlap.
         min_chunk_length: Minimum chunk length to keep.
-        embed_model: minilm, ollama, or qwen3.
+        embed_model: minilm, ollama, or qwen3 (default ollama = local Ollama embed).
+        embed_kwargs_extra: Extra args for create_embeddings (e.g. ollama_model).
         batch_size: Embedding batch size.
         reset_db: Remove Chroma DB before run.
         limit_files: Limit number of files (for testing).
@@ -241,6 +243,10 @@ def load_documents_to_chroma(
     exts = extensions or [".pdf", ".txt", ".md", ".csv", ".json"]
     exts = [e if e.startswith(".") else f".{e}" for e in exts]
 
+    embed_kwargs: dict = {"model_type": embed_model}
+    if embed_kwargs_extra:
+        embed_kwargs.update(embed_kwargs_extra)
+
     return rag_ingest_pipeline(
         root=doc_root,
         chroma_path=chroma_path,
@@ -248,7 +254,7 @@ def load_documents_to_chroma(
         search_kwargs={"extensions": exts},
         split_kwargs={"chunk_size": chunk_size, "chunk_overlap": chunk_overlap},
         clean_kwargs={"min_length": min_chunk_length},
-        embed_kwargs={"model_type": embed_model},
+        embed_kwargs=embed_kwargs,
         embed_batch_size=batch_size,
         reset_db=reset_db,
         limit_files=limit_files,
