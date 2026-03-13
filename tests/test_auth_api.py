@@ -11,9 +11,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from src.gateway.api import app
+from src.gateway.api_and_auth.api import app
 from src.auth.schemas import RegisterResponse, SignInResponse, UserInfo
-from src.gateway.auth_routes import get_auth_service
+from src.gateway.api_and_auth.auth_routes import get_auth_service
 from src.auth.service import AuthService
 
 

@@ -1,0 +1,111 @@
+{
+  "timestamp": "2026-03-13T20:39:49.616008",
+  "completeness": {
+    "amz_order": {
+      "table": "ic_agent.amz_order",
+      "total_rows": 10,
+      "columns": [
+        {
+          "column_name": "col1",
+          "total_rows": 10,
+          "null_count": 1,
+          "null_percentage": 10.0
+        }
+      ],
+      "overall_completeness": 90.0
+    },
+    "amz_transaction": {
+      "table": "ic_agent.amz_transaction",
+      "total_rows": 10,
+      "columns": [
+        {
+          "column_name": "col1",
+          "total_rows": 10,
+          "null_count": 1,
+          "null_percentage": 10.0
+        }
+      ],
+      "overall_completeness": 90.0
+    }
+  },
+  "consistency": {
+    "orphan_orders": {
+      "count": 2,
+      "status": "OK"
+    },
+    "revenue_reconciliation": {
+      "order_revenue": 100.0,
+      "transaction_revenue": 99.0,
+      "difference_pct": 1.0,
+      "status": "WARNING"
+    },
+    "sku_consistency": {
+      "order_skus": 5,
+      "listing_skus": 4,
+      "status": "OK"
+    }
+  },
+  "timeliness": {
+    "amz_order": {
+      "min_date": "2025-10-01",
+      "max_date": "2025-10-30",
+      "unique_dates": 30,
+      "expected_dates": 30,
+      "coverage": 100.0
+    },
+    "amz_transaction": {
+      "min_date": "2025-10-01",
+      "max_date": "2025-10-30",
+      "unique_dates": 30,
+      "expected_dates": 30,
+      "coverage": 100.0
+    },
+    "amz_statement": {
+      "min_date": "2025-10-01",
+      "max_date": "2025-10-30",
+      "unique_dates": 30,
+      "expected_dates": 30,
+      "coverage": 100.0
+    },
+    "amz_fba_inventory_all": {
+      "min_date": "2025-10-01",
+      "max_date": "2025-10-30",
+      "unique_dates": 30,
+      "expected_dates": 30,
+      "coverage": 100.0
+    },
+    "amz_daily_inventory_ledger": {
+      "min_date": "2025-10-01",
+      "max_date": "2025-10-30",
+      "unique_dates": 30,
+      "expected_dates": 30,
+      "coverage": 100.0
+    },
+    "amz_fee": {
+      "min_date": "2025-10-01",
+      "max_date": "2025-10-30",
+      "unique_dates": 30,
+      "expected_dates": 30,
+      "coverage": 100.0
+    },
+    "amz_listing_item": {
+      "min_date": "2025-10-01",
+      "max_date": "2025-10-30",
+      "unique_dates": 30,
+      "expected_dates": 30,
+      "coverage": 100.0
+    }
+  },
+  "accuracy": {
+    "amz_order": {
+      "negative_amounts": {
+        "count": 0,
+        "status": "OK"
+      },
+      "amount_outliers": {
+        "count": 1,
+        "status": "OK"
+      }
+    }
+  }
+}

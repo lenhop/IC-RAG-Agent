@@ -9,14 +9,14 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from src.gateway.dispatcher import _correct_plan_workflows, build_execution_plan
-from src.gateway.router import rewrite_query, route_workflow
+from src.gateway.dispatcher.dispatcher import _correct_plan_workflows, build_execution_plan
+from src.gateway.route_llm.rewriting.router import rewrite_query, route_workflow
 from src.gateway.schemas import QueryRequest, RewritePlan, TaskGroup, TaskItem
 
 
 def test_rewrite_query_empty_after_normalize_returns_early():
     """Empty query after normalize returns early, no LLM call."""
-    with patch("src.gateway.router.rewrite_with_context") as mock_rewrite:
+    with patch("src.gateway.route_llm.rewriting.router.rewrite_with_context") as mock_rewrite:
         req = QueryRequest(
             query="   ",
             workflow="auto",
@@ -32,7 +32,7 @@ def test_rewrite_query_empty_after_normalize_returns_early():
     mock_rewrite.assert_not_called()
 
 
-@patch("src.gateway.router.rewrite_with_context", return_value="rewritten with context")
+@patch("src.gateway.route_llm.rewriting.router.rewrite_with_context", return_value="rewritten with context")
 def test_rewrite_query_with_history_when_session_and_memory_present(mock_rewrite_context):
     """When session_id and gateway_memory present, rewrite_with_context gets history."""
     from unittest.mock import MagicMock
@@ -50,10 +50,9 @@ def test_rewrite_query_with_history_when_session_and_memory_present(mock_rewrite
         session_id="sess-1",
         stream=False,
     )
-    with patch("src.gateway.router.intent_classification_enabled", return_value=False):
-        rewritten, intents, memory_rounds, memory_text_len = rewrite_query(
-            req, gateway_memory=mock_memory
-        )
+    rewritten, intents, memory_rounds, memory_text_len = rewrite_query(
+        req, gateway_memory=mock_memory
+    )
 
     assert rewritten == "rewritten with context"
     assert memory_rounds == 2
@@ -65,7 +64,7 @@ def test_rewrite_query_with_history_when_session_and_memory_present(mock_rewrite
     assert "What were my sales?" in call_kwargs["conversation_context"]
 
 
-@patch("src.gateway.router.rewrite_with_context", return_value="rewritten with user history")
+@patch("src.gateway.route_llm.rewriting.router.rewrite_with_context", return_value="rewritten with user history")
 def test_rewrite_query_with_history_when_user_id_present(mock_rewrite_context):
     """When user_id present, rewrite uses get_history_by_user for memory merge."""
     from unittest.mock import MagicMock
@@ -83,10 +82,9 @@ def test_rewrite_query_with_history_when_user_id_present(mock_rewrite_context):
         user_id="user-1",
         stream=False,
     )
-    with patch("src.gateway.router.intent_classification_enabled", return_value=False):
-        rewritten, intents, memory_rounds, memory_text_len = rewrite_query(
-            req, gateway_memory=mock_memory
-        )
+    rewritten, intents, memory_rounds, memory_text_len = rewrite_query(
+        req, gateway_memory=mock_memory
+    )
 
     assert rewritten == "rewritten with user history"
     assert memory_rounds == 1
@@ -94,7 +92,42 @@ def test_rewrite_query_with_history_when_user_id_present(mock_rewrite_context):
     mock_memory.get_history.assert_not_called()
 
 
-@patch("src.gateway.router.rewrite_with_context", return_value="merged-context rewrite")
+@patch("src.gateway.route_llm.rewriting.router.rewrite_with_context", return_value="rewritten from turn summary")
+def test_rewrite_query_reads_turn_summary_events(mock_rewrite_context):
+    """rewrite_query should build LLM context from v1 turn_summary events."""
+    from unittest.mock import MagicMock
+
+    mock_memory = MagicMock()
+    mock_memory.get_history_by_user.return_value = [
+        {
+            "event_type": "user_query",
+            "event_content": '{"query":"hello"}',
+        },
+        {
+            "event_type": "turn_summary",
+            "event_content": '{"query":"What is FBA?","answer":"Fulfillment by Amazon","workflow":"ic_docs"}',
+        },
+    ]
+    req = QueryRequest(
+        query="and fees?",
+        workflow="auto",
+        rewrite_enable=True,
+        session_id="sess-1",
+        user_id="user-1",
+        stream=False,
+    )
+    rewritten, intents, memory_rounds, memory_text_len = rewrite_query(
+        req, gateway_memory=mock_memory
+    )
+    assert rewritten == "rewritten from turn summary"
+    assert intents is None
+    assert memory_rounds == 2
+    assert memory_text_len > 0
+    kwargs = mock_rewrite_context.call_args.kwargs
+    assert "What is FBA?" in (kwargs.get("conversation_context") or "")
+
+
+@patch("src.gateway.route_llm.rewriting.router.rewrite_with_context", return_value="merged-context rewrite")
 def test_rewrite_query_merges_preloaded_and_memory_context(mock_rewrite_context):
     """rewrite_query should merge caller-provided context with Redis memory context."""
     from unittest.mock import MagicMock
@@ -128,7 +161,7 @@ def test_rewrite_query_merges_preloaded_and_memory_context(mock_rewrite_context)
     assert 'what was the ad spend last week' in merged_context
 
 
-@patch("src.gateway.router.rewrite_with_context", return_value="merged-context rewrite")
+@patch("src.gateway.route_llm.rewriting.router.rewrite_with_context", return_value="merged-context rewrite")
 def test_rewrite_query_merges_context_without_duplicate_turns(mock_rewrite_context):
     """Merged context should dedupe same turn and re-number turns cleanly."""
     from unittest.mock import MagicMock
@@ -163,7 +196,7 @@ def test_rewrite_query_merges_context_without_duplicate_turns(mock_rewrite_conte
     assert merged_context.count('what is fba') == 1
 
 
-@patch("src.gateway.router.rewrite_with_context", return_value="rewritten no context")
+@patch("src.gateway.route_llm.rewriting.router.rewrite_with_context", return_value="rewritten no context")
 def test_rewrite_query_without_history_when_session_absent(mock_rewrite_context):
     """When session_id and user_id absent, rewrite_with_context gets no conversation_context."""
     from unittest.mock import MagicMock
@@ -192,14 +225,14 @@ def test_rewrite_query_without_history_when_session_absent(mock_rewrite_context)
     )
 
 
-@patch("src.gateway.router.rewrite_intents_only")
-@patch("src.gateway.router.rewrite_with_context", return_value="optimized retrieval query")
+@patch("src.gateway.route_llm.rewriting.router.rewrite_intents_only")
+@patch("src.gateway.route_llm.rewriting.router.rewrite_with_context", return_value="optimized retrieval query")
 def test_rewrite_query_intent_classification_on_optimized_query(mock_rewrite, mock_intents):
     """When intent classification enabled, runs on optimized retrieval query from rewrite."""
     mock_intents.return_value = {
         "intents": ["what is FBA", "get order 112-9876543-12", "which table stores fee data"],
     }
-    with patch("src.gateway.router.intent_classification_enabled", return_value=True):
+    with patch("src.gateway.route_llm.rewriting.router.intent_classification_enabled", return_value=True):
         req = QueryRequest(
             query="what is FBA get order 112-9876543-12 which table stores fee data",
             workflow="auto",
@@ -218,11 +251,11 @@ def test_rewrite_query_intent_classification_on_optimized_query(mock_rewrite, mo
     assert mock_intents.call_args[0][0] == "optimized retrieval query"
 
 
-@patch("src.gateway.router.rewrite_intents_only", return_value=None)
-@patch("src.gateway.router.rewrite_with_context", return_value="optimized query")
+@patch("src.gateway.route_llm.rewriting.router.rewrite_intents_only", return_value=None)
+@patch("src.gateway.route_llm.rewriting.router.rewrite_with_context", return_value="optimized query")
 def test_rewrite_query_intent_classification_fallback_when_fails(mock_rewrite, mock_intents):
     """When intent classification enabled but fails, return (optimized_query, None)."""
-    with patch("src.gateway.router.intent_classification_enabled", return_value=True):
+    with patch("src.gateway.route_llm.rewriting.router.intent_classification_enabled", return_value=True):
         req = QueryRequest(
             query="  what   is   FBA   get   order   123  ",
             workflow="auto",
@@ -236,10 +269,10 @@ def test_rewrite_query_intent_classification_fallback_when_fails(mock_rewrite, m
     mock_intents.assert_called_once()
 
 
-@patch("src.gateway.router.rewrite_with_context", return_value="what are my sales this month?")
+@patch("src.gateway.route_llm.rewriting.router.rewrite_with_context", return_value="what are my sales this month?")
 def test_rewrite_query_strips_and_collapses_whitespace(mock_rewrite_context):
     """rewrite_query should trim and collapse internal whitespace."""
-    with patch("src.gateway.router.intent_classification_enabled", return_value=False):
+    with patch("src.gateway.route_llm.rewriting.router.intent_classification_enabled", return_value=False):
         req = QueryRequest(
             query="  what   are   my   sales   \n  this month?  ",
             workflow="auto",
@@ -524,7 +557,7 @@ def test_format_route_metadata():
 # ---------------------------------------------------------------------------
 
 
-@patch("src.gateway.router._route_llm_enabled", return_value=True)
+@patch("src.gateway.route_llm.rewriting.router._route_llm_enabled", return_value=True)
 @patch("src.gateway.route_llm.route_with_llm", return_value=("uds", 0.9))
 def test_route_workflow_llm_high_confidence_uses_llm_result(mock_route_llm, mock_enabled):
     """When Route LLM is enabled and returns confidence >= threshold, use LLM workflow."""
@@ -545,7 +578,7 @@ def test_route_workflow_llm_high_confidence_uses_llm_result(mock_route_llm, mock
     mock_route_llm.assert_called_once_with("some generic question", "ollama")
 
 
-@patch("src.gateway.router._route_llm_enabled", return_value=True)
+@patch("src.gateway.route_llm.rewriting.router._route_llm_enabled", return_value=True)
 @patch("src.gateway.route_llm.route_with_llm", return_value=("general", 0.3))
 def test_route_workflow_llm_low_confidence_falls_back_to_heuristic(mock_route_llm, mock_enabled):
     """When Route LLM confidence < threshold, use heuristic routing instead."""
@@ -567,7 +600,7 @@ def test_route_workflow_llm_low_confidence_falls_back_to_heuristic(mock_route_ll
     mock_route_llm.assert_called_once()
 
 
-@patch("src.gateway.router._route_llm_enabled", return_value=True)
+@patch("src.gateway.route_llm.rewriting.router._route_llm_enabled", return_value=True)
 @patch("src.gateway.route_llm.route_with_llm", return_value=("general", 0.0))
 def test_route_workflow_llm_safe_default_falls_back_to_heuristic(mock_route_llm, mock_enabled):
     """When Route LLM returns safe default (0.0), fall back to heuristic."""
@@ -588,7 +621,7 @@ def test_route_workflow_llm_safe_default_falls_back_to_heuristic(mock_route_llm,
     assert llm_conf is None
 
 
-@patch("src.gateway.router._route_llm_enabled", return_value=True)
+@patch("src.gateway.route_llm.rewriting.router._route_llm_enabled", return_value=True)
 @patch("src.gateway.route_llm.route_with_llm", return_value=("sp_api", 0.92))
 def test_route_workflow_llm_sp_api_is_overridden_for_definition_fba(mock_route_llm, mock_enabled):
     """High-confidence LLM sp_api for 'what is FBA' is corrected to ic_docs."""
@@ -609,7 +642,7 @@ def test_route_workflow_llm_sp_api_is_overridden_for_definition_fba(mock_route_l
     mock_route_llm.assert_called_once_with("what is FBA", "ollama")
 
 
-@patch("src.gateway.router._route_llm_enabled", return_value=False)
+@patch("src.gateway.route_llm.rewriting.router._route_llm_enabled", return_value=False)
 def test_route_workflow_llm_disabled_uses_heuristic_only(mock_enabled):
     """When Route LLM is disabled, route_workflow uses only heuristic (no LLM call)."""
     req = QueryRequest(
@@ -627,7 +660,7 @@ def test_route_workflow_llm_disabled_uses_heuristic_only(mock_enabled):
     assert llm_conf is None
 
 
-@patch("src.gateway.router._route_llm_enabled", return_value=True)
+@patch("src.gateway.route_llm.rewriting.router._route_llm_enabled", return_value=True)
 @patch("src.gateway.route_llm.route_with_llm")
 def test_route_workflow_explicit_workflow_bypasses_llm(mock_route_llm, mock_enabled):
     """Explicit workflow != 'auto' must be used and Route LLM must not be called."""
@@ -695,7 +728,7 @@ def test_build_execution_plan_uses_intents_when_provided():
         stream=False,
     )
     intents = ["what is FBA", "get order 112-9876543-12", "which table stores fee data"]
-    plan = build_execution_plan(req, "rewritten query", intents=intents)
+    plan, _ = build_execution_plan(req, "rewritten query", intents=intents)
     assert plan.plan_type == "hybrid"
     assert len(plan.task_groups) == 1
     tasks = plan.task_groups[0].tasks
@@ -721,7 +754,7 @@ def test_build_execution_plan_with_intents_creates_multi_task():
     assert sum(len(g.tasks) for g in plan.task_groups) == 2
 
 
-@patch("src.gateway.router.route_workflow", return_value=("sp_api", 0.85, "heuristic", None, None))
+@patch("src.gateway.route_llm.rewriting.router.route_workflow", return_value=("sp_api", 0.85, "heuristic", None, None))
 def test_build_execution_plan_falls_back_to_routing_when_no_intents(mock_route):
     """When intents None, fall back to routed single-task plan."""
     req = QueryRequest(

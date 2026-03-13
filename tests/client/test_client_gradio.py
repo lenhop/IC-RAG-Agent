@@ -61,6 +61,8 @@ def test_chat_handler_returns_answer():
         rewrite_enable=True,
         rewrite_backend="ollama",
         session_id="sess-1",
+        user_id=None,
+        token=None,
     )
     mock_client.query_sync.assert_called_once_with(
         query="What is the answer?",
@@ -68,6 +70,8 @@ def test_chat_handler_returns_answer():
         rewrite_enable=False,
         rewrite_backend=None,
         session_id="sess-1",
+        user_id=None,
+        token=None,
     )
 
 
@@ -171,6 +175,8 @@ def test_chat_handler_rewrite_fails_falls_back_to_original_query():
         rewrite_enable=False,
         rewrite_backend=None,
         session_id="s1",
+        user_id=None,
+        token=None,
     )
 
 
@@ -279,6 +285,8 @@ def test_chat_handler_merge_pending_query_on_followup():
         rewrite_enable=True,
         rewrite_backend="ollama",
         session_id="sess-1",
+        user_id=None,
+        token=None,
     )
     mock_client.query_sync.assert_called_once_with(
         query=merged_query,
@@ -286,6 +294,8 @@ def test_chat_handler_merge_pending_query_on_followup():
         rewrite_enable=False,
         rewrite_backend=None,
         session_id="sess-1",
+        user_id=None,
+        token=None,
     )
     assert "Order 112-9876543-12 status" in outputs[-1]
 
@@ -314,6 +324,8 @@ def test_chat_handler_rewrite_only_mode_skips_query_sync():
         rewrite_enable=True,
         rewrite_backend="ollama",
         session_id="s1",
+        user_id=None,
+        token=None,
     )
 
 

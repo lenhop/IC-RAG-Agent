@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.gateway.routing_heuristics import (
+from src.gateway.route_llm.routing_heuristics import (
     apply_docs_preference,
     format_rewritten_query_bullets,
     normalize_query,

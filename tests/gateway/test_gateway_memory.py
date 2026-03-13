@@ -13,8 +13,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from src.gateway.api import app
-from src.gateway.memory import GatewayConversationMemory
+from src.gateway.api_and_auth.api import app
+from src.gateway.memory.short_term import GatewayConversationMemory
+from src.gateway.memory.short_term import MemoryEvent
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +42,7 @@ def memory(mock_redis):
 
 
 def test_save_turn_appends_turn(memory, mock_redis):
-    """save_turn should RPUSH JSON payload to user key and call EXPIRE."""
+    """save_turn should write both user and session keys and set TTL/LTRIM."""
     memory.save_turn(
         "sess-1",
         "What are my sales?",
@@ -49,9 +50,9 @@ def test_save_turn_appends_turn(memory, mock_redis):
         "uds",
         user_id="user-123",
     )
-    mock_redis.rpush.assert_called_once()
-    key, payload = mock_redis.rpush.call_args[0]
-    assert key == "gateway:user:user-123:history"
+    assert mock_redis.rpush.call_count == 2
+    first_key, payload = mock_redis.rpush.call_args_list[0][0]
+    assert first_key == "gateway:user:user-123:history"
     data = json.loads(payload)
     assert data["query"] == "What are my sales?"
     assert data["answer"] == "Your sales are $100."
@@ -59,8 +60,10 @@ def test_save_turn_appends_turn(memory, mock_redis):
     assert data["user_id"] == "user-123"
     assert data["session_id"] == "sess-1"
     assert "timestamp" in data
-    mock_redis.expire.assert_called_once_with(key, 86400)
-    mock_redis.ltrim.assert_called_once_with(key, -50, -1)
+    mock_redis.expire.assert_any_call("gateway:user:user-123:history", 86400)
+    mock_redis.expire.assert_any_call("gateway:session:sess-1:history", 86400)
+    mock_redis.ltrim.assert_any_call("gateway:user:user-123:history", -50, -1)
+    mock_redis.ltrim.assert_any_call("gateway:session:sess-1:history", -50, -1)
 
 
 def test_save_turn_skips_empty_user_id(memory, mock_redis):
@@ -143,19 +146,40 @@ def test_clear_user_history_skips_empty(memory, mock_redis):
     mock_redis.delete.assert_not_called()
 
 
+def test_append_event_writes_user_and_session_keys(memory, mock_redis):
+    """append_event should store v1 event payload in user/session lists."""
+    event = MemoryEvent(
+        user_id="user-1",
+        session_id="sess-1",
+        request_id="req-1",
+        event_type="user_query",
+        event_content='{"query":"hello"}',
+        status="ok",
+    )
+    memory.append_event(event)
+    assert mock_redis.rpush.call_count == 2
+    user_call = mock_redis.rpush.call_args_list[0][0]
+    session_call = mock_redis.rpush.call_args_list[1][0]
+    assert user_call[0] == "gateway:user:user-1:history"
+    assert session_call[0] == "gateway:session:sess-1:history"
+    user_payload = json.loads(user_call[1])
+    assert user_payload["event_type"] == "user_query"
+    assert user_payload["request_id"] == "req-1"
+
+
 # ---------------------------------------------------------------------------
 # Integration tests: save_turn called on successful query (requires user_id)
 # ---------------------------------------------------------------------------
 
 
-@patch("src.gateway.api._clarification_enabled", return_value=False)
-@patch("src.gateway.api.call_general", return_value={"answer": "general answer", "sources": []})
+@patch("src.gateway.api_and_auth.api._clarification_enabled", return_value=False)
+@patch("src.gateway.api_and_auth.api.call_general", return_value={"answer": "general answer", "sources": []})
 @patch(
-    "src.gateway.api.route_workflow",
+    "src.gateway.api_and_auth.api.route_workflow",
     return_value=("general", 0.95, "manual", None, None),
 )
-@patch("src.gateway.api.rewrite_query", return_value=("rewritten query", None, 0, 0))
-@patch("src.gateway.api.build_execution_plan")
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("rewritten query", None, 0, 0))
+@patch("src.gateway.api_and_auth.api.build_execution_plan")
 def test_query_success_saves_turn_when_user_id_present(
     mock_build_plan, mock_rewrite, mock_route, mock_call, mock_clar_enabled
 ):
@@ -173,7 +197,7 @@ def test_query_success_saves_turn_when_user_id_present(
     mock_build_plan.return_value = mock_plan
 
     mock_memory = MagicMock()
-    with patch("src.gateway.api.gateway_memory", mock_memory):
+    with patch("src.gateway.api_and_auth.api.gateway_memory", mock_memory):
         client = TestClient(app)
         resp = client.post(
             "/api/v1/query",
@@ -199,15 +223,15 @@ def test_query_success_saves_turn_when_user_id_present(
     )
 
 
-@patch("src.gateway.api.call_general", return_value={"answer": "clarification reply", "sources": []})
+@patch("src.gateway.api_and_auth.api.call_general", return_value={"answer": "clarification reply", "sources": []})
 @patch(
-    "src.gateway.api.route_workflow",
+    "src.gateway.api_and_auth.api.route_workflow",
     return_value=("clarification", 0.0, "manual", None, None),
 )
-@patch("src.gateway.api.rewrite_query", return_value=("rewritten", None, 0, 0))
-@patch("src.gateway.api.build_execution_plan")
-@patch("src.gateway.api.check_ambiguity")
-@patch("src.gateway.api._clarification_enabled", return_value=True)
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("rewritten", None, 0, 0))
+@patch("src.gateway.api_and_auth.api.build_execution_plan")
+@patch("src.gateway.api_and_auth.api.check_ambiguity")
+@patch("src.gateway.api_and_auth.api._clarification_enabled", return_value=True)
 def test_query_clarification_triggers_save_turn(
     mock_clar_enabled, mock_check, mock_build_plan, mock_rewrite, mock_route, mock_call
 ):
@@ -218,7 +242,7 @@ def test_query_clarification_triggers_save_turn(
     }
 
     mock_memory = MagicMock()
-    with patch("src.gateway.api.gateway_memory", mock_memory):
+    with patch("src.gateway.api_and_auth.api.gateway_memory", mock_memory):
         client = TestClient(app)
         resp = client.post(
             "/api/v1/query",
@@ -241,10 +265,10 @@ def test_query_clarification_triggers_save_turn(
     )
 
 
-@patch("src.gateway.api._is_rewrite_only_mode", return_value=True)
-@patch("src.gateway.api._clarification_enabled", return_value=False)
-@patch("src.gateway.api.rewrite_query", return_value=("rewritten query for retrieval", None, 0, 0))
-@patch("src.gateway.api.build_execution_plan")
+@patch("src.gateway.api_and_auth.api._is_rewrite_only_mode", return_value=True)
+@patch("src.gateway.api_and_auth.api._clarification_enabled", return_value=False)
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("rewritten query for retrieval", None, 0, 0))
+@patch("src.gateway.api_and_auth.api.build_execution_plan")
 def test_query_rewrite_only_triggers_save_turn(
     mock_build_plan, mock_rewrite, mock_clar_enabled, mock_rewrite_only
 ):
@@ -262,7 +286,7 @@ def test_query_rewrite_only_triggers_save_turn(
     mock_build_plan.return_value = mock_plan
 
     mock_memory = MagicMock()
-    with patch("src.gateway.api.gateway_memory", mock_memory):
+    with patch("src.gateway.api_and_auth.api.gateway_memory", mock_memory):
         client = TestClient(app)
         resp = client.post(
             "/api/v1/query",
@@ -279,20 +303,20 @@ def test_query_rewrite_only_triggers_save_turn(
     mock_memory.save_turn.assert_called_once_with(
         "sess-rewrite-only",
         "What about last month?",
-        "rewritten query for retrieval",
+        "(Rewrite-only; no execution.)",
         "rewrite_only",
         user_id="user-rewrite-only",
     )
 
 
-@patch("src.gateway.api._clarification_enabled", return_value=False)
-@patch("src.gateway.api.call_general", return_value={"answer": "ok", "sources": []})
+@patch("src.gateway.api_and_auth.api._clarification_enabled", return_value=False)
+@patch("src.gateway.api_and_auth.api.call_general", return_value={"answer": "ok", "sources": []})
 @patch(
-    "src.gateway.api.route_workflow",
+    "src.gateway.api_and_auth.api.route_workflow",
     return_value=("general", 0.95, "manual", None, None),
 )
-@patch("src.gateway.api.rewrite_query", return_value=("rewritten", None, 0, 0))
-@patch("src.gateway.api.build_execution_plan")
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("rewritten", None, 0, 0))
+@patch("src.gateway.api_and_auth.api.build_execution_plan")
 def test_query_without_memory_does_not_fail(
     mock_build_plan, mock_rewrite, mock_route, mock_call, mock_clar_enabled
 ):
@@ -330,7 +354,7 @@ def test_query_without_memory_does_not_fail(
 
 def test_get_session_history_when_memory_disabled():
     """GET /api/v1/session/{id} returns error when memory disabled."""
-    with patch("src.gateway.api.gateway_memory", None):
+    with patch("src.gateway.api_and_auth.api.gateway_memory", None):
         client = TestClient(app)
         resp = client.get("/api/v1/session/sess-1")
     assert resp.status_code == 200
@@ -342,7 +366,7 @@ def test_get_session_history_when_memory_disabled():
 
 def test_delete_session_when_memory_disabled():
     """DELETE /api/v1/session/{id} returns cleared=False when memory disabled."""
-    with patch("src.gateway.api.gateway_memory", None):
+    with patch("src.gateway.api_and_auth.api.gateway_memory", None):
         client = TestClient(app)
         resp = client.delete("/api/v1/session/sess-1")
     assert resp.status_code == 200
@@ -358,7 +382,7 @@ def test_get_session_history_with_memory(mock_redis):
         '{"query": "q1", "answer": "a1", "workflow": "uds", "timestamp": "2024-01-01T00:00:00Z"}',
     ]
     mem = GatewayConversationMemory(mock_redis)
-    with patch("src.gateway.api.gateway_memory", mem):
+    with patch("src.gateway.api_and_auth.api.gateway_memory", mem):
         client = TestClient(app)
         resp = client.get("/api/v1/session/sess-1?last_n=5")
     assert resp.status_code == 200
@@ -371,7 +395,7 @@ def test_get_session_history_with_memory(mock_redis):
 def test_delete_session_with_memory(mock_redis):
     """DELETE /api/v1/session/{id} clears session when memory enabled."""
     mem = GatewayConversationMemory(mock_redis)
-    with patch("src.gateway.api.gateway_memory", mem):
+    with patch("src.gateway.api_and_auth.api.gateway_memory", mem):
         client = TestClient(app)
         resp = client.delete("/api/v1/session/sess-1")
     assert resp.status_code == 200
@@ -386,14 +410,14 @@ def test_delete_session_with_memory(mock_redis):
 # ---------------------------------------------------------------------------
 
 
-@patch("src.gateway.api.verify_token", return_value={"sub": "user-123"})
+@patch("src.gateway.api_and_auth.api.verify_token", return_value={"sub": "user-123"})
 def test_get_user_history_returns_history_when_authenticated(mock_verify, mock_redis):
     """GET /api/v1/user/history returns history when JWT valid and memory enabled."""
     mock_redis.lrange.return_value = [
         '{"query": "q1", "answer": "a1", "workflow": "uds", "timestamp": "2024-01-01T00:00:00Z"}',
     ]
     mem = GatewayConversationMemory(mock_redis)
-    with patch("src.gateway.api.gateway_memory", mem):
+    with patch("src.gateway.api_and_auth.api.gateway_memory", mem):
         client = TestClient(app)
         resp = client.get(
             "/api/v1/user/history?last_n=5",
@@ -415,7 +439,7 @@ def test_get_user_history_returns_401_when_no_auth():
     assert resp.status_code == 401
 
 
-@patch("src.gateway.api.verify_token", return_value=None)
+@patch("src.gateway.api_and_auth.api.verify_token", return_value=None)
 def test_get_user_history_returns_401_when_token_invalid(mock_verify):
     """GET /api/v1/user/history returns 401 when token invalid or expired."""
     client = TestClient(app)

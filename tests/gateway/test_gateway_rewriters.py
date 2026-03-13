@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
-from src.gateway.rewriters import (
+from src.gateway.route_llm.rewriting.rewriters import (
     REWRITE_PROMPT,
     _enforce_rewrite_responsibility,
     _strip_echoed_context_from_rewrite,
@@ -28,7 +28,7 @@ from src.gateway.rewriters import (
 # ---------------------------------------------------------------------------
 
 
-@patch("src.gateway.rewriters.requests.post")
+@patch("src.gateway.route_llm.rewriting.rewriters.requests.post")
 def test_rewrite_with_ollama_success(mock_post):
     """rewrite_with_ollama returns rewritten text when HTTP 200 with response field."""
     mock_resp = MagicMock()
@@ -49,7 +49,7 @@ def test_rewrite_with_ollama_success(mock_post):
     assert call_kwargs["json"]["stream"] is False
 
 
-@patch("src.gateway.rewriters.requests.post")
+@patch("src.gateway.route_llm.rewriting.rewriters.requests.post")
 @patch.dict("os.environ", {"GATEWAY_REWRITE_PLANNER_ENABLED": "true"})
 def test_rewrite_with_ollama_uses_planner_prompt_when_enabled(mock_post):
     """Planner functionality was refactored; this test checks basic rewrite behavior."""
@@ -65,7 +65,7 @@ def test_rewrite_with_ollama_uses_planner_prompt_when_enabled(mock_post):
     assert REWRITE_PROMPT in call_kwargs["json"]["prompt"]
 
 
-@patch("src.gateway.rewriters.requests.post")
+@patch("src.gateway.route_llm.rewriting.rewriters.requests.post")
 def test_rewrite_with_ollama_connection_error_returns_original(mock_post):
     """On ConnectionError, rewrite_with_ollama returns original query."""
     mock_post.side_effect = requests.ConnectionError("Connection refused")
@@ -76,7 +76,7 @@ def test_rewrite_with_ollama_connection_error_returns_original(mock_post):
     mock_post.assert_called_once()
 
 
-@patch("src.gateway.rewriters.requests.post")
+@patch("src.gateway.route_llm.rewriting.rewriters.requests.post")
 def test_rewrite_with_ollama_timeout_returns_original(mock_post):
     """On Timeout, rewrite_with_ollama returns original query."""
     mock_post.side_effect = requests.Timeout("Request timed out")
@@ -87,7 +87,7 @@ def test_rewrite_with_ollama_timeout_returns_original(mock_post):
     mock_post.assert_called_once()
 
 
-@patch("src.gateway.rewriters.requests.post")
+@patch("src.gateway.route_llm.rewriting.rewriters.requests.post")
 def test_rewrite_with_ollama_http_error_returns_original(mock_post):
     """On HTTP non-200, rewrite_with_ollama returns original query."""
     mock_resp = MagicMock()
@@ -103,7 +103,7 @@ def test_rewrite_with_ollama_http_error_returns_original(mock_post):
     mock_post.assert_called_once()
 
 
-@patch("src.gateway.rewriters.requests.post")
+@patch("src.gateway.route_llm.rewriting.rewriters.requests.post")
 def test_rewrite_with_ollama_empty_response_returns_original(mock_post):
     """When response field is empty, returns original query."""
     mock_resp = MagicMock()
@@ -322,7 +322,7 @@ def test_enforce_rewrite_responsibility_rejects_json_output():
     assert result == "original query"
 
 
-@patch("src.gateway.rewriters._rewrite_with_ollama_prompt", return_value="line1\nline2")
+@patch("src.gateway.route_llm.rewriting.rewriters._rewrite_with_ollama_prompt", return_value="line1\nline2")
 def test_rewrite_with_context_collapses_multiline_output(mock_rewrite_prompt):
     """rewrite_with_context should always return single-line text."""
     result = rewrite_with_context("what is fba", backend="ollama")

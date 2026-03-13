@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.gateway.dispatcher import (
+from src.gateway.dispatcher.dispatcher import (
     _build_multi_task_plan_from_query,
     _build_plan_from_extracted_intents,
     _build_single_task_plan,

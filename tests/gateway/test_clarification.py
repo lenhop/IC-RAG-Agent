@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.gateway.clarification import check_ambiguity
+from src.gateway.route_llm.clarification.clarification import check_ambiguity
 
 
 def test_check_ambiguity_empty_query_returns_no_clarification():
@@ -19,7 +19,7 @@ def test_check_ambiguity_empty_query_returns_no_clarification():
     assert result == {"needs_clarification": False}
 
 
-@patch("src.gateway.clarification._call_clarification_ollama")
+@patch("src.gateway.route_llm.clarification.clarification._call_clarification_ollama")
 def test_check_ambiguity_ollama_clear_returns_no_clarification(mock_ollama):
     """When LLM returns needs_clarification false, proceed normally."""
     mock_ollama.return_value = '{"needs_clarification": false}'
@@ -28,7 +28,7 @@ def test_check_ambiguity_ollama_clear_returns_no_clarification(mock_ollama):
     mock_ollama.assert_called_once_with("what are my sales last month?")
 
 
-@patch("src.gateway.clarification._call_clarification_ollama")
+@patch("src.gateway.route_llm.clarification.clarification._call_clarification_ollama")
 def test_check_ambiguity_ollama_ambiguous_returns_clarification(mock_ollama):
     """When LLM returns needs_clarification true, return question."""
     mock_ollama.return_value = (
@@ -41,7 +41,7 @@ def test_check_ambiguity_ollama_ambiguous_returns_clarification(mock_ollama):
     mock_ollama.assert_called_once_with("what about my order?")
 
 
-@patch("src.gateway.clarification._call_clarification_ollama")
+@patch("src.gateway.route_llm.clarification.clarification._call_clarification_ollama")
 def test_check_ambiguity_ollama_empty_response_returns_no_clarification(mock_ollama):
     """When LLM returns empty, fall back to no clarification."""
     mock_ollama.return_value = ""
@@ -49,7 +49,7 @@ def test_check_ambiguity_ollama_empty_response_returns_no_clarification(mock_oll
     assert result == {"needs_clarification": False}
 
 
-@patch("src.gateway.clarification._call_clarification_ollama")
+@patch("src.gateway.route_llm.clarification.clarification._call_clarification_ollama")
 def test_check_ambiguity_ollama_invalid_json_returns_no_clarification(mock_ollama):
     """When LLM returns invalid JSON, fall back to no clarification."""
     mock_ollama.return_value = "not valid json"
@@ -57,7 +57,7 @@ def test_check_ambiguity_ollama_invalid_json_returns_no_clarification(mock_ollam
     assert result == {"needs_clarification": False}
 
 
-@patch("src.gateway.clarification._call_clarification_ollama")
+@patch("src.gateway.route_llm.clarification.clarification._call_clarification_ollama")
 def test_check_ambiguity_needs_true_but_empty_question_returns_no_clarification(mock_ollama):
     """When needs_clarification true but question empty, treat as no clarification."""
     mock_ollama.return_value = '{"needs_clarification": true, "clarification_question": ""}'
@@ -80,7 +80,7 @@ def test_check_ambiguity_documentation_requirements_returns_no_clarification():
     assert result["needs_clarification"] is False
 
 
-@patch("src.gateway.clarification._call_clarification_ollama")
+@patch("src.gateway.route_llm.clarification.clarification._call_clarification_ollama")
 def test_check_ambiguity_sales_with_yyyymmdd_returns_no_clarification(mock_ollama):
     """Sales query with YYYYMMDD date: heuristic skips (has date), LLM returns false."""
     mock_ollama.return_value = '{"needs_clarification": false}'

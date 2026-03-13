@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.gateway.services import (
+from src.gateway.dispatcher.services import (
     IC_DOCS_NOT_READY_MESSAGE,
     call_amazon_docs,
     call_general,
@@ -27,10 +27,10 @@ from src.gateway.services import (
 )
 
 
-@patch("src.gateway.services._ic_docs_enabled", return_value=False)
+@patch("src.gateway.dispatcher.services._ic_docs_enabled", return_value=False)
 def test_call_ic_docs_disabled_returns_friendly_message_no_http(mock_enabled):
     """When IC docs is disabled, call_ic_docs returns friendly message and does not call RAG."""
-    with patch("src.gateway.services._http_post") as mock_post:
+    with patch("src.gateway.dispatcher.services._http_post") as mock_post:
         result = call_ic_docs("any query", None)
     assert result["answer"] == IC_DOCS_NOT_READY_MESSAGE
     assert result["sources"] == []
@@ -39,8 +39,8 @@ def test_call_ic_docs_disabled_returns_friendly_message_no_http(mock_enabled):
     mock_enabled.assert_called()
 
 
-@patch("src.gateway.services._ic_docs_enabled", return_value=True)
-@patch("src.gateway.services._http_post", return_value={"answer": "from RAG", "sources": [{"title": "doc"}]})
+@patch("src.gateway.dispatcher.services._ic_docs_enabled", return_value=True)
+@patch("src.gateway.dispatcher.services._http_post", return_value={"answer": "from RAG", "sources": [{"title": "doc"}]})
 def test_call_ic_docs_enabled_calls_rag(mock_post, mock_enabled):
     """When IC docs is enabled, call_ic_docs calls RAG and returns backend response."""
     result = call_ic_docs("IC docs query", "sess-1")
@@ -54,7 +54,7 @@ def test_call_ic_docs_enabled_calls_rag(mock_post, mock_enabled):
 
 
 @patch(
-    "src.gateway.services._http_post",
+    "src.gateway.dispatcher.services._http_post",
     return_value={
         "status": "completed",
         "response": {
@@ -72,7 +72,7 @@ def test_call_uds_completed_maps_summary(mock_post):
 
 
 @patch(
-    "src.gateway.services._http_post",
+    "src.gateway.dispatcher.services._http_post",
     return_value={
         "status": "failed",
         "error": "Database connection timeout",
@@ -87,7 +87,7 @@ def test_call_uds_failed_status_propagates_error(mock_post):
 
 
 @patch(
-    "src.gateway.services._http_post",
+    "src.gateway.dispatcher.services._http_post",
     return_value={
         "status": "completed",
         "response": {},
@@ -102,7 +102,7 @@ def test_call_uds_empty_response_uses_fallback_message(mock_post):
 
 
 @patch(
-    "src.gateway.services._http_post",
+    "src.gateway.dispatcher.services._http_post",
     return_value={
         "query_id": "q-1",
         "status": "completed",
@@ -124,7 +124,7 @@ def test_call_uds_error_null_is_not_treated_as_failure(mock_post):
     mock_post.assert_called_once()
 
 
-@patch("src.gateway.services._http_post", return_value={"response": "ok"})
+@patch("src.gateway.dispatcher.services._http_post", return_value={"response": "ok"})
 def test_call_sp_api_omits_none_session_id(mock_post):
     """call_sp_api should not send session_id when it is None."""
     result = call_sp_api("fee query", None)
@@ -142,7 +142,7 @@ def test_call_sp_api_omits_none_session_id(mock_post):
 
 
 @patch(
-    "src.gateway.services._http_post",
+    "src.gateway.dispatcher.services._http_post",
     return_value={"answer": "General knowledge answer", "sources": [{"title": "wiki"}]},
 )
 def test_call_general_success(mock_post):
@@ -159,7 +159,7 @@ def test_call_general_success(mock_post):
 
 
 @patch(
-    "src.gateway.services._http_post",
+    "src.gateway.dispatcher.services._http_post",
     return_value={"error": "Connection refused", "error_type": "ConnectionError"},
 )
 def test_call_general_backend_error_propagates(mock_post):
@@ -171,10 +171,10 @@ def test_call_general_backend_error_propagates(mock_post):
     mock_post.assert_called_once()
 
 
-@patch("src.gateway.services.RAG_API_URL", "")
+@patch("src.gateway.dispatcher.services.RAG_API_URL", "")
 def test_call_general_rag_url_empty_returns_config_error():
     """When RAG_API_URL is empty, call_general returns ConfigError without HTTP call."""
-    with patch("src.gateway.services._http_post") as mock_post:
+    with patch("src.gateway.dispatcher.services._http_post") as mock_post:
         result = call_general("some query", None)
     assert result["error"] == "RAG_API_URL not configured"
     assert result["error_type"] == "ConfigError"
@@ -182,7 +182,7 @@ def test_call_general_rag_url_empty_returns_config_error():
 
 
 @patch(
-    "src.gateway.services._http_post",
+    "src.gateway.dispatcher.services._http_post",
     return_value={"answer": "FBA storage fee is $0.87 per cubic foot", "sources": [{"doc": "fba-fees"}]},
 )
 def test_call_amazon_docs_success(mock_post):
@@ -199,7 +199,7 @@ def test_call_amazon_docs_success(mock_post):
 
 
 @patch(
-    "src.gateway.services._http_post",
+    "src.gateway.dispatcher.services._http_post",
     return_value={"error": "Timeout after 120s", "error_type": "Timeout"},
 )
 def test_call_amazon_docs_backend_error_propagates(mock_post):
@@ -211,10 +211,10 @@ def test_call_amazon_docs_backend_error_propagates(mock_post):
     mock_post.assert_called_once()
 
 
-@patch("src.gateway.services.RAG_API_URL", "")
+@patch("src.gateway.dispatcher.services.RAG_API_URL", "")
 def test_call_amazon_docs_rag_url_empty_returns_config_error():
     """When RAG_API_URL is empty, call_amazon_docs returns ConfigError without HTTP call."""
-    with patch("src.gateway.services._http_post") as mock_post:
+    with patch("src.gateway.dispatcher.services._http_post") as mock_post:
         result = call_amazon_docs("some query", None)
     assert result["error"] == "RAG_API_URL not configured"
     assert result["error_type"] == "ConfigError"
@@ -226,20 +226,20 @@ def test_call_amazon_docs_rag_url_empty_returns_config_error():
 # ---------------------------------------------------------------------------
 
 
-@patch("src.gateway.services.SP_API_URL", "")
+@patch("src.gateway.dispatcher.services.SP_API_URL", "")
 def test_call_sp_api_url_empty_returns_config_error():
     """When SP_API_URL is empty, call_sp_api returns ConfigError without HTTP call."""
-    with patch("src.gateway.services._http_post") as mock_post:
+    with patch("src.gateway.dispatcher.services._http_post") as mock_post:
         result = call_sp_api("check inventory", None)
     assert result["error"] == "SP_API_URL not configured"
     assert result["error_type"] == "ConfigError"
     mock_post.assert_not_called()
 
 
-@patch("src.gateway.services.UDS_API_URL", "")
+@patch("src.gateway.dispatcher.services.UDS_API_URL", "")
 def test_call_uds_url_empty_returns_config_error():
     """When UDS_API_URL is empty, call_uds returns ConfigError without HTTP call."""
-    with patch("src.gateway.services._http_post") as mock_post:
+    with patch("src.gateway.dispatcher.services._http_post") as mock_post:
         result = call_uds("show me sales", None)
     assert result["error"] == "UDS_API_URL not configured"
     assert result["error_type"] == "ConfigError"
@@ -251,9 +251,9 @@ def test_call_uds_url_empty_returns_config_error():
 # ---------------------------------------------------------------------------
 
 
-@patch("src.gateway.services.os.getenv", return_value="1")
+@patch("src.gateway.dispatcher.services.os.getenv", return_value="1")
 @patch(
-    "src.gateway.services._http_post",
+    "src.gateway.dispatcher.services._http_post",
     return_value={"answer": "IC doc content", "sources": [{"title": "ic-doc"}]},
 )
 def test_call_ic_docs_enabled_when_env_is_one(mock_post, mock_getenv):
@@ -267,9 +267,9 @@ def test_call_ic_docs_enabled_when_env_is_one(mock_post, mock_getenv):
     assert payload["mode"] == "documents"
 
 
-@patch("src.gateway.services.os.getenv", return_value="yes")
+@patch("src.gateway.dispatcher.services.os.getenv", return_value="yes")
 @patch(
-    "src.gateway.services._http_post",
+    "src.gateway.dispatcher.services._http_post",
     return_value={"answer": "IC doc content 2", "sources": []},
 )
 def test_call_ic_docs_enabled_when_env_is_yes(mock_post, mock_getenv):

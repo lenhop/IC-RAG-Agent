@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from src.gateway.api import app
+from src.gateway.api_and_auth.api import app
 from src.gateway.schemas import RewritePlan, TaskGroup, TaskItem
 
 
@@ -41,7 +41,7 @@ def _assert_debug_payload(data: dict) -> None:
     assert "route_llm_confidence" in debug
 
 
-@patch("src.gateway.api.rewrite_query", return_value=("rewritten only", None, 0, 0))
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("rewritten only", None, 0, 0))
 def test_rewrite_endpoint_returns_rewrite_metadata(mock_rewrite):
     """Rewrite endpoint returns rewritten query and timing metadata."""
     payload = {
@@ -63,10 +63,10 @@ def test_rewrite_endpoint_returns_rewrite_metadata(mock_rewrite):
     assert data["rewrite_time_ms"] >= 0
 
 
-@patch("src.gateway.api.rewrite_query", return_value=("split me", None, 0, 0))
-@patch("src.gateway.intent_classification.resolve_intent", return_value="sp_api")
-@patch("src.gateway.intent_classification.get_keyword_vector_results", return_value=("sp_api", "general"))
-@patch("src.gateway.intent_classification.split_intents", return_value=["check order status for 112-123"])
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("split me", None, 0, 0))
+@patch("src.gateway.route_llm.classification.resolve_intent", return_value="sp_api")
+@patch("src.gateway.route_llm.classification.get_keyword_vector_results", return_value=("sp_api", "general"))
+@patch("src.gateway.route_llm.classification.split_intents", return_value=["check order status for 112-123"])
 def test_rewrite_endpoint_returns_per_intent_workflow_label(
     mock_split, mock_kv, mock_resolve, mock_rewrite, monkeypatch
 ):
@@ -93,9 +93,9 @@ def test_rewrite_endpoint_returns_per_intent_workflow_label(
     assert data["workflows"] == ["sp_api"]
 
 
-@patch("src.gateway.api.rewrite_query")
-@patch("src.gateway.api.check_ambiguity")
-@patch("src.gateway.api._clarification_enabled", return_value=True)
+@patch("src.gateway.api_and_auth.api.rewrite_query")
+@patch("src.gateway.api_and_auth.api.check_ambiguity")
+@patch("src.gateway.api_and_auth.api._clarification_enabled", return_value=True)
 def test_rewrite_endpoint_clarification_required_returns_early(
     mock_clar_enabled, mock_check_ambiguity, mock_rewrite
 ):
@@ -121,12 +121,12 @@ def test_rewrite_endpoint_clarification_required_returns_early(
     mock_rewrite.assert_not_called()
 
 
-@patch("src.gateway.api.call_general", return_value={"answer": "general answer", "sources": []})
+@patch("src.gateway.api_and_auth.api.call_general", return_value={"answer": "general answer", "sources": []})
 @patch(
-    "src.gateway.api.route_workflow",
+    "src.gateway.api_and_auth.api.route_workflow",
     return_value=("general", 0.95, "manual", None, None),
 )
-@patch("src.gateway.api.rewrite_query", return_value=("rewritten general query", None, 0, 0))
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("rewritten general query", None, 0, 0))
 def test_query_general_success(mock_rewrite, mock_route, mock_call):
     """Gateway should call general service and return unified response."""
     resp = client.post("/api/v1/query", json=_base_payload())
@@ -146,9 +146,9 @@ def test_query_general_success(mock_rewrite, mock_route, mock_call):
     mock_call.assert_called_once()
 
 
-@patch("src.gateway.api.rewrite_query")
-@patch("src.gateway.api.check_ambiguity")
-@patch("src.gateway.api._clarification_enabled", return_value=True)
+@patch("src.gateway.api_and_auth.api.rewrite_query")
+@patch("src.gateway.api_and_auth.api.check_ambiguity")
+@patch("src.gateway.api_and_auth.api._clarification_enabled", return_value=True)
 def test_query_clarification_required_returns_early(
     mock_clar_enabled, mock_check_ambiguity, mock_rewrite
 ):
@@ -169,9 +169,9 @@ def test_query_clarification_required_returns_early(
     mock_rewrite.assert_not_called()
 
 
-@patch("src.gateway.api.rewrite_query")
-@patch("src.gateway.api.check_ambiguity")
-@patch("src.gateway.api._clarification_enabled", return_value=True)
+@patch("src.gateway.api_and_auth.api.rewrite_query")
+@patch("src.gateway.api_and_auth.api.check_ambiguity")
+@patch("src.gateway.api_and_auth.api._clarification_enabled", return_value=True)
 def test_query_show_me_the_fees_returns_clarification(
     mock_clar_enabled, mock_check_ambiguity, mock_rewrite
 ):
@@ -198,12 +198,12 @@ def test_query_show_me_the_fees_returns_clarification(
     mock_rewrite.assert_not_called()
 
 
-@patch("src.gateway.api.call_amazon_docs", return_value={"answer": "amazon docs answer", "sources": []})
+@patch("src.gateway.api_and_auth.api.call_amazon_docs", return_value={"answer": "amazon docs answer", "sources": []})
 @patch(
-    "src.gateway.api.route_workflow",
+    "src.gateway.api_and_auth.api.route_workflow",
     return_value=("amazon_docs", 0.9, "heuristic", None, None),
 )
-@patch("src.gateway.api.rewrite_query", return_value=("rewritten amazon docs query", None, 0, 0))
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("rewritten amazon docs query", None, 0, 0))
 def test_query_amazon_docs_success(mock_rewrite, mock_route, mock_call):
     """Gateway should call amazon_docs service when routed to amazon_docs."""
     resp = client.post("/api/v1/query", json=_base_payload())
@@ -216,12 +216,12 @@ def test_query_amazon_docs_success(mock_rewrite, mock_route, mock_call):
     mock_call.assert_called_once()
 
 
-@patch("src.gateway.api.call_ic_docs", return_value={"answer": "ic docs answer", "sources": []})
+@patch("src.gateway.api_and_auth.api.call_ic_docs", return_value={"answer": "ic docs answer", "sources": []})
 @patch(
-    "src.gateway.api.route_workflow",
+    "src.gateway.api_and_auth.api.route_workflow",
     return_value=("ic_docs", 0.9, "heuristic", None, None),
 )
-@patch("src.gateway.api.rewrite_query", return_value=("rewritten ic docs query", None, 0, 0))
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("rewritten ic docs query", None, 0, 0))
 def test_query_ic_docs_success(mock_rewrite, mock_route, mock_call):
     """Gateway should call ic_docs service when routed to ic_docs."""
     resp = client.post("/api/v1/query", json=_base_payload())
@@ -234,12 +234,12 @@ def test_query_ic_docs_success(mock_rewrite, mock_route, mock_call):
     mock_call.assert_called_once()
 
 
-@patch("src.gateway.api.call_sp_api", return_value={"answer": "sp api answer", "sources": []})
+@patch("src.gateway.api_and_auth.api.call_sp_api", return_value={"answer": "sp api answer", "sources": []})
 @patch(
-    "src.gateway.api.route_workflow",
+    "src.gateway.api_and_auth.api.route_workflow",
     return_value=("sp_api", 0.85, "heuristic", None, None),
 )
-@patch("src.gateway.api.rewrite_query", return_value=("rewritten sp api query", None, 0, 0))
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("rewritten sp api query", None, 0, 0))
 def test_query_sp_api_success(mock_rewrite, mock_route, mock_call):
     """Gateway should call sp_api service when routed to sp_api."""
     resp = client.post("/api/v1/query", json=_base_payload())
@@ -252,12 +252,12 @@ def test_query_sp_api_success(mock_rewrite, mock_route, mock_call):
     mock_call.assert_called_once()
 
 
-@patch("src.gateway.api.call_uds", return_value={"answer": "uds answer", "sources": []})
+@patch("src.gateway.api_and_auth.api.call_uds", return_value={"answer": "uds answer", "sources": []})
 @patch(
-    "src.gateway.api.route_workflow",
+    "src.gateway.api_and_auth.api.route_workflow",
     return_value=("uds", 0.88, "heuristic", None, None),
 )
-@patch("src.gateway.api.rewrite_query", return_value=("rewritten uds query", None, 0, 0))
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("rewritten uds query", None, 0, 0))
 def test_query_uds_success(mock_rewrite, mock_route, mock_call):
     """Gateway should call uds service when routed to uds."""
     resp = client.post("/api/v1/query", json=_base_payload())
@@ -270,12 +270,12 @@ def test_query_uds_success(mock_rewrite, mock_route, mock_call):
     mock_call.assert_called_once()
 
 
-@patch("src.gateway.api.call_general", return_value={"error": "backend failure", "error_type": "ConnectionError"})
+@patch("src.gateway.api_and_auth.api.call_general", return_value={"error": "backend failure", "error_type": "ConnectionError"})
 @patch(
-    "src.gateway.api.route_workflow",
+    "src.gateway.api_and_auth.api.route_workflow",
     return_value=("general", 0.9, "heuristic", None, None),
 )
-@patch("src.gateway.api.rewrite_query", return_value=("rewritten query", None, 0, 0))
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("rewritten query", None, 0, 0))
 def test_query_backend_error_propagated_to_response(mock_rewrite, mock_route, mock_call):
     """When backend returns error dict, gateway should surface it in QueryResponse.error."""
     resp = client.post("/api/v1/query", json=_base_payload())
@@ -292,13 +292,13 @@ def test_query_backend_error_propagated_to_response(mock_rewrite, mock_route, mo
 # ---------------------------------------------------------------------------
 
 
-@patch("src.gateway.api._clarification_enabled", return_value=False)
-@patch("src.gateway.api.call_general", return_value={"answer": "general answer", "sources": []})
+@patch("src.gateway.api_and_auth.api._clarification_enabled", return_value=False)
+@patch("src.gateway.api_and_auth.api.call_general", return_value={"answer": "general answer", "sources": []})
 @patch(
-    "src.gateway.api.route_workflow",
+    "src.gateway.api_and_auth.api.route_workflow",
     return_value=("general", 0.95, "manual", None, None),
 )
-@patch("src.gateway.router.rewrite_with_context", return_value="rewritten by ollama")
+@patch("src.gateway.route_llm.rewriting.router.rewrite_with_context", return_value="rewritten by ollama")
 def test_query_rewrite_backend_ollama(mock_rewrite_context, mock_route, mock_call, mock_clar):
     """POST with rewrite_enable=True, rewrite_backend=ollama uses rewrite_with_context."""
     payload = {
@@ -318,13 +318,13 @@ def test_query_rewrite_backend_ollama(mock_rewrite_context, mock_route, mock_cal
     mock_call.assert_called_once_with("rewritten by ollama", "sess-1")
 
 
-@patch("src.gateway.api._clarification_enabled", return_value=False)
-@patch("src.gateway.api.call_general", return_value={"answer": "general answer", "sources": []})
+@patch("src.gateway.api_and_auth.api._clarification_enabled", return_value=False)
+@patch("src.gateway.api_and_auth.api.call_general", return_value={"answer": "general answer", "sources": []})
 @patch(
-    "src.gateway.api.route_workflow",
+    "src.gateway.api_and_auth.api.route_workflow",
     return_value=("general", 0.95, "manual", None, None),
 )
-@patch("src.gateway.router.rewrite_with_context", return_value="rewritten by deepseek")
+@patch("src.gateway.route_llm.rewriting.router.rewrite_with_context", return_value="rewritten by deepseek")
 def test_query_rewrite_backend_deepseek(mock_rewrite_context, mock_route, mock_call, mock_clar):
     """POST with rewrite_enable=True, rewrite_backend=deepseek uses rewrite_with_context."""
     payload = {
@@ -344,11 +344,11 @@ def test_query_rewrite_backend_deepseek(mock_rewrite_context, mock_route, mock_c
     mock_call.assert_called_once_with("rewritten by deepseek", None)
 
 
-@patch("src.gateway.rewriters.rewrite_with_ollama")
-@patch("src.gateway.rewriters.rewrite_with_deepseek")
-@patch("src.gateway.api.call_general", return_value={"answer": "ok", "sources": []})
+@patch("src.gateway.route_llm.rewriting.rewriters.rewrite_with_ollama")
+@patch("src.gateway.route_llm.rewriting.rewriters.rewrite_with_deepseek")
+@patch("src.gateway.api_and_auth.api.call_general", return_value={"answer": "ok", "sources": []})
 @patch(
-    "src.gateway.api.route_workflow",
+    "src.gateway.api_and_auth.api.route_workflow",
     return_value=("general", 0.9, "manual", None, None),
 )
 def test_query_rewrite_disabled_no_rewriter_call(mock_route, mock_call, mock_deepseek, mock_ollama):
@@ -379,13 +379,13 @@ def test_query_rewrite_disabled_no_rewriter_call(mock_route, mock_call, mock_dee
 # ---------------------------------------------------------------------------
 
 
-@patch("src.gateway.api._clarification_enabled", return_value=False)
-@patch("src.gateway.api.call_uds", return_value={"answer": "uds answer", "sources": []})
+@patch("src.gateway.api_and_auth.api._clarification_enabled", return_value=False)
+@patch("src.gateway.api_and_auth.api.call_uds", return_value={"answer": "uds answer", "sources": []})
 @patch(
-    "src.gateway.api.route_workflow",
+    "src.gateway.api_and_auth.api.route_workflow",
     return_value=("uds", 0.92, "llm", "ollama", 0.92),
 )
-@patch("src.gateway.api.rewrite_query", return_value=("rewritten query", None, 0, 0))
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("rewritten query", None, 0, 0))
 def test_query_route_llm_enabled_returns_llm_workflow_in_response(
     mock_rewrite, mock_route, mock_call_uds, mock_clar
 ):
@@ -409,12 +409,12 @@ def test_query_route_llm_enabled_returns_llm_workflow_in_response(
     mock_call_uds.assert_called_once()
 
 
-@patch("src.gateway.api.call_general", return_value={"answer": "general answer", "sources": []})
+@patch("src.gateway.api_and_auth.api.call_general", return_value={"answer": "general answer", "sources": []})
 @patch(
-    "src.gateway.api.route_workflow",
+    "src.gateway.api_and_auth.api.route_workflow",
     return_value=("general", 0.7, "heuristic", None, None),
 )
-@patch("src.gateway.api.rewrite_query", return_value=("rewritten query", None, 0, 0))
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("rewritten query", None, 0, 0))
 def test_query_route_llm_disabled_or_fallback_returns_heuristic_workflow(
     mock_rewrite, mock_route, mock_call_general
 ):
@@ -436,12 +436,12 @@ def test_query_route_llm_disabled_or_fallback_returns_heuristic_workflow(
     mock_call_general.assert_called_once()
 
 
-@patch("src.gateway.api.call_ic_docs", return_value={"answer": "ic docs answer", "sources": []})
+@patch("src.gateway.api_and_auth.api.call_ic_docs", return_value={"answer": "ic docs answer", "sources": []})
 @patch(
-    "src.gateway.api.route_workflow",
+    "src.gateway.api_and_auth.api.route_workflow",
     return_value=("ic_docs", 1.0, "manual", None, None),
 )
-@patch("src.gateway.api.rewrite_query", return_value=("query", None, 0, 0))
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("query", None, 0, 0))
 def test_query_explicit_workflow_ignores_route_backend(mock_rewrite, mock_route, mock_call_ic):
     """POST with explicit workflow=ic_docs: response uses that workflow; route_backend is irrelevant."""
     payload = {
@@ -461,9 +461,9 @@ def test_query_explicit_workflow_ignores_route_backend(mock_rewrite, mock_route,
     mock_call_ic.assert_called_once()
 
 
-@patch("src.gateway.api.call_general")
-@patch("src.gateway.api.route_workflow")
-@patch("src.gateway.api.rewrite_query", return_value=("rewritten quick query", None, 0, 0))
+@patch("src.gateway.api_and_auth.api.call_general")
+@patch("src.gateway.api_and_auth.api.route_workflow")
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("rewritten quick query", None, 0, 0))
 def test_query_rewrite_only_mode_skips_route_and_downstream(
     mock_rewrite, mock_route, mock_call_general, monkeypatch
 ):
@@ -500,12 +500,12 @@ def test_query_rewrite_only_mode_skips_route_and_downstream(
 # ---------------------------------------------------------------------------
 
 
-@patch("src.gateway.services._ic_docs_enabled", return_value=False)
+@patch("src.gateway.dispatcher.services._ic_docs_enabled", return_value=False)
 @patch(
-    "src.gateway.api.route_workflow",
+    "src.gateway.api_and_auth.api.route_workflow",
     return_value=("ic_docs", 0.9, "heuristic", None, None),
 )
-@patch("src.gateway.api.rewrite_query", return_value=("framework query", None, 0, 0))
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("framework query", None, 0, 0))
 def test_query_ic_docs_disabled_returns_friendly_message_no_rag_call(
     mock_rewrite, mock_route, mock_ic_enabled
 ):
@@ -528,7 +528,7 @@ def test_query_ic_docs_disabled_returns_friendly_message_no_rag_call(
 
 
 @patch(
-    "src.gateway.api.build_execution_plan",
+    "src.gateway.api_and_auth.api.build_execution_plan",
     return_value=(
         RewritePlan(
             plan_type="hybrid",
@@ -547,10 +547,10 @@ def test_query_ic_docs_disabled_returns_friendly_message_no_rag_call(
         None,
     ),
 )
-@patch("src.gateway.api.route_workflow")
-@patch("src.gateway.api.call_sp_api", return_value={"answer": "ASIN fee is $2.10", "sources": []})
-@patch("src.gateway.api.call_general", return_value={"answer": "FBA is Fulfillment by Amazon", "sources": []})
-@patch("src.gateway.api.rewrite_query", return_value=("rewritten hybrid query", ["what is FBA", "get order 123", "which table stores fee"], 0, 0))
+@patch("src.gateway.api_and_auth.api.route_workflow")
+@patch("src.gateway.api_and_auth.api.call_sp_api", return_value={"answer": "ASIN fee is $2.10", "sources": []})
+@patch("src.gateway.api_and_auth.api.call_general", return_value={"answer": "FBA is Fulfillment by Amazon", "sources": []})
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("rewritten hybrid query", ["what is FBA", "get order 123", "which table stores fee"], 0, 0))
 def test_query_planner_multi_task_returns_structured_response(
     mock_rewrite, mock_call_general, mock_call_sp_api, mock_route, mock_plan
 ):
@@ -579,7 +579,7 @@ def test_query_planner_multi_task_returns_structured_response(
 
 
 @patch(
-    "src.gateway.api.build_execution_plan",
+    "src.gateway.api_and_auth.api.build_execution_plan",
     return_value=(
         RewritePlan(
             plan_type="hybrid",
@@ -598,10 +598,10 @@ def test_query_planner_multi_task_returns_structured_response(
         None,
     ),
 )
-@patch("src.gateway.api.route_workflow")
-@patch("src.gateway.api.call_uds", return_value={"answer": "Last month FBA fee total is $1,245", "sources": []})
-@patch("src.gateway.api.call_general", return_value={"error": "backend unavailable", "error_type": "ConnectionError"})
-@patch("src.gateway.api.rewrite_query", return_value=("rewritten hybrid query", ["what is FBA", "get order 123", "which table stores fee"], 0, 0))
+@patch("src.gateway.api_and_auth.api.route_workflow")
+@patch("src.gateway.api_and_auth.api.call_uds", return_value={"answer": "Last month FBA fee total is $1,245", "sources": []})
+@patch("src.gateway.api_and_auth.api.call_general", return_value={"error": "backend unavailable", "error_type": "ConnectionError"})
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("rewritten hybrid query", ["what is FBA", "get order 123", "which table stores fee"], 0, 0))
 def test_query_planner_partial_failure_surfaces_task_error(
     mock_rewrite, mock_call_general, mock_call_uds, mock_route, mock_plan
 ):
@@ -632,7 +632,7 @@ def test_query_planner_partial_failure_surfaces_task_error(
 
 
 @patch(
-    "src.gateway.api.build_execution_plan",
+    "src.gateway.api_and_auth.api.build_execution_plan",
     return_value=(
         RewritePlan(
             plan_type="hybrid",
@@ -651,10 +651,10 @@ def test_query_planner_partial_failure_surfaces_task_error(
         None,
     ),
 )
-@patch("src.gateway.api.route_workflow")
-@patch("src.gateway.api.call_general", return_value={"answer": "FBA is Fulfillment by Amazon", "sources": []})
-@patch("src.gateway.services._ic_docs_enabled", return_value=False)
-@patch("src.gateway.api.rewrite_query", return_value=("rewritten hybrid query", ["what is FBA", "get order 123", "which table stores fee"], 0, 0))
+@patch("src.gateway.api_and_auth.api.route_workflow")
+@patch("src.gateway.api_and_auth.api.call_general", return_value={"answer": "FBA is Fulfillment by Amazon", "sources": []})
+@patch("src.gateway.dispatcher.services._ic_docs_enabled", return_value=False)
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("rewritten hybrid query", ["what is FBA", "get order 123", "which table stores fee"], 0, 0))
 def test_query_hybrid_plan_with_ic_docs_disabled_returns_friendly_for_ic_task(
     mock_rewrite, mock_ic_enabled, mock_call_general, mock_route, mock_plan
 ):

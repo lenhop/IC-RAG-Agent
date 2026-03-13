@@ -1,0 +1,14 @@
+# ECS override: Kafka joins ic-agent-services network
+# Usage: docker compose -f docker/docker-compose.kafka.yml -f docker/docker-compose.kafka.ecs.yml up -d
+
+services:
+  kafka:
+    networks:
+      - ic-agent-services_default
+  kafka-init:
+    networks:
+      - ic-agent-services_default
+
+networks:
+  ic-agent-services_default:
+    external: true

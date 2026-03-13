@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from src.gateway.api import app
+from src.gateway.api_and_auth.api import app
 
 client = TestClient(app)
 
@@ -56,12 +56,12 @@ def test_query_no_json_body_returns_422():
     assert resp.status_code == 422
 
 
-@patch("src.gateway.api.call_general", return_value={"answer": "fallback answer", "sources": []})
+@patch("src.gateway.api_and_auth.api.call_general", return_value={"answer": "fallback answer", "sources": []})
 @patch(
-    "src.gateway.api.route_workflow",
+    "src.gateway.api_and_auth.api.route_workflow",
     return_value=("general", 0.5, "heuristic", None, None),
 )
-@patch("src.gateway.api.rewrite_query", return_value=("", None, 0, 0))
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("", None, 0, 0))
 def test_query_empty_query_accepted_by_schema(mock_rewrite, mock_route, mock_call):
     """Empty 'query' string is accepted (no min_length); gateway processes normally."""
     payload = {
@@ -76,12 +76,12 @@ def test_query_empty_query_accepted_by_schema(mock_rewrite, mock_route, mock_cal
     assert resp.status_code == 200
 
 
-@patch("src.gateway.api.call_general", return_value={"answer": "fallback answer", "sources": []})
+@patch("src.gateway.api_and_auth.api.call_general", return_value={"answer": "fallback answer", "sources": []})
 @patch(
-    "src.gateway.api.route_workflow",
+    "src.gateway.api_and_auth.api.route_workflow",
     return_value=("general", 0.5, "heuristic", None, None),
 )
-@patch("src.gateway.api.rewrite_query", return_value=("test query", None, 0, 0))
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("test query", None, 0, 0))
 def test_query_invalid_workflow_falls_back_to_general(mock_rewrite, mock_route, mock_call):
     """Invalid 'workflow' value is accepted by schema; gateway falls back to general at dispatch."""
     payload = {

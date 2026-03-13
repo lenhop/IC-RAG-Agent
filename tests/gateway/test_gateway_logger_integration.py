@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from src.gateway.api import app
+from src.gateway.api_and_auth.api import app
 from src.gateway.schemas import RewritePlan, TaskExecutionResult, TaskGroup, TaskItem
 
 client = TestClient(app)
@@ -36,12 +36,12 @@ class _SpyLogger:
         return {"redis": True, "clickhouse": True}
 
 
-@patch("src.gateway.api._clarification_enabled", return_value=False)
-@patch("src.gateway.api.rewrite_query", return_value=("rewritten query", None, 0, 0))
+@patch("src.gateway.api_and_auth.api._clarification_enabled", return_value=False)
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("rewritten query", None, 0, 0))
 def test_rewrite_endpoint_calls_logger_facade(mock_rewrite, mock_clarification, monkeypatch):
     """Rewrite endpoint should emit runtime/interaction logs when logger is available."""
     spy = _SpyLogger()
-    monkeypatch.setattr("src.gateway.api.gateway_logger", spy)
+    monkeypatch.setattr("src.gateway.api_and_auth.api.gateway_logger", spy)
 
     payload = {
         "query": "raw query",
@@ -57,10 +57,10 @@ def test_rewrite_endpoint_calls_logger_facade(mock_rewrite, mock_clarification, 
     assert spy.error_calls == 0
 
 
-@patch("src.gateway.api._clarification_enabled", return_value=False)
-@patch("src.gateway.api.rewrite_query", return_value=("rewritten query", None, 0, 0))
+@patch("src.gateway.api_and_auth.api._clarification_enabled", return_value=False)
+@patch("src.gateway.api_and_auth.api.rewrite_query", return_value=("rewritten query", None, 0, 0))
 @patch(
-    "src.gateway.api.build_execution_plan",
+    "src.gateway.api_and_auth.api.build_execution_plan",
     return_value=(
         RewritePlan(
             plan_type="single_domain",
@@ -77,7 +77,7 @@ def test_rewrite_endpoint_calls_logger_facade(mock_rewrite, mock_clarification, 
     ),
 )
 @patch(
-    "src.gateway.api._execute_plan",
+    "src.gateway.api_and_auth.api._execute_plan",
     return_value=[
         TaskExecutionResult(
             task_id="t1",
@@ -90,7 +90,7 @@ def test_rewrite_endpoint_calls_logger_facade(mock_rewrite, mock_clarification, 
         )
     ],
 )
-@patch("src.gateway.api.route_workflow", return_value=("general", 1.0, "heuristic", None, None))
+@patch("src.gateway.api_and_auth.api.route_workflow", return_value=("general", 1.0, "heuristic", None, None))
 def test_query_endpoint_calls_logger_facade(
     mock_route,
     mock_execute,
@@ -101,7 +101,7 @@ def test_query_endpoint_calls_logger_facade(
 ):
     """Query endpoint should emit runtime and interaction logs on success path."""
     spy = _SpyLogger()
-    monkeypatch.setattr("src.gateway.api.gateway_logger", spy)
+    monkeypatch.setattr("src.gateway.api_and_auth.api.gateway_logger", spy)
 
     payload = {
         "query": "raw query",
