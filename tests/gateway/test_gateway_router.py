@@ -657,7 +657,7 @@ def test_build_execution_plan_explicit_workflow_creates_single_task():
         session_id=None,
         stream=False,
     )
-    plan = build_execution_plan(req, "sales by month")
+    plan, _ = build_execution_plan(req, "sales by month")
     assert len(plan.task_groups) == 1
     assert len(plan.task_groups[0].tasks) == 1
     task = plan.task_groups[0].tasks[0]
@@ -675,7 +675,7 @@ def test_build_execution_plan_date_with_comma_stays_single_intent():
         stream=False,
     )
     intents = ["how many orders were there on September 1st, 2026"]
-    plan = build_execution_plan(req, "rewritten query", intents=intents)
+    plan, _ = build_execution_plan(req, "rewritten query", intents=intents)
     assert len(plan.task_groups) == 1
     tasks = plan.task_groups[0].tasks
     assert len(tasks) == 1
@@ -716,7 +716,7 @@ def test_build_execution_plan_with_intents_creates_multi_task():
         stream=False,
     )
     intents = ["what is FBA", "sales trend by month"]
-    plan = build_execution_plan(req, "rewritten", intents=intents)
+    plan, _ = build_execution_plan(req, "rewritten", intents=intents)
     assert plan.task_groups
     assert sum(len(g.tasks) for g in plan.task_groups) == 2
 
@@ -731,7 +731,7 @@ def test_build_execution_plan_falls_back_to_routing_when_no_intents(mock_route):
         session_id=None,
         stream=False,
     )
-    plan = build_execution_plan(req, "fba fee details", intents=None)
+    plan, _ = build_execution_plan(req, "fba fee details", intents=None)
     assert len(plan.task_groups) == 1
     assert len(plan.task_groups[0].tasks) == 1
     assert plan.task_groups[0].tasks[0].workflow == "sp_api"
@@ -750,7 +750,7 @@ def test_build_execution_plan_mixed_query_creates_multi_task_fallback():
         session_id=None,
         stream=False,
     )
-    plan = build_execution_plan(req, req.query)
+    plan, _ = build_execution_plan(req, req.query)
     assert plan.plan_type == "hybrid"
     assert len(plan.task_groups) == 1
     assert len(plan.task_groups[0].tasks) >= 2

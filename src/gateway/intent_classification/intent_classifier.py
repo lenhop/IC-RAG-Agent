@@ -11,7 +11,7 @@ Pipeline:
       - Else fallback: keyword (if not hybrid) → vector (if not hybrid) → "general"
 
 Usage:
-    from src.gateway.intent_classifier import split_intents, classify_intent
+    from src.gateway.intent_classification import split_intents, classify_intent
     clauses = split_intents("check order 112-123 and show FBA fees last month")
     # ["check order status for 112-123", "show FBA fees last month"]
     result = classify_intent("check order status for 112-1234567-8901234")
@@ -31,9 +31,15 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from .prompt_loader import load_prompt
+from ..prompt_loader import load_prompt
+from src.logger import get_logger_facade
 
 logger = logging.getLogger(__name__)
+_gateway_logger = None
+try:
+    _gateway_logger = get_logger_facade()
+except Exception:
+    _gateway_logger = None
 
 _DEFAULT_HIGH_CONF = 0.3
 _DEFAULT_LOW_CONF = 0.7
@@ -222,6 +228,20 @@ def split_intents(query: str) -> List[str]:
         if len(heuristic) >= 2:
             logger.info("Intent split: LLM returned 1 item; using heuristic split (%d clauses)", len(heuristic))
             return heuristic
+    if _gateway_logger:
+        try:
+            _gateway_logger.log_runtime(
+                event_name="intent_split_completed",
+                stage="intent_classification",
+                message="split_intents completed",
+                status="success",
+                workflow="intent_classification",
+                query_raw=query,
+                intent_list=result,
+                metadata={"intent_count": len(result)},
+            )
+        except Exception:
+            pass
     return result
 
 
@@ -238,7 +258,7 @@ def _load_keyword_map() -> List[Dict[str, str]]:
     if _keyword_map_cache is not None:
         return _keyword_map_cache
 
-    csv_path = Path(__file__).parent.parent / "prompts" / "retrieval" / "keyword_intents.csv"
+    csv_path = Path(__file__).parent.parent.parent / "prompts" / "retrieval" / "keyword_intents.csv"
     rows: List[Dict[str, str]] = []
     try:
         with open(csv_path, newline="", encoding="utf-8") as f:
@@ -526,7 +546,7 @@ def classify_intent(
         required_fields = []
         clarification_template = ""
 
-    return IntentResult(
+    result_obj = IntentResult(
         intent_name=vector_top1.get("intent_name", final_workflow) if vector_top1 else final_workflow,
         workflow=final_workflow,
         distance=vector_distance,
@@ -536,3 +556,22 @@ def classify_intent(
         source=source,
         vector_distance=vector_distance,
     )
+    if _gateway_logger:
+        try:
+            _gateway_logger.log_runtime(
+                event_name="intent_classification_resolved",
+                stage="intent_classification",
+                message="classify_intent resolved",
+                status="success",
+                workflow=result_obj.workflow,
+                query_raw=q,
+                metadata={
+                    "intent_name": result_obj.intent_name,
+                    "source": result_obj.source,
+                    "confidence": result_obj.confidence,
+                    "distance": result_obj.distance,
+                },
+            )
+        except Exception:
+            pass
+    return result_obj

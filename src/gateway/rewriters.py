@@ -21,8 +21,14 @@ from pydantic import ValidationError
 
 from .schemas import RewritePlan, TaskGroup, TaskItem
 from .prompt_loader import load_prompt
+from src.logger import get_logger_facade
 
 logger = logging.getLogger(__name__)
+_gateway_logger = None
+try:
+    _gateway_logger = get_logger_facade()
+except Exception:
+    _gateway_logger = None
 
 # Prompts loaded from src/prompts/*.txt (cached after first access)
 REWRITE_PROMPT = load_prompt("query_rewriting/rewrite_query_clean")
@@ -464,7 +470,22 @@ def rewrite_with_context(
         return query.strip()
     cleaned = _strip_echoed_context_from_rewrite(raw, query.strip())
     out = _enforce_rewrite_responsibility(cleaned, query.strip())
-    return _apply_normalization_fixes(out)
+    normalized = _apply_normalization_fixes(out)
+    if _gateway_logger:
+        try:
+            _gateway_logger.log_runtime(
+                event_name="rewriter_with_context_done",
+                stage="rewriter",
+                message="rewrite_with_context completed",
+                status="success",
+                workflow="rewrite",
+                query_raw=query.strip(),
+                query_rewritten=normalized,
+                metadata={"backend": effective_backend},
+            )
+        except Exception:
+            pass
+    return normalized
 
 
 def _rewrite_with_ollama_prompt(

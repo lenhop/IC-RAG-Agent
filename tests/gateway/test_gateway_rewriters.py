@@ -13,13 +13,10 @@ import pytest
 import requests
 
 from src.gateway.rewriters import (
-    INTENT_CLASSIFICATION_PROMPT,
     REWRITE_PROMPT,
-    REWRITE_PLANNER_PROMPT,
     _enforce_rewrite_responsibility,
     _strip_echoed_context_from_rewrite,
     parse_rewrite_plan_text,
-    rewrite_intents_only,
     rewrite_with_context,
     rewrite_with_ollama,
     rewrite_with_deepseek,
@@ -55,7 +52,7 @@ def test_rewrite_with_ollama_success(mock_post):
 @patch("src.gateway.rewriters.requests.post")
 @patch.dict("os.environ", {"GATEWAY_REWRITE_PLANNER_ENABLED": "true"})
 def test_rewrite_with_ollama_uses_planner_prompt_when_enabled(mock_post):
-    """Planner prompt is used when planner rewrite mode is enabled."""
+    """Planner functionality was refactored; this test checks basic rewrite behavior."""
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.json.return_value = {"response": "PlanType: hybrid; TaskGroups: ..."}
@@ -65,7 +62,7 @@ def test_rewrite_with_ollama_uses_planner_prompt_when_enabled(mock_post):
 
     assert result == "PlanType: hybrid; TaskGroups: ..."
     call_kwargs = mock_post.call_args[1]
-    assert REWRITE_PLANNER_PROMPT in call_kwargs["json"]["prompt"]
+    assert REWRITE_PROMPT in call_kwargs["json"]["prompt"]
 
 
 @patch("src.gateway.rewriters.requests.post")
@@ -166,7 +163,7 @@ def test_rewrite_with_deepseek_success(mock_openai_class):
     },
 )
 def test_rewrite_with_deepseek_uses_planner_prompt_when_enabled(mock_openai_class):
-    """Planner prompt is injected for DeepSeek when planner rewrite mode is enabled."""
+    """Planner functionality was refactored; this test checks basic rewrite behavior."""
     mock_client = MagicMock()
     mock_openai_class.return_value = mock_client
 
@@ -178,7 +175,7 @@ def test_rewrite_with_deepseek_uses_planner_prompt_when_enabled(mock_openai_clas
 
     assert "PlanType:" in result
     call_kwargs = mock_client.chat.completions.create.call_args[1]
-    assert REWRITE_PLANNER_PROMPT in call_kwargs["messages"][0]["content"]
+    assert REWRITE_PROMPT in call_kwargs["messages"][0]["content"]
 
 
 @patch("openai.OpenAI")
@@ -276,40 +273,6 @@ def test_parse_rewrite_plan_text_intents_only_empty_list_falls_back():
     plan = parse_rewrite_plan_text(raw, "my fallback query")
     assert plan is not None
     assert plan.extracted_intents != [] or len(plan.task_groups) >= 1
-
-
-@patch("src.gateway.rewriters.requests.post")
-def test_rewrite_intents_only_ollama_success(mock_post):
-    """rewrite_intents_only returns parsed intents when Ollama returns valid JSON."""
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = {
-        "response": '{"intents": ["what is FBA", "get order 112-9876543-12"]}'
-    }
-    mock_post.return_value = mock_resp
-
-    result = rewrite_intents_only("what is FBA get order 112-9876543-12", backend="ollama")
-
-    assert result is not None
-    assert result.get("intents") == ["what is FBA", "get order 112-9876543-12"]
-    call_kwargs = mock_post.call_args[1]
-    assert INTENT_CLASSIFICATION_PROMPT in call_kwargs["json"]["prompt"]
-
-
-@patch("src.gateway.rewriters.requests.post")
-def test_rewrite_intents_only_ollama_failure_returns_none(mock_post):
-    """rewrite_intents_only returns None when Ollama fails."""
-    mock_post.side_effect = requests.ConnectionError("Connection refused")
-
-    result = rewrite_intents_only("my query", backend="ollama")
-
-    assert result is None
-
-
-def test_rewrite_intents_only_empty_query_returns_none():
-    """rewrite_intents_only returns None for empty query."""
-    assert rewrite_intents_only("") is None
-    assert rewrite_intents_only("   ") is None
 
 
 @patch.dict("os.environ", {"GATEWAY_REWRITE_PLANNER_MAX_TASKS": "1"})

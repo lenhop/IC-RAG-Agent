@@ -44,7 +44,7 @@ def test_build_plan_from_intents_multiple_workflows():
         "FBA fee for ASIN B074KF7RKS",
         "total FBA fee last month",
     ]
-    plan = _build_plan_from_extracted_intents(intents)
+    plan, _ = _build_plan_from_extracted_intents(intents)
     assert plan.plan_type == "hybrid"
     assert len(plan.task_groups) == 1
     tasks = plan.task_groups[0].tasks
@@ -56,7 +56,7 @@ def test_build_plan_from_intents_multiple_workflows():
 def test_build_plan_from_intents_single_workflow():
     """All intents mapping to the same workflow produce single_domain plan."""
     intents = ["total sales last month", "revenue by month"]
-    plan = _build_plan_from_extracted_intents(intents)
+    plan, _ = _build_plan_from_extracted_intents(intents)
     assert plan.plan_type == "single_domain"
     tasks = plan.task_groups[0].tasks
     assert all(t.workflow == "uds" for t in tasks)
@@ -64,7 +64,7 @@ def test_build_plan_from_intents_single_workflow():
 
 def test_build_plan_from_intents_empty_list_returns_fallback():
     """Empty intent list returns a fallback single-task plan."""
-    plan = _build_plan_from_extracted_intents([])
+    plan, _ = _build_plan_from_extracted_intents([])
     assert len(plan.task_groups) == 1
     tasks = plan.task_groups[0].tasks
     assert len(tasks) == 1
@@ -74,7 +74,7 @@ def test_build_plan_from_intents_empty_list_returns_fallback():
 def test_build_plan_from_intents_skips_blank_intents():
     """Blank intents in the list are skipped."""
     intents = ["what is FBA", "", "  ", "total sales"]
-    plan = _build_plan_from_extracted_intents(intents)
+    plan, _ = _build_plan_from_extracted_intents(intents)
     tasks = plan.task_groups[0].tasks
     assert len(tasks) == 2
 
@@ -82,7 +82,7 @@ def test_build_plan_from_intents_skips_blank_intents():
 def test_build_plan_from_intents_task_ids_sequential():
     """Task IDs are sequential t1, t2, t3..."""
     intents = ["what is FBA", "total sales", "get order status"]
-    plan = _build_plan_from_extracted_intents(intents)
+    plan, _ = _build_plan_from_extracted_intents(intents)
     ids = [t.task_id for t in plan.task_groups[0].tasks]
     assert ids == ["t1", "t2", "t3"]
 
@@ -254,7 +254,7 @@ def test_correct_plan_workflows_keeps_correct_assignment():
 def test_build_execution_plan_explicit_workflow():
     """Explicit workflow creates a single-task plan without planner."""
     request = QueryRequest(query="anything", workflow="sp_api", rewrite_enable=False)
-    plan = build_execution_plan(request, "anything")
+    plan, _ = build_execution_plan(request, "anything")
     assert plan.plan_type == "single_domain"
     assert plan.task_groups[0].tasks[0].workflow == "sp_api"
 
@@ -263,7 +263,7 @@ def test_build_execution_plan_uses_intents_when_provided():
     """When intents provided (from intent classification on optimized query), use them."""
     request = QueryRequest(query="what is FBA total sales get order 123", workflow="auto")
     intents = ["what is FBA", "total sales last month", "get order 123"]
-    plan = build_execution_plan(request, "anything", intents=intents)
+    plan, _ = build_execution_plan(request, "anything", intents=intents)
     total_tasks = sum(len(g.tasks) for g in plan.task_groups)
     assert total_tasks == 3
 
@@ -275,6 +275,6 @@ def test_build_execution_plan_heuristic_fallback_multi_clause():
         workflow="auto",
         rewrite_enable=False,
     )
-    plan = build_execution_plan(request, "what is FBA get order status for 123 show me total sales")
+    plan, _ = build_execution_plan(request, "what is FBA get order status for 123 show me total sales")
     total_tasks = sum(len(g.tasks) for g in plan.task_groups)
     assert total_tasks >= 2

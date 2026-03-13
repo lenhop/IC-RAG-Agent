@@ -7,7 +7,7 @@ Unit and integration tests for the RAG evaluation framework.
 ### Prerequisites
 
 - `amazon_fqa.csv` at `data/intent_classification/fqa/amazon_fqa.csv` or `RAG_FAQ_CSV`
-- Chroma populated: `python scripts/load_to_chroma.py documents`
+- Chroma populated: `python scripts/load_to_chroma/load_documents_to_chroma.py`
 - LLM API keys (for generation eval): `DEEPSEEK_API_KEY` or `QWEN_API_KEY`
 
 ### Full Evaluation (Single Command)

@@ -47,7 +47,7 @@ def _resolve_path(env_key: str, default: str, project_root: Path | None = None) 
     return str(p.resolve())
 
 
-# Config from .env (must match load_to_chroma.py documents)
+# Config from .env (must match load_documents_to_chroma.py)
 def _get_chroma_path(project_root: Path | None = None) -> str:
     root = project_root or PROJECT_ROOT
     return _resolve_path(
@@ -57,7 +57,7 @@ def _get_chroma_path(project_root: Path | None = None) -> str:
     )
 
 
-COLLECTION_NAME = os.getenv("CHROMA_COLLECTION_NAME", "documents")
+COLLECTION_NAME = os.getenv("CHROMA_DOCUMENTS_COLLECTION", os.getenv("CHROMA_COLLECTION_NAME", "documents"))
 RETRIEVAL_K = int(os.getenv("RAG_RETRIEVAL_K", os.getenv("MAX_RETRIEVAL_DOCS", "3")))
 OLLAMA_MODEL = os.getenv("RAG_LLM_MODEL", "qwen3:1.7b")
 LLM_PROVIDER = os.getenv("RAG_LLM_PROVIDER", "ollama").lower().strip()
@@ -257,7 +257,7 @@ def classify_answer_mode_parallel(
 
 
 def _step1_load_embedder(embed_model: str = EMBED_MODEL, project_root: Path | None = None):
-    """Step 1: Load embedding model. Must match load_to_chroma.py documents."""
+    """Step 1: Load embedding model. Must match load_documents_to_chroma.py."""
     from src.rag import create_embeddings
     root = project_root or PROJECT_ROOT
     model_type = embed_model if embed_model in ("ollama", "qwen3") else "minilm"
@@ -779,7 +779,7 @@ class RAGPipeline:
                     print(f"  Step 7 (LLM generate): skipped (no documents)")
                     if coll_count == 0:
                         print(
-                            f"  [Hint] Collection has 0 chunks. Run: python scripts/load_to_chroma.py documents"
+                            "  [Hint] Collection has 0 chunks. Run: python scripts/load_to_chroma/load_documents_to_chroma.py"
                         )
                     else:
                         print(
@@ -855,7 +855,7 @@ def print_result(
     print(f"\nSource: {source_label}")
     if not retrieved_docs and collection_count is not None and collection_count == 0:
         print(
-            "\n[Hint] Chroma collection is empty. Run: python scripts/load_to_chroma.py documents"
+            "\n[Hint] Chroma collection is empty. Run: python scripts/load_to_chroma/load_documents_to_chroma.py"
         )
     elif not retrieved_docs and collection_count is not None and collection_count > 0:
         print(

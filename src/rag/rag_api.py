@@ -97,13 +97,13 @@ async def lifespan(app: Any):
     if not Path(chroma_path).exists():
         raise FileNotFoundError(
             f"Chroma path not found: {chroma_path}. "
-            "Run load_to_chroma.py documents first."
+            "Run scripts/load_to_chroma/load_documents_to_chroma.py first."
         )
 
     _pipeline = RAGPipeline.build(
         embed_model=os.getenv("RAG_EMBED_MODEL", "minilm"),
         chroma_path=chroma_path,
-        collection_name=os.getenv("CHROMA_COLLECTION_NAME", "documents"),
+        collection_name=os.getenv("CHROMA_DOCUMENTS_COLLECTION", os.getenv("CHROMA_COLLECTION_NAME", "documents")),
         retrieval_k=int(os.getenv("RAG_RETRIEVAL_K", os.getenv("MAX_RETRIEVAL_DOCS", "3"))),
         llm_model=os.getenv("RAG_LLM_MODEL", "qwen3:1.7b"),
         llm_provider=os.getenv("RAG_LLM_PROVIDER") or None,

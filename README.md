@@ -361,7 +361,7 @@ RAG_DOMAIN_KEYWORDS=FBA,FBM,Amazon,eBay,inventory
 
 ```bash
 # Load documents into ChromaDB (prints chunk count on success)
-python scripts/load_to_chroma.py documents
+python scripts/load_to_chroma/load_documents_to_chroma.py
 ```
 
 ### Run Queries
@@ -392,7 +392,7 @@ python scripts/run_evaluation.py --limit 5 --skip-umap
 python scripts/run_evaluation.py --limit 10 --output ./eval_results
 ```
 
-Prerequisites: `amazon_fqa.csv` at `RAG_FAQ_CSV` or `data/intent_classification/fqa/`, Chroma populated (`load_to_chroma documents`), and LLM API keys for generation eval.
+Prerequisites: `amazon_fqa.csv` at `RAG_FAQ_CSV` or `data/intent_classification/fqa/`, Chroma populated (`load_documents_to_chroma.py`), and LLM API keys for generation eval.
 
 ### Start API Server
 
@@ -446,7 +446,7 @@ IC-RAG-Agent/
 │   ├── chroma_loaders.py       # Bootstrap, FAQ, CSV/doc -> Chroma
 │   └── rag_api.py              # FastAPI server
 ├── scripts/
-│   ├── load_to_chroma.py            # documents, fqa, keywords, csv -> Chroma
+│   ├── load_to_chroma/              # documents + intent registry loaders
 │   ├── query_rag.py                 # Query interface
 │   ├── run_evaluation.py            # E2E RAG evaluation (retrieval, generation, report)
 │   ├── run_gateway.py               # Unified gateway (route + dispatch)
@@ -723,7 +723,7 @@ ollama run qwen3:1.7b "Hello"
 
 ```bash
 # Re-ingest documents (prints chunk count on success)
-python scripts/load_to_chroma.py documents
+python scripts/load_to_chroma/load_documents_to_chroma.py
 
 # Ensure CHROMA_DOCUMENTS_PATH in .env points to data/chroma_db/documents
 ```
@@ -759,7 +759,7 @@ curl https://api.deepseek.com/v1/chat/completions \
 cp your_docs.pdf data/documents/
 
 # Re-ingest
-python scripts/load_to_chroma.py documents
+python scripts/load_to_chroma/load_documents_to_chroma.py
 ```
 
 ### Adding New Keywords
@@ -776,12 +776,12 @@ echo "new_phrase" >> data/intent_classification/keywords/phrases_from_titles.csv
 
 Then reload into Chroma:
 ```bash
-python scripts/load_to_chroma.py keywords
+python scripts/load_to_chroma/load_intent_registry_to_chroma.py
 ```
 
 For FAQ questions (when `RAG_FAQ_SIMILARITY_ENABLED=true`):
 ```bash
-python scripts/load_to_chroma.py fqa
+python scripts/load_to_chroma/load_intent_registry_to_chroma.py
 ```
 
 ### Custom LLM Provider

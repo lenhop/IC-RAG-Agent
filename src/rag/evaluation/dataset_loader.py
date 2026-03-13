@@ -5,8 +5,8 @@ Loads and validates test cases from FAQ CSV for RAG evaluation.
 Per RAG_EVALUATION_IMPLEMENTATION_PLAN.md Phase 1.3.
 
 Note: This is for evaluation (in-memory test cases), NOT for Chroma ingestion.
-- load_to_chroma.py fqa: FAQ questions -> Chroma (intent classification)
-- load_to_chroma.py keywords: Keywords -> Chroma (intent classification)
+- scripts/load_to_chroma/load_documents_to_chroma.py: documents -> Chroma (RAG)
+- scripts/load_to_chroma/load_intent_registry_to_chroma.py: intent registry CSV -> Chroma
 - dataset_loader: CSV -> List[Dict] for retrieval/generation metrics
 """
 

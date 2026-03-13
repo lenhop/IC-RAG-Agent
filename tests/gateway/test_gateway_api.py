@@ -64,9 +64,9 @@ def test_rewrite_endpoint_returns_rewrite_metadata(mock_rewrite):
 
 
 @patch("src.gateway.api.rewrite_query", return_value=("split me", None, 0, 0))
-@patch("src.gateway.intent_classifier.resolve_intent", return_value="sp_api")
-@patch("src.gateway.intent_classifier.get_keyword_vector_results", return_value=("sp_api", "general"))
-@patch("src.gateway.intent_classifier.split_intents", return_value=["check order status for 112-123"])
+@patch("src.gateway.intent_classification.resolve_intent", return_value="sp_api")
+@patch("src.gateway.intent_classification.get_keyword_vector_results", return_value=("sp_api", "general"))
+@patch("src.gateway.intent_classification.split_intents", return_value=["check order status for 112-123"])
 def test_rewrite_endpoint_returns_per_intent_workflow_label(
     mock_split, mock_kv, mock_resolve, mock_rewrite, monkeypatch
 ):
@@ -529,19 +529,22 @@ def test_query_ic_docs_disabled_returns_friendly_message_no_rag_call(
 
 @patch(
     "src.gateway.api.build_execution_plan",
-    return_value=RewritePlan(
-        plan_type="hybrid",
-        merge_strategy="concat",
-        task_groups=[
-            TaskGroup(
-                group_id="g1",
-                parallel=True,
-                tasks=[
-                    TaskItem(task_id="t1", workflow="general", query="what is FBA", depends_on=[], reason=None),
-                    TaskItem(task_id="t2", workflow="sp_api", query="FBA fee for ASIN B074KF7RKS", depends_on=[], reason=None),
-                ],
-            )
-        ],
+    return_value=(
+        RewritePlan(
+            plan_type="hybrid",
+            merge_strategy="concat",
+            task_groups=[
+                TaskGroup(
+                    group_id="g1",
+                    parallel=True,
+                    tasks=[
+                        TaskItem(task_id="t1", workflow="general", query="what is FBA", depends_on=[], reason=None),
+                        TaskItem(task_id="t2", workflow="sp_api", query="FBA fee for ASIN B074KF7RKS", depends_on=[], reason=None),
+                    ],
+                )
+            ],
+        ),
+        None,
     ),
 )
 @patch("src.gateway.api.route_workflow")
@@ -577,19 +580,22 @@ def test_query_planner_multi_task_returns_structured_response(
 
 @patch(
     "src.gateway.api.build_execution_plan",
-    return_value=RewritePlan(
-        plan_type="hybrid",
-        merge_strategy="concat",
-        task_groups=[
-            TaskGroup(
-                group_id="g1",
-                parallel=True,
-                tasks=[
-                    TaskItem(task_id="t1", workflow="general", query="what is FBA", depends_on=[], reason=None),
-                    TaskItem(task_id="t2", workflow="uds", query="last month fba fee total", depends_on=[], reason=None),
-                ],
-            )
-        ],
+    return_value=(
+        RewritePlan(
+            plan_type="hybrid",
+            merge_strategy="concat",
+            task_groups=[
+                TaskGroup(
+                    group_id="g1",
+                    parallel=True,
+                    tasks=[
+                        TaskItem(task_id="t1", workflow="general", query="what is FBA", depends_on=[], reason=None),
+                        TaskItem(task_id="t2", workflow="uds", query="last month fba fee total", depends_on=[], reason=None),
+                    ],
+                )
+            ],
+        ),
+        None,
     ),
 )
 @patch("src.gateway.api.route_workflow")
@@ -627,19 +633,22 @@ def test_query_planner_partial_failure_surfaces_task_error(
 
 @patch(
     "src.gateway.api.build_execution_plan",
-    return_value=RewritePlan(
-        plan_type="hybrid",
-        merge_strategy="concat",
-        task_groups=[
-            TaskGroup(
-                group_id="g1",
-                parallel=True,
-                tasks=[
-                    TaskItem(task_id="t1", workflow="general", query="what is FBA", depends_on=[], reason=None),
-                    TaskItem(task_id="t2", workflow="ic_docs", query="explain IC-RAG framework", depends_on=[], reason=None),
-                ],
-            )
-        ],
+    return_value=(
+        RewritePlan(
+            plan_type="hybrid",
+            merge_strategy="concat",
+            task_groups=[
+                TaskGroup(
+                    group_id="g1",
+                    parallel=True,
+                    tasks=[
+                        TaskItem(task_id="t1", workflow="general", query="what is FBA", depends_on=[], reason=None),
+                        TaskItem(task_id="t2", workflow="ic_docs", query="explain IC-RAG framework", depends_on=[], reason=None),
+                    ],
+                )
+            ],
+        ),
+        None,
     ),
 )
 @patch("src.gateway.api.route_workflow")

@@ -7,7 +7,7 @@ generation metrics, UMAP visualization, HTML report.
 
 Prerequisites:
   - amazon_fqa.csv at RAG_FAQ_CSV or data/intent_classification/fqa/
-  - Chroma populated: python scripts/load_to_chroma.py documents
+  - Chroma populated: python scripts/load_to_chroma/load_documents_to_chroma.py
   - LLM API (for generation eval): DEEPSEEK_API_KEY or QWEN_API_KEY
 
 Usage:

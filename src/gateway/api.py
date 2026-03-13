@@ -54,6 +54,7 @@ from .schemas import (
 )
 from .auth_routes import router as auth_router
 from src.auth.jwt_util import verify_token
+from src.logger import get_logger_facade
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,44 @@ try:
 except Exception as exc:
     logger.warning("Gateway memory disabled (Redis unreachable): %s", exc)
     gateway_memory = None
+
+# Unified logger facade (short-term Redis + long-term ClickHouse). Best effort.
+gateway_logger = None
+try:
+    gateway_logger = get_logger_facade()
+except Exception as exc:
+    logger.warning("Gateway logger disabled (init failed): %s", exc)
+    gateway_logger = None
+
+
+def _log_runtime_event(**kwargs: Any) -> None:
+    """Best-effort runtime logging; never raises into query/rewrite flow."""
+    if not gateway_logger:
+        return
+    try:
+        gateway_logger.log_runtime(**kwargs)
+    except Exception as exc:
+        logger.debug("Runtime log skipped due to error: %s", exc)
+
+
+def _log_interaction_event(**kwargs: Any) -> None:
+    """Best-effort interaction logging; never raises into query/rewrite flow."""
+    if not gateway_logger:
+        return
+    try:
+        gateway_logger.log_interaction(**kwargs)
+    except Exception as exc:
+        logger.debug("Interaction log skipped due to error: %s", exc)
+
+
+def _log_error_event(**kwargs: Any) -> None:
+    """Best-effort error logging; never raises into query/rewrite flow."""
+    if not gateway_logger:
+        return
+    try:
+        gateway_logger.log_error(**kwargs)
+    except Exception as exc:
+        logger.debug("Error log skipped due to error: %s", exc)
 
 app = FastAPI(
     title="IC-RAG Gateway API",
@@ -486,6 +525,17 @@ async def rewrite(
     original_query = (request.query or "").strip()
     effective_user_id = _resolve_user_id(request, _user)
     clarification_context: str | None = None
+    _log_runtime_event(
+        event_name="gateway_rewrite_request",
+        stage="rewrite",
+        message="rewrite endpoint request started",
+        status="started",
+        request_id=None,
+        session_id=request.session_id,
+        user_id=effective_user_id,
+        workflow=request.workflow or "auto",
+        query_raw=original_query,
+    )
 
     # Clarification (required): return early if query is ambiguous
     if _clarification_enabled():
@@ -495,6 +545,18 @@ async def rewrite(
         ambiguity_result = check_ambiguity(original_query, backend, conversation_context=clarification_context)
         if ambiguity_result.get("needs_clarification"):
             clarification_question = ambiguity_result.get("clarification_question", "")
+            _log_interaction_event(
+                event_name="gateway_rewrite_clarification",
+                status="success",
+                request_id=None,
+                session_id=request.session_id,
+                user_id=effective_user_id,
+                workflow="clarification",
+                query_raw=original_query,
+                clarification_question=clarification_question,
+                answer=clarification_question,
+                latency_ms=0,
+            )
             # NOTE: /rewrite is a preview endpoint — do NOT save to Redis here.
             # The /query endpoint is responsible for all conversation logging.
             return RewriteResponse(
@@ -527,7 +589,7 @@ async def rewrite(
     workflows: List[str] = []
     if rewritten_query and rewritten_query.strip():
         try:
-            from .intent_classifier import split_intents, get_keyword_vector_results, resolve_intent
+            from .intent_classification import split_intents, get_keyword_vector_results, resolve_intent
             intents = split_intents(rewritten_query)
             use_dual_retrieval = os.getenv("GATEWAY_INTENT_CLASSIFICATION_ENABLED", "").lower() in ("1", "true", "yes", "on")
             if intents:
@@ -610,6 +672,20 @@ async def rewrite(
 
     # Rewrite stage outputs one sentence only; do not show as bullet list (splitting is intent-classification step).
     rewritten_query_display = None
+    _log_interaction_event(
+        event_name="gateway_rewrite_preview",
+        status="success",
+        request_id=None,
+        session_id=request.session_id,
+        user_id=effective_user_id,
+        workflow="rewrite_only_preview",
+        query_raw=original_query,
+        query_rewritten=rewritten_query,
+        intent_list=intents or [],
+        intent_details=intent_details or [],
+        answer=rewritten_query,
+        latency_ms=rewrite_time_ms,
+    )
     return RewriteResponse(
         original_query=original_query,
         rewritten_query=rewritten_query,
@@ -662,6 +738,17 @@ async def query(
     routing_confidence = 0.0
     workflow = (request.workflow or "auto").strip().lower() or "auto"
     route_input_query = rewritten_query
+    _log_runtime_event(
+        event_name="gateway_query_request",
+        stage="query",
+        message="query endpoint request started",
+        status="started",
+        request_id=request_id,
+        session_id=request.session_id,
+        user_id=effective_user_id,
+        workflow=request.workflow or "auto",
+        query_raw=original_query,
+    )
 
     try:
         # Clarification check (required, before rewrite): return early if query is ambiguous
@@ -672,6 +759,18 @@ async def query(
             ambiguity_result = check_ambiguity(original_query, backend, conversation_context=clarification_context)
             if ambiguity_result.get("needs_clarification"):
                 clarification_question = ambiguity_result.get("clarification_question", "")
+                _log_interaction_event(
+                    event_name="gateway_query_clarification",
+                    status="success",
+                    request_id=request_id,
+                    session_id=request.session_id,
+                    user_id=effective_user_id,
+                    workflow="clarification",
+                    query_raw=original_query,
+                    clarification_question=clarification_question,
+                    answer=clarification_question,
+                    latency_ms=0,
+                )
                 if gateway_memory and effective_user_id:
                     try:
                         gateway_memory.save_turn(
@@ -714,7 +813,7 @@ async def query(
         if rewritten_query and rewritten_query.strip():
             if os.getenv("GATEWAY_INTENT_CLASSIFICATION_ENABLED", "").lower() in ("1", "true", "yes", "on"):
                 try:
-                    from .intent_classifier import split_intents
+                    from .intent_classification import split_intents
                     intents = split_intents(rewritten_query)
                 except Exception as exc:
                     logger.warning("Intent split failed (non-fatal): %s", exc)
@@ -862,6 +961,18 @@ async def query(
         )
 
         if top_error and not merged_answer:
+            _log_error_event(
+                event_name="gateway_query_failed",
+                request_id=request_id,
+                session_id=request.session_id,
+                user_id=effective_user_id,
+                workflow=workflow,
+                query_raw=original_query,
+                query_rewritten=rewritten_query,
+                error_type="PlannedTaskFailure",
+                error_message=top_error or "All planned tasks failed.",
+                metadata={"failed_tasks": [t.task_id for t in failed_tasks]},
+            )
             if gateway_memory and effective_user_id:
                 try:
                     gateway_memory.save_turn(
@@ -925,10 +1036,34 @@ async def query(
             routing_confidence,
             meta,
         )
+        _log_interaction_event(
+            event_name="gateway_query_success",
+            status="success",
+            request_id=request_id,
+            session_id=request.session_id,
+            user_id=effective_user_id,
+            workflow=workflow,
+            query_raw=original_query,
+            query_rewritten=rewritten_query,
+            answer=merged_answer,
+            latency_ms=rewrite_time_ms,
+        )
         return response
     except Exception as exc:  # pragma: no cover - defensive fallback
         # Defensive error handling so the API still returns a valid schema.
         logger.exception("Gateway query handler failed: %s", exc)
+        _log_error_event(
+            event_name="gateway_query_exception",
+            request_id=request_id,
+            session_id=request.session_id,
+            user_id=effective_user_id,
+            workflow=workflow,
+            query_raw=original_query,
+            query_rewritten=rewritten_query,
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            metadata={"route_source": route_source},
+        )
         # Persist error turn to Redis so chat box content is complete
         if gateway_memory and effective_user_id:
             try:

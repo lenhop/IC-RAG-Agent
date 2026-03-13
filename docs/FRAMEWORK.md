@@ -355,6 +355,20 @@ Out of scope: rewriting text, clarification questions, downstream execution.
 
 **Usage:** RAG Pipeline, UDS Agent, and SP-API Agent use Redis for short-term memory (session history, cache). Query logs and long-term analytics are stored in ClickHouse.
 
+### 4.1 Logger Subsystem
+
+The gateway uses a unified logger facade under `src/logger/` to dual-write structured events to short-term Redis and long-term ClickHouse.
+
+| Component | Responsibility |
+|-----------|----------------|
+| `src/logger/settings.py` | Logger runtime config (Redis/ClickHouse, retry, redaction, batching) |
+| `src/logger/models.py` | Structured event models: interaction, runtime, error |
+| `src/logger/redis_client.py` | Short-term event writes/reads with TTL and retention cap |
+| `src/logger/ch_client.py` | Long-term event writes/reads in ClickHouse with table bootstrap |
+| `src/logger/logger.py` | Facade API: `log_interaction`, `log_runtime`, `log_error`, `read_short_term`, `read_long_term` |
+
+The logging write path is **best effort**: sink failures are isolated and do not interrupt user query execution.
+
 ## 
 
 
@@ -908,7 +922,7 @@ IC-RAG-Agent/
 │   ├── run_unified_chat.py   # Chat UI launcher
 │   ├── run_all_tests.py      # Test runner
 │   ├── run_evaluation.py     # RAG evaluation runner
-│   ├── load_to_chroma.py     # RAG ingest helper
+│   ├── load_to_chroma/       # RAG ingest scripts
 │   ├── query_rag.py          # RAG query helper
 │   └── run_sp_api_gradio.py  # SP-API UI launcher
 ├── docker/

@@ -45,12 +45,11 @@ This folder contains executable shell entrypoints for local runtime and operatio
 ## ChromaDB / Vector Registry
 
 - `load_vector_registry.sh`
-  - Load `vector_intent_registry.csv` into ChromaDB. Requires Ollama with `all-minilm` for embeddings.
+  - Loads `vector_intent_registry.csv` into **local** ChromaDB only (`VECTOR_CHROMA_PATH`). Requires Ollama for embeddings.
   - Usage:
-    - `./bin/load_vector_registry.sh --local` — load to local ChromaDB (default when ECS fails)
-    - `GATEWAY_REWRITE_OLLAMA_URL=http://${CH_HOST}:11434 ./bin/load_vector_registry.sh --local` — use ECS Ollama when local Ollama is not running
-    - `CHA_HOST` and `CHA_PORT` in .env — attempt ECS ChromaDB first; falls back to local on connection failure
-  - Transfer local to ECS: `python scripts/load_vector_registry.py` (local), then `python scripts/transfer_chroma_to_ecs.py vector_intent_registry` (uses CHA_HOST, CHA_PORT from .env)
+    - `./bin/load_vector_registry.sh`
+    - `GATEWAY_REWRITE_OLLAMA_URL=http://${CH_HOST}:11434 ./bin/load_vector_registry.sh` — use remote Ollama when local Ollama is not running
+  - Target is local Chroma only; no ECS load/transfer in the new script structure.
 
 ## Deployment and Ops
 

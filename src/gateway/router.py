@@ -22,11 +22,18 @@ from .routing_heuristics import (
     route_workflow_heuristic as _route_workflow_heuristic,
 )
 from .schemas import QueryRequest
+from src.logger import get_logger_facade
 
 if TYPE_CHECKING:
     from .memory import GatewayConversationMemory
 
 logger = logging.getLogger(__name__)
+
+_gateway_logger = None
+try:
+    _gateway_logger = get_logger_facade()
+except Exception:
+    _gateway_logger = None
 
 
 def _normalize(query: str) -> str:
@@ -153,6 +160,21 @@ def rewrite_query(
         (rewritten_query, None, memory_rounds_used, memory_text_length) tuple.
     """
     normalized = _normalize(request.query or "")
+    if _gateway_logger:
+        try:
+            _gateway_logger.log_runtime(
+                event_name="router_rewrite_start",
+                stage="router_rewrite",
+                message="rewrite_query started",
+                status="started",
+                session_id=request.session_id,
+                user_id=request.user_id,
+                workflow=request.workflow,
+                query_raw=request.query or "",
+                query_rewritten=normalized,
+            )
+        except Exception:
+            pass
 
     if not normalized or not normalized.strip():
         return ("", None, 0, 0)
@@ -192,6 +214,26 @@ def rewrite_query(
         backend=backend,
     )
 
+    if _gateway_logger:
+        try:
+            _gateway_logger.log_runtime(
+                event_name="router_rewrite_done",
+                stage="router_rewrite",
+                message="rewrite_query completed",
+                status="success",
+                session_id=request.session_id,
+                user_id=request.user_id,
+                workflow=request.workflow,
+                query_raw=request.query or "",
+                query_rewritten=optimized_query,
+                latency_ms=None,
+                metadata={
+                    "memory_rounds_used": memory_rounds_used,
+                    "memory_text_length": memory_text_length,
+                },
+            )
+        except Exception:
+            pass
     return (optimized_query, None, memory_rounds_used, memory_text_length)
 
 

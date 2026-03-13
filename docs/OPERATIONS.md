@@ -79,6 +79,32 @@ The unified gateway (port 8000) dispatches to three backend URLs. Set these for 
 - **General knowledge** is answered by the RAG pipeline in general mode. To use DeepSeek for general, set RAG’s `RAG_LLM_PROVIDER=deepseek` or `RAG_GENERAL_LLM_PROVIDER=deepseek` (RAG env, not gateway).
 - **IC_DOCS_ENABLED:** When `false` (default), the IC docs route does not call RAG; the gateway returns a friendly message (“IC document retrieval is not ready yet...”). Set to `true` once Chroma is populated with IC documents.
 
+### Logger subsystem (Gateway)
+
+The gateway logger package (`src/logger/`) writes structured events to Redis (short-term) and ClickHouse (long-term).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LOGGER_ENABLED` | `true` | Master switch for logger facade |
+| `LOGGER_REDIS_ENABLED` | `true` | Enable Redis sink for short-term logs |
+| `LOGGER_CLICKHOUSE_ENABLED` | `true` | Enable ClickHouse sink for long-term logs |
+| `LOGGER_REDIS_URL` | `GATEWAY_REDIS_URL` | Redis connection URL for logger |
+| `LOGGER_REDIS_TTL_SECONDS` | `86400` | TTL for logger Redis keys |
+| `LOGGER_REDIS_MAX_EVENTS_PER_KEY` | `500` | Max events retained per Redis key |
+| `LOGGER_CH_HOST` | `CH_HOST` | ClickHouse host |
+| `LOGGER_CH_PORT` | `CH_PORT` | ClickHouse port |
+| `LOGGER_CH_USER` | `CH_USER` | ClickHouse user |
+| `LOGGER_CH_PASSWORD` | `CH_PASSWORD` | ClickHouse password |
+| `LOGGER_CH_DATABASE` | `CH_DATABASE` | ClickHouse database |
+| `LOGGER_CH_TABLE` | `gateway_logs` | ClickHouse table for logger events |
+| `LOGGER_CH_BATCH_ENABLED` | `true` | Enable buffered ClickHouse inserts |
+| `LOGGER_CH_BATCH_SIZE` | `20` | Flush threshold for buffered inserts |
+| `LOGGER_RETRY_ENABLED` | `true` | Enable retry for storage operations |
+| `LOGGER_RETRY_ATTEMPTS` | `2` | Max retry attempts |
+| `LOGGER_RETRY_BACKOFF_MS` | `50` | Retry backoff in milliseconds |
+| `LOGGER_REDACTION_ENABLED` | `true` | Redact sensitive fields before persistence |
+| `LOGGER_REDACTION_FIELDS` | `authorization,token,password,api_key,secret,cookies` | Case-insensitive key names to redact |
+
 ---
 
 ## Access & Credentials

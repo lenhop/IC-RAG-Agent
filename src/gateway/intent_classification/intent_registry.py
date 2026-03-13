@@ -9,7 +9,7 @@ Each document in Chroma stores:
 - metadata: intent_name, workflow, required_fields (JSON), clarification_template
 
 Usage:
-    from src.gateway.intent_registry import get_intent_collection, get_intent_metadata
+    from src.gateway.intent_classification import get_intent_collection, get_intent_metadata
     collection = get_intent_collection()  # lazy init, cached
     metadata = get_intent_metadata()      # {intent_name: {workflow, required_fields, ...}}
 """
@@ -28,7 +28,7 @@ import yaml
 
 logger = logging.getLogger(__name__)
 
-_PROJECT_ROOT = Path(__file__).parent.parent.parent
+_PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
 _DEFAULT_REGISTRY_PATH = str(_PROJECT_ROOT / "data" / "intent_registry" / "intents.yaml")
 _DEFAULT_CHROMA_PATH = str(_PROJECT_ROOT / "data" / "chroma_db" / "intent_registry")
 _DEFAULT_COLLECTION_NAME = "intent_registry"

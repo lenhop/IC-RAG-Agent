@@ -26,8 +26,14 @@ from .routing_heuristics import (
     split_multi_intent_clauses,
 )
 from .schemas import QueryRequest, RewritePlan, TaskGroup, TaskItem
+from src.logger import get_logger_facade
 
 logger = logging.getLogger(__name__)
+_gateway_logger = None
+try:
+    _gateway_logger = get_logger_facade()
+except Exception:
+    _gateway_logger = None
 
 
 def _vector_classification_enabled() -> bool:
@@ -49,7 +55,7 @@ def _classify_query_to_workflow(
     """
     if _vector_classification_enabled():
         try:
-            from .intent_classifier import classify_intent
+            from .intent_classification.intent_classifier import classify_intent
             result = classify_intent(query, conversation_context=conversation_context)
             if result is not None:
                 logger.debug(
@@ -96,7 +102,7 @@ def _build_plan_from_extracted_intents(
         clarification_template: str = ""
         if intent_name:
             try:
-                from .intent_registry import get_intent_metadata
+                from .intent_classification.intent_registry import get_intent_metadata
                 meta = get_intent_metadata()
                 intent_info = meta.get(intent_name, {})
                 required_fields = intent_info.get("required_fields") or []
@@ -305,6 +311,22 @@ def build_execution_plan(
 
     explicit = (request.workflow or "auto").strip().lower() or "auto"
     normalized_query = normalize_query(request.query or "")
+    if _gateway_logger:
+        try:
+            _gateway_logger.log_runtime(
+                event_name="dispatcher_plan_start",
+                stage="dispatcher",
+                message="build_execution_plan started",
+                status="started",
+                session_id=request.session_id,
+                user_id=request.user_id,
+                workflow=explicit,
+                query_raw=request.query or "",
+                query_rewritten=rewritten_query,
+                intent_list=intents or [],
+            )
+        except Exception:
+            pass
 
     if explicit != "auto":
         task_query = (rewritten_query or normalized_query).strip() or normalized_query
@@ -319,7 +341,7 @@ def build_execution_plan(
         clarification_question: Optional[str] = None
         if intents_with_meta:
             try:
-                from .intent_validator import validate_intents
+                from .intent_classification.intent_validator import validate_intents
                 clarification_question = validate_intents(intents_with_meta, conversation_context)
             except Exception as exc:
                 logger.warning("Intent field validation failed (non-fatal): %s", exc)
@@ -334,7 +356,24 @@ def build_execution_plan(
         (rewritten_query or normalized_query).strip(), request
     )
     task_query = (rewritten_query or normalized_query).strip() or normalized_query
-    return _build_single_task_plan(task_query, workflow), None
+    final_plan = _build_single_task_plan(task_query, workflow)
+    if _gateway_logger:
+        try:
+            _gateway_logger.log_runtime(
+                event_name="dispatcher_plan_done",
+                stage="dispatcher",
+                message="build_execution_plan completed",
+                status="success",
+                session_id=request.session_id,
+                user_id=request.user_id,
+                workflow=workflow,
+                query_raw=request.query or "",
+                query_rewritten=rewritten_query,
+                metadata={"plan_type": final_plan.plan_type},
+            )
+        except Exception:
+            pass
+    return final_plan, None
 
 
 __all__ = [

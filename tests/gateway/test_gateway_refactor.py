@@ -171,7 +171,7 @@ def test_rewriters_import():
 # ---------------------------------------------------------------------------
 
 def test_intent_classifier_import():
-    from src.gateway import intent_classifier
+    from src.gateway.intent_classification import intent_classifier
     assert hasattr(intent_classifier, "classify_intent")
     assert hasattr(intent_classifier, "IntentResult")
 
@@ -191,7 +191,7 @@ def test_intent_classifier_prompt_path():
 # ---------------------------------------------------------------------------
 
 def test_keyword_match_single_workflow():
-    from src.gateway.intent_classifier import _keyword_match_intent
+    from src.gateway.intent_classification.intent_classifier import _keyword_match_intent
     assert _keyword_match_intent("check order status for 112-1234567") == "sp_api"
     assert _keyword_match_intent("show me FBA fees for last month") == "uds"
     assert _keyword_match_intent("what is RAG") == "general"
@@ -199,14 +199,14 @@ def test_keyword_match_single_workflow():
 
 
 def test_keyword_match_hybrid():
-    from src.gateway.intent_classifier import _keyword_match_intent
+    from src.gateway.intent_classification.intent_classifier import _keyword_match_intent
     # Hits both sp_api (order status) and uds (fba fees)
     result = _keyword_match_intent("check order status and show fba fees last month")
     assert result == "hybrid"
 
 
 def test_keyword_match_empty():
-    from src.gateway.intent_classifier import _keyword_match_intent
+    from src.gateway.intent_classification.intent_classifier import _keyword_match_intent
     assert _keyword_match_intent("") == "general"
     assert _keyword_match_intent("   ") == "general"
 
@@ -216,25 +216,25 @@ def test_keyword_match_empty():
 # ---------------------------------------------------------------------------
 
 def test_resolve_intent_consistent():
-    from src.gateway.intent_classifier import resolve_intent
+    from src.gateway.intent_classification.intent_classifier import resolve_intent
     assert resolve_intent("uds", "uds") == "uds"
     assert resolve_intent("sp_api", "sp_api") == "sp_api"
 
 
 def test_resolve_intent_keyword_priority():
-    from src.gateway.intent_classifier import resolve_intent
+    from src.gateway.intent_classification.intent_classifier import resolve_intent
     assert resolve_intent("uds", "sp_api") == "uds"
     assert resolve_intent("uds", "hybrid") == "uds"
 
 
 def test_resolve_intent_vector_fallback():
-    from src.gateway.intent_classifier import resolve_intent
+    from src.gateway.intent_classification.intent_classifier import resolve_intent
     assert resolve_intent("hybrid", "uds") == "uds"
     assert resolve_intent("hybrid", "sp_api") == "sp_api"
 
 
 def test_resolve_intent_both_hybrid():
-    from src.gateway.intent_classifier import resolve_intent
+    from src.gateway.intent_classification.intent_classifier import resolve_intent
     assert resolve_intent("hybrid", "hybrid") == "general"
 
 
@@ -243,7 +243,7 @@ def test_resolve_intent_both_hybrid():
 # ---------------------------------------------------------------------------
 
 def test_intent_result_has_vector_distance():
-    from src.gateway.intent_classifier import IntentResult
+    from src.gateway.intent_classification.intent_classifier import IntentResult
     r = IntentResult(
         intent_name="fee_analysis",
         workflow="uds",
@@ -263,7 +263,7 @@ def test_intent_result_has_vector_distance():
 
 def test_split_intents_llm_single_item_uses_heuristic(monkeypatch):
     """When LLM returns one long item, split_intents should apply heuristic multi-clause split."""
-    from src.gateway import intent_classifier as ic
+    from src.gateway.intent_classification import intent_classifier as ic
 
     class _Resp:
         status_code = 200
@@ -301,7 +301,7 @@ def test_split_intents_llm_single_item_uses_heuristic(monkeypatch):
 
 def test_split_intents_invalid_json_uses_heuristic(monkeypatch):
     """When LLM output is not parseable JSON, split_intents should still split long multi-clause query."""
-    from src.gateway import intent_classifier as ic
+    from src.gateway.intent_classification import intent_classifier as ic
 
     class _Resp:
         status_code = 200
