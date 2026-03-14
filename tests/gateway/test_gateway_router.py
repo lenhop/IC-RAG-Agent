@@ -207,6 +207,7 @@ def test_rewrite_query_without_history_when_session_absent(mock_rewrite_context)
         query="What about last month?",
         workflow="auto",
         rewrite_enable=True,
+        rewrite_backend="ollama",
         session_id=None,
         stream=False,
     )

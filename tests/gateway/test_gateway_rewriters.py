@@ -322,8 +322,8 @@ def test_enforce_rewrite_responsibility_rejects_json_output():
     assert result == "original query"
 
 
-@patch("src.gateway.route_llm.rewriting.rewriters._rewrite_with_ollama_prompt", return_value="line1\nline2")
-def test_rewrite_with_context_collapses_multiline_output(mock_rewrite_prompt):
+@patch("src.gateway.route_llm.rewriting.rewriters._RewriteLLM._call_ollama", return_value="line1\nline2")
+def test_rewrite_with_context_collapses_multiline_output(mock_call_ollama):
     """rewrite_with_context should always return single-line text."""
     result = rewrite_with_context("what is fba", backend="ollama")
     assert "\n" not in result

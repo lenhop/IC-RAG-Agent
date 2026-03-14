@@ -19,7 +19,8 @@ import json
 import logging
 import os
 import re
-from typing import Optional
+from dataclasses import dataclass
+from typing import Any, Callable, Optional
 
 import requests
 
@@ -28,61 +29,84 @@ from ...prompt_loader import load_prompt
 logger = logging.getLogger(__name__)
 
 
-def _resolve_clarification_timeout() -> int:
-    """Read GATEWAY_CLARIFICATION_TIMEOUT from env. Raises ValueError if not set."""
-    raw = (os.getenv("GATEWAY_CLARIFICATION_TIMEOUT") or "").strip()
-    if not raw:
-        logger.error("GATEWAY_CLARIFICATION_TIMEOUT is not set")
-        raise ValueError("GATEWAY_CLARIFICATION_TIMEOUT must be set")
-    try:
-        val = int(raw)
-        if val <= 0:
-            logger.error("GATEWAY_CLARIFICATION_TIMEOUT must be positive, got %s", raw)
-            raise ValueError("GATEWAY_CLARIFICATION_TIMEOUT must be positive")
-        return val
-    except ValueError as e:
-        if "invalid literal" in str(e).lower():
-            logger.error("GATEWAY_CLARIFICATION_TIMEOUT invalid integer: %s", raw, exc_info=True)
-            raise ValueError("GATEWAY_CLARIFICATION_TIMEOUT must be a valid integer") from e
-        raise
+class ClarificationEnvValidator:
+    """
+    Validate and resolve clarification env parameters from os.environ.
 
+    All methods raise ValueError if the env var is missing or invalid.
+    No defaults; every required param must be explicitly set.
+    """
 
-def _resolve_ollama_url() -> str:
-    """Read GATEWAY_CLARIFICATION_OLLAMA_URL from env. Raises ValueError if not set."""
-    value = (os.getenv("GATEWAY_CLARIFICATION_OLLAMA_URL") or "").strip()
-    if not value:
-        logger.error("GATEWAY_CLARIFICATION_OLLAMA_URL is not set")
-        raise ValueError("GATEWAY_CLARIFICATION_OLLAMA_URL must be set (e.g. http://localhost:11434/api/generate)")
-    return value
+    @staticmethod
+    def get_timeout() -> int:
+        """Read and validate GATEWAY_CLARIFICATION_TIMEOUT. Must be positive integer."""
+        raw = (os.getenv("GATEWAY_CLARIFICATION_TIMEOUT") or "").strip()
+        if not raw:
+            logger.error("GATEWAY_CLARIFICATION_TIMEOUT is not set")
+            raise ValueError("GATEWAY_CLARIFICATION_TIMEOUT must be set")
+        try:
+            val = int(raw)
+            if val <= 0:
+                logger.error("GATEWAY_CLARIFICATION_TIMEOUT must be positive, got %s", raw)
+                raise ValueError("GATEWAY_CLARIFICATION_TIMEOUT must be positive")
+            return val
+        except ValueError as e:
+            if "invalid literal" in str(e).lower():
+                logger.error("GATEWAY_CLARIFICATION_TIMEOUT invalid integer: %s", raw, exc_info=True)
+                raise ValueError("GATEWAY_CLARIFICATION_TIMEOUT must be a valid integer") from e
+            raise
 
+    @staticmethod
+    def get_ollama_url() -> str:
+        """Read and validate GATEWAY_CLARIFICATION_OLLAMA_URL."""
+        value = (os.getenv("GATEWAY_CLARIFICATION_OLLAMA_URL") or "").strip()
+        if not value:
+            logger.error("GATEWAY_CLARIFICATION_OLLAMA_URL is not set")
+            raise ValueError(
+                "GATEWAY_CLARIFICATION_OLLAMA_URL must be set (e.g. http://localhost:11434/api/generate)"
+            )
+        return value
 
-def _resolve_clarification_model() -> str:
-    """Read GATEWAY_CLARIFICATION_MODEL from env. Raises ValueError if not set."""
-    value = (os.getenv("GATEWAY_CLARIFICATION_MODEL") or "").strip()
-    if not value:
-        logger.error("GATEWAY_CLARIFICATION_MODEL is not set")
-        raise ValueError("GATEWAY_CLARIFICATION_MODEL must be set")
-    return value
+    @staticmethod
+    def get_model() -> str:
+        """Read and validate GATEWAY_CLARIFICATION_MODEL."""
+        value = (os.getenv("GATEWAY_CLARIFICATION_MODEL") or "").strip()
+        if not value:
+            logger.error("GATEWAY_CLARIFICATION_MODEL is not set")
+            raise ValueError("GATEWAY_CLARIFICATION_MODEL must be set")
+        return value
 
+    @staticmethod
+    def get_deepseek_base_url() -> str:
+        """Read and validate GATEWAY_CLARIFICATION_DEEPSEEK_BASE_URL."""
+        value = (os.getenv("GATEWAY_CLARIFICATION_DEEPSEEK_BASE_URL") or "").strip()
+        if not value:
+            logger.error("GATEWAY_CLARIFICATION_DEEPSEEK_BASE_URL is not set")
+            raise ValueError(
+                "GATEWAY_CLARIFICATION_DEEPSEEK_BASE_URL must be set (e.g. https://api.deepseek.com)"
+            )
+        return value.rstrip("/")
 
-def _resolve_deepseek_base_url() -> str:
-    """Read GATEWAY_CLARIFICATION_DEEPSEEK_BASE_URL from env. Raises ValueError if not set."""
-    value = (os.getenv("GATEWAY_CLARIFICATION_DEEPSEEK_BASE_URL") or "").strip()
-    if not value:
-        logger.error("GATEWAY_CLARIFICATION_DEEPSEEK_BASE_URL is not set")
-        raise ValueError(
-            "GATEWAY_CLARIFICATION_DEEPSEEK_BASE_URL must be set (e.g. https://api.deepseek.com)"
-        )
-    return value.rstrip("/")
+    @staticmethod
+    def get_deepseek_api_key() -> str:
+        """Read and validate DEEPSEEK_API_KEY."""
+        value = (os.getenv("DEEPSEEK_API_KEY") or "").strip()
+        if not value:
+            logger.error("DEEPSEEK_API_KEY is not set for DeepSeek backend")
+            raise ValueError("DEEPSEEK_API_KEY must be set for DeepSeek backend")
+        return value
 
-
-def _resolve_deepseek_api_key() -> str:
-    """Read DEEPSEEK_API_KEY from env. Raises ValueError if not set."""
-    value = (os.getenv("DEEPSEEK_API_KEY") or "").strip()
-    if not value:
-        logger.error("DEEPSEEK_API_KEY is not set for DeepSeek backend")
-        raise ValueError("DEEPSEEK_API_KEY must be set for DeepSeek backend")
-    return value
+    @staticmethod
+    def get_backend() -> str:
+        """Read and validate GATEWAY_CLARIFICATION_BACKEND. Must be 'ollama' or 'deepseek'."""
+        value = (os.getenv("GATEWAY_CLARIFICATION_BACKEND") or "").strip().lower()
+        if not value:
+            logger.error("GATEWAY_CLARIFICATION_BACKEND is not set")
+            raise ValueError("GATEWAY_CLARIFICATION_BACKEND must be set")
+        if value not in ("ollama", "deepseek"):
+            logger.error("GATEWAY_CLARIFICATION_BACKEND unknown: %s", value)
+            raise ValueError(f"Unknown backend {value}; must be 'ollama' or 'deepseek'")
+        return value
 
 
 def _is_concrete_documentation_query(query: str) -> bool:
@@ -109,6 +133,61 @@ def _is_concrete_documentation_query(query: str) -> bool:
     return any(re.search(p, q) for p in patterns)
 
 
+def _is_out_of_scope_query(query: str) -> bool:
+    """
+    Return True when query is clearly outside Amazon seller gateway scope.
+
+    This prevents unnecessary clarification on unrelated topics such as weather,
+    jokes, and generic chit-chat.
+    """
+    q = (query or "").strip().lower()
+    if not q:
+        return False
+    patterns = [
+        r"\bweather\b",
+        r"\btemperature\b",
+        r"\brain\b",
+        r"\bforecast\b",
+        r"\bjoke\b",
+        r"\bwho are you\b",
+        r"\bwhat time is it\b",
+        r"\bnews\b",
+        r"\bmovie\b",
+        r"\bmusic\b",
+    ]
+    return any(re.search(p, q) for p in patterns)
+
+
+def _should_use_conversation_history(query: str) -> bool:
+    """
+    Return True only when query likely depends on previous turns.
+
+    We avoid injecting unrelated history for self-contained queries, which can
+    cause the model to ask clarification questions about old topics.
+    """
+    q = (query or "").strip().lower()
+    if not q:
+        return False
+    # Pronouns and continuation cues typically require context.
+    markers = [
+        r"\bit\b",
+        r"\bthis\b",
+        r"\bthat\b",
+        r"\bthose\b",
+        r"\bthese\b",
+        r"\bthe product\b",
+        r"\bthe order\b",
+        r"\bthe fee\b",
+        r"\bthe issue\b",
+        r"\bwhat about\b",
+        r"\bhow about\b",
+        r"\bcontinue\b",
+        r"\band\b",
+        r"\balso\b",
+    ]
+    return any(re.search(p, q) for p in markers)
+
+
 class QueryAndResponseProcessor:
     """
     Utilities for query preparation and response parsing.
@@ -120,12 +199,26 @@ class QueryAndResponseProcessor:
 
     @staticmethod
     def build_user_input(query: str, conversation_context: Optional[str] = None) -> str:
-        """Build LLM input: optional conversation history + current query."""
-        parts = []
-        if conversation_context and conversation_context.strip():
-            parts.append(f"Conversation history:\n{conversation_context.strip()}\n")
-        parts.append(f"User query: {query.strip()}")
-        return "\n".join(parts)
+        """
+        Build LLM input with strict structural separation.
+
+        The history block is marked as reference-only. The current query block
+        is explicitly marked as the only query to analyze/clarify.
+        """
+        history_block = (
+            conversation_context.strip()
+            if conversation_context and conversation_context.strip()
+            else "(none)"
+        )
+        current_query = (query or "").strip()
+        return (
+            "REFERENCE_HISTORY_FOR_PRONOUN_RESOLUTION_ONLY:\n"
+            "Use this block only to resolve references like it/this/that/these.\n"
+            "Do NOT clarify or summarize questions from this history.\n"
+            f"{history_block}\n\n"
+            "CURRENT_QUERY_ONLY_TO_ANALYZE:\n"
+            f"{current_query}\n"
+        )
 
     @staticmethod
     def strip_markdown_fences(text: str) -> str:
@@ -158,21 +251,6 @@ class QueryAndResponseProcessor:
         return None
 
 
-def _resolve_clarification_backend() -> str:
-    """
-    Resolve clarification backend from GATEWAY_CLARIFICATION_BACKEND env.
-    Raises ValueError if not set or empty.
-    """
-    value = (os.getenv("GATEWAY_CLARIFICATION_BACKEND") or "").strip().lower()
-    if not value:
-        logger.error("GATEWAY_CLARIFICATION_BACKEND is not set")
-        raise ValueError("GATEWAY_CLARIFICATION_BACKEND must be set")
-    if value not in ("ollama", "deepseek"):
-        logger.error("GATEWAY_CLARIFICATION_BACKEND unknown: %s", value)
-        raise ValueError(f"Unknown backend {value}; must be 'ollama' or 'deepseek'")
-    return value
-
-
 class _ClarificationLLM:
     """
     Unified LLM caller for clarification: ambiguity detection and question generation.
@@ -192,7 +270,7 @@ class _ClarificationLLM:
         Backend is read from GATEWAY_CLARIFICATION_BACKEND env (required).
         Returns (raw_response_text, used_backend). used_backend is None when no response.
         """
-        effective = _resolve_clarification_backend()
+        effective = ClarificationEnvValidator.get_backend()
         logger.info("Clarification check: backend=%s query_len=%d", effective, len(query or ""))
         if effective == "deepseek":
             text = cls._call_deepseek_check_ambiguity(query, conversation_context)
@@ -217,9 +295,9 @@ class _ClarificationLLM:
         query: str, conversation_context: Optional[str] = None
     ) -> str:
         """Call Ollama for ambiguity detection."""
-        url = _resolve_ollama_url()
-        mdl = _resolve_clarification_model()
-        timeout = _resolve_clarification_timeout()
+        url = ClarificationEnvValidator.get_ollama_url()
+        mdl = ClarificationEnvValidator.get_model()
+        timeout = ClarificationEnvValidator.get_timeout()
         logger.debug("Ollama check_ambiguity: url=%s model=%s timeout=%s", url, mdl, timeout)
         user_input = QueryAndResponseProcessor.build_user_input(query, conversation_context)
         payload = {
@@ -247,10 +325,10 @@ class _ClarificationLLM:
         query: str, conversation_context: Optional[str] = None
     ) -> str:
         """Call DeepSeek for ambiguity detection."""
-        api_key = _resolve_deepseek_api_key()
-        mdl = _resolve_clarification_model()
-        timeout = _resolve_clarification_timeout()
-        base_url = _resolve_deepseek_base_url()
+        api_key = ClarificationEnvValidator.get_deepseek_api_key()
+        mdl = ClarificationEnvValidator.get_model()
+        timeout = ClarificationEnvValidator.get_timeout()
+        base_url = ClarificationEnvValidator.get_deepseek_base_url()
         logger.debug("DeepSeek check_ambiguity: base_url=%s model=%s timeout=%s", base_url, mdl, timeout)
         try:
             from openai import OpenAI
@@ -288,7 +366,7 @@ class _ClarificationLLM:
         Backend is read from GATEWAY_CLARIFICATION_BACKEND env (required).
         Dispatches to DeepSeek or Ollama. Returns question string or None.
         """
-        effective = _resolve_clarification_backend()
+        effective = ClarificationEnvValidator.get_backend()
         logger.info("Generate clarification question: backend=%s", effective)
         if effective == "deepseek":
             text = cls._call_deepseek_generate_question(query, conversation_context)
@@ -317,9 +395,9 @@ class _ClarificationLLM:
         conversation_context: Optional[str] = None,
     ) -> Optional[str]:
         """Call Ollama to generate clarification question."""
-        url = _resolve_ollama_url()
-        mdl = _resolve_clarification_model()
-        timeout = _resolve_clarification_timeout()
+        url = ClarificationEnvValidator.get_ollama_url()
+        mdl = ClarificationEnvValidator.get_model()
+        timeout = ClarificationEnvValidator.get_timeout()
         logger.debug("Ollama generate_question: url=%s model=%s", url, mdl)
         user_input = QueryAndResponseProcessor.build_user_input(query, conversation_context)
         payload = {
@@ -350,10 +428,10 @@ class _ClarificationLLM:
         conversation_context: Optional[str] = None,
     ) -> Optional[str]:
         """Call DeepSeek to generate clarification question."""
-        api_key = _resolve_deepseek_api_key()
-        mdl = _resolve_clarification_model()
-        timeout = _resolve_clarification_timeout()
-        base_url = _resolve_deepseek_base_url()
+        api_key = ClarificationEnvValidator.get_deepseek_api_key()
+        mdl = ClarificationEnvValidator.get_model()
+        timeout = ClarificationEnvValidator.get_timeout()
+        base_url = ClarificationEnvValidator.get_deepseek_base_url()
         logger.debug("DeepSeek generate_question: base_url=%s model=%s", base_url, mdl)
         try:
             from openai import OpenAI
@@ -446,6 +524,11 @@ def check_ambiguity(
         logger.debug("check_ambiguity: documentation query, skip")
         return {"needs_clarification": False, "clarification_backend": None}
 
+    # [Step 1b] 非业务范围问题跳过澄清
+    if _is_out_of_scope_query(query):
+        logger.debug("check_ambiguity: out-of-scope query, skip")
+        return {"needs_clarification": False, "clarification_backend": None}
+
     logger.info("check_ambiguity: calling LLM for query_len=%d", len(query.strip()))
     text, used_backend = _ClarificationLLM.call(query.strip(), conversation_context)
 
@@ -497,3 +580,100 @@ def check_ambiguity(
         "clarification_question": question.strip(),
         "clarification_backend": used_backend,
     }
+
+
+@dataclass
+class ClarificationCheckResult:
+    """Normalized clarification check output used by API endpoints."""
+
+    needs_clarification: bool
+    clarification_question: Optional[str]
+    backend: str
+    conversation_context: Optional[str]
+
+
+class ClarificationService:
+    """Encapsulates clarification config, context loading, and ambiguity check."""
+
+    def is_enabled(self) -> bool:
+        """Return True when clarification check is enabled."""
+        value = os.getenv("GATEWAY_CLARIFICATION_ENABLED", "true").strip().lower()
+        return value not in ("0", "false", "no", "off")
+
+    def resolve_backend(self) -> str:
+        """Resolve and validate clarification backend from env."""
+        return ClarificationEnvValidator.get_backend()
+
+    def resolve_memory_rounds(self) -> int:
+        """Resolve rounds used for clarification context (hard cap: 3)."""
+        try:
+            configured = int(os.getenv("GATEWAY_CLARIFICATION_MEMORY_ROUNDS", "3"))
+            return min(3, max(1, configured))
+        except (ValueError, TypeError):
+            return 3
+
+    def get_conversation_context(
+        self,
+        memory: Any,
+        user_id: Optional[str],
+        session_id: Optional[str],
+    ) -> Optional[str]:
+        """Build clarification context from short-term memory."""
+        if not memory:
+            return None
+
+        clarification_rounds = self.resolve_memory_rounds()
+        default_rounds = 3
+        history: list[dict[str, Any]] = []
+
+        # Always fetch the larger window; trim later if no clarification found.
+        if user_id and str(user_id).strip():
+            history = memory.get_history_by_user(str(user_id).strip(), last_n=clarification_rounds)
+        elif session_id and str(session_id).strip():
+            history = memory.get_history(str(session_id).strip(), last_n=clarification_rounds)
+
+        if not history:
+            return None
+
+        has_clarification = any(
+            (turn.get("workflow") or "").strip().lower() == "clarification"
+            for turn in history
+        )
+        effective_rounds = clarification_rounds if has_clarification else default_rounds
+        if len(history) > effective_rounds:
+            history = history[-effective_rounds:]
+
+        lines: list[str] = []
+        for idx, turn in enumerate(history, start=1):
+            query = (turn.get("query") or "").strip()
+            answer = (turn.get("answer") or "").strip()
+            if not query:
+                continue
+            lines.append(f'Turn {idx}: User asked "{query}" -> Answer: "{answer}"')
+        return "\n".join(lines) if lines else None
+
+    def check(
+        self,
+        query: str,
+        memory: Any,
+        user_id: Optional[str],
+        session_id: Optional[str],
+        ambiguity_checker: Callable[..., dict[str, Any]] = check_ambiguity,
+    ) -> ClarificationCheckResult:
+        """Run end-to-end clarification check with unified output."""
+        backend = self.resolve_backend()
+        context = None
+        if _should_use_conversation_history(query):
+            context = self.get_conversation_context(memory, user_id, session_id)
+        ambiguity_result = ambiguity_checker(query, conversation_context=context)
+
+        question = ambiguity_result.get("clarification_question")
+        if not isinstance(question, str):
+            question = None
+
+        return ClarificationCheckResult(
+            needs_clarification=bool(ambiguity_result.get("needs_clarification")),
+            clarification_question=question.strip() if question else None,
+            backend=backend,
+            conversation_context=context,
+        )
