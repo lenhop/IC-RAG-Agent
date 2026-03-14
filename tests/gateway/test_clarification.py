@@ -72,6 +72,32 @@ def test_check_ambiguity_show_me_the_fees_returns_clarification():
     assert "fees" in result["clarification_question"].lower()
 
 
+def test_check_ambiguity_what_is_the_fee_returns_clarification():
+    """Ambiguous query 'what is the fee ?' should trigger clarification (heuristic)."""
+    result = check_ambiguity("what is the fee ?", backend="ollama")
+    assert result["needs_clarification"] is True
+    assert "fee" in result["clarification_question"].lower()
+
+
+@patch("src.gateway.route_llm.clarification.clarification._call_clarification_ollama")
+def test_check_ambiguity_what_is_fee_with_context_llm_says_clear_trusts_llm(mock_ollama):
+    """When heuristic matches but LLM (with context) returns false, trust LLM."""
+    mock_ollama.return_value = '{"needs_clarification": false}'
+    ctx = "Turn 1: User asked about sales. Answer: Here are October sales."
+    result = check_ambiguity("what is the fee ?", backend="ollama", conversation_context=ctx)
+    assert result["needs_clarification"] is False
+
+
+@patch("src.gateway.route_llm.clarification.clarification._call_clarification_ollama")
+def test_check_ambiguity_what_is_fee_with_context_llm_fails_returns_clarification(mock_ollama):
+    """When heuristic matches and LLM fails (empty), return clarification."""
+    mock_ollama.return_value = ""
+    ctx = "Turn 1: User asked about sales."
+    result = check_ambiguity("what is the fee ?", backend="ollama", conversation_context=ctx)
+    assert result["needs_clarification"] is True
+    assert "fee" in result["clarification_question"].lower()
+
+
 def test_check_ambiguity_documentation_requirements_returns_no_clarification():
     """Documentation/policy/requirements questions should NOT trigger clarification."""
     result = check_ambiguity(
