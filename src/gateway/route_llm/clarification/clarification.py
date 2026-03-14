@@ -295,9 +295,20 @@ class _ClarificationLLM:
             if text:
                 logger.debug("DeepSeek generate_question returned %d chars", len(text))
                 return text
-            logger.warning("DeepSeek generate_question returned empty, falling back to Ollama")
-            return cls._call_ollama_generate_question(query, conversation_context)
-        return cls._call_ollama_generate_question(query, conversation_context)
+            else :
+                logger.warning("DeepSeek generate_question returned empty, falling back to Ollama")
+                raise ValueError("DeepSeek generate_question failed")
+        elif effective == "ollama":
+            text = cls._call_ollama_generate_question(query, conversation_context)
+            if text:
+                logger.debug("Ollama generate_question returned %d chars", len(text))
+                return text
+            else:
+                logger.error("Ollama generate_question returned empty")
+                raise ValueError("Ollama generate_question failed")
+        else:
+            logger.error("Unknown backend: %s", effective)
+            raise ValueError(f"Unknown backend {effective}; must be 'ollama' or 'deepseek'")
 
     @classmethod
     def _call_ollama_generate_question(
@@ -456,23 +467,30 @@ def check_ambiguity(
             except ValueError:
                 parsed = None
 
+    # --- Annotated: Parsing & Validating LLM Ambiguity Output ---
+    # Check that the response from the LLM is a dict; return default if not.
     if not isinstance(parsed, dict):
         logger.warning("check_ambiguity: invalid or non-dict LLM response, backend=%s", used_backend)
+        # Could not parse valid JSON object, treat as not needing clarification.
         return {"needs_clarification": False, "clarification_backend": used_backend}
 
+    # Extract whether clarification is needed (must be truthy). If not present or false, skip clarification.
     needs = parsed.get("needs_clarification")
     if not needs:
         logger.debug("check_ambiguity: needs_clarification=false, backend=%s", used_backend)
         return {"needs_clarification": False, "clarification_backend": used_backend}
 
+    # Try to get the clarification question. If missing or blank, call model to generate one.
     question = parsed.get("clarification_question")
     if not isinstance(question, str) or not question.strip():
         logger.info("check_ambiguity: needs_clarification=true but empty question, generating")
         question = _ClarificationLLM.generate_question(query.strip(), conversation_context)
+    # If still blank, fallback to a generic prompt.
     if not question or not question.strip():
         logger.warning("check_ambiguity: generate_question returned empty, using generic")
         question = "Could you please provide more details?"
 
+    # All checks passed; log and return structured response for frontend/services.
     logger.info("check_ambiguity: needs_clarification=true backend=%s", used_backend)
     return {
         "needs_clarification": True,
