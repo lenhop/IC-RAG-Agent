@@ -153,6 +153,8 @@ class GatewayClient:
                 "rewrite_enabled": rewrite_enable,
                 "rewrite_backend": rewrite_backend or "mock",
                 "rewrite_time_ms": 0,
+                "clarification_status": "Skip",
+                "clarification_backend": None,
             }
 
         payload: Dict[str, Any] = {

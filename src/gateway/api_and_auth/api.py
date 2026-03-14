@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Tuple
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from ..route_llm.clarification import ClarificationService
 from ..route_llm.clarification.clarification import check_ambiguity
 from ..dispatcher.dispatcher import build_execution_plan
 from ..memory.short_term import GatewayConversationMemory
@@ -59,6 +60,7 @@ from src.auth.jwt_util import verify_token
 from src.logger import get_logger_facade
 
 logger = logging.getLogger(__name__)
+clarification_service = ClarificationService()
 
 
 def _auth_required() -> bool:
@@ -485,75 +487,8 @@ def _is_rewrite_only_mode() -> bool:
 
 
 def _clarification_enabled() -> bool:
-    """Return True when clarification check is enabled (runs before rewrite). Required by default."""
-    v = os.getenv("GATEWAY_CLARIFICATION_ENABLED", "true").strip().lower()
-    if v in ("0", "false", "no", "off"):
-        return False
-    return True
-
-
-def _get_clarification_context(
-    memory: "GatewayConversationMemory | None",
-    user_id: str | None,
-    session_id: str | None,
-) -> str | None:
-    """Fetch conversation history from Redis with adaptive window sizing.
-
-    Window logic:
-    - Load last 4 rounds from Redis (max needed).
-    - If any turn has workflow == "clarification", use all 4 rounds.
-    - Otherwise, trim to 3 rounds.
-
-    Configurable via env:
-    - GATEWAY_MEMORY_ROUNDS_DEFAULT (default 3)
-    - GATEWAY_MEMORY_ROUNDS_WITH_CLARIFICATION (default 4)
-
-    Reuses the same format as router._format_history_for_llm so the LLM sees
-    consistent conversation history across clarification and rewrite steps.
-    """
-    if not memory:
-        return None
-    try:
-        default_rounds = max(1, int(os.getenv("GATEWAY_MEMORY_ROUNDS_DEFAULT", "3")))
-    except (ValueError, TypeError):
-        default_rounds = 3
-    try:
-        clarification_rounds = max(
-            default_rounds,
-            int(os.getenv("GATEWAY_MEMORY_ROUNDS_WITH_CLARIFICATION", "4")),
-        )
-    except (ValueError, TypeError):
-        clarification_rounds = 4
-
-    # Always fetch the larger window; trim later if no clarification found.
-    fetch_n = clarification_rounds
-    history: list = []
-    if user_id and str(user_id).strip():
-        history = memory.get_history_by_user(str(user_id).strip(), last_n=fetch_n)
-    elif session_id and str(session_id).strip():
-        history = memory.get_history(str(session_id).strip(), last_n=fetch_n)
-    if not history:
-        return None
-
-    # Check if any turn is a clarification exchange.
-    has_clarification = any(
-        (turn.get("workflow") or "").strip().lower() == "clarification"
-        for turn in history
-    )
-    effective_rounds = clarification_rounds if has_clarification else default_rounds
-
-    # Trim to effective window (keep most recent turns).
-    if len(history) > effective_rounds:
-        history = history[-effective_rounds:]
-
-    lines = []
-    for idx, turn in enumerate(history, start=1):
-        q = (turn.get("query") or "").strip()
-        a = (turn.get("answer") or "").strip()
-        if not q:
-            continue
-        lines.append(f'Turn {idx}: User asked "{q}" -> Answer: "{a}"')
-    return "\n".join(lines) if lines else None
+    """Compatibility wrapper for tests; delegates to ClarificationService."""
+    return clarification_service.is_enabled()
 
 
 @app.post(
@@ -589,13 +524,20 @@ async def rewrite(
     )
 
     # Clarification (required): return early if query is ambiguous
+    clarification_status: str = "Skip"
+    clarification_backend: str | None = None
     if _clarification_enabled():
-        backend = _resolve_rewrite_backend(request)
-        # Fetch last 3 rounds of conversation from Redis for clarification context
-        clarification_context = _get_clarification_context(gateway_memory, effective_user_id, request.session_id)
-        ambiguity_result = check_ambiguity(original_query, backend, conversation_context=clarification_context)
-        if ambiguity_result.get("needs_clarification"):
-            clarification_question = ambiguity_result.get("clarification_question", "")
+        clarification_result = clarification_service.check(
+            query=original_query,
+            memory=gateway_memory,
+            user_id=effective_user_id,
+            session_id=request.session_id,
+            ambiguity_checker=check_ambiguity,
+        )
+        clarification_backend = clarification_result.backend
+        clarification_context = clarification_result.conversation_context
+        if clarification_result.needs_clarification:
+            clarification_question = clarification_result.clarification_question or ""
             _log_interaction_event(
                 event_name="gateway_rewrite_clarification",
                 status="success",
@@ -620,6 +562,8 @@ async def rewrite(
                 clarification_required=True,
                 clarification_question=clarification_question,
                 pending_query=original_query,
+                clarification_status="Required",
+                clarification_backend=clarification_backend,
             )
 
     # Ensure router receives user_id for memory merge (from JWT or request body)
@@ -737,6 +681,8 @@ async def rewrite(
         answer=rewritten_query,
         latency_ms=rewrite_time_ms,
     )
+    if _clarification_enabled():
+        clarification_status = "Complete"
     return RewriteResponse(
         original_query=original_query,
         rewritten_query=rewritten_query,
@@ -744,6 +690,8 @@ async def rewrite(
         rewrite_backend=_resolve_rewrite_backend(request),
         rewrite_time_ms=rewrite_time_ms,
         plan=None,
+        clarification_status=clarification_status,
+        clarification_backend=clarification_backend,
         memory_rounds=memory_rounds,
         memory_text_length=memory_text_length,
         rewritten_query_length=rewritten_query_length,
@@ -812,12 +760,16 @@ async def query(
     try:
         # Clarification check (required, before rewrite): return early if query is ambiguous
         if _clarification_enabled():
-            backend = _resolve_rewrite_backend(request)
-            # Fetch last 3 rounds of conversation from Redis for clarification context
-            clarification_context = _get_clarification_context(gateway_memory, effective_user_id, request.session_id)
-            ambiguity_result = check_ambiguity(original_query, backend, conversation_context=clarification_context)
-            if ambiguity_result.get("needs_clarification"):
-                clarification_question = ambiguity_result.get("clarification_question", "")
+            clarification_result = clarification_service.check(
+                query=original_query,
+                memory=gateway_memory,
+                user_id=effective_user_id,
+                session_id=request.session_id,
+                ambiguity_checker=check_ambiguity,
+            )
+            clarification_context = clarification_result.conversation_context
+            if clarification_result.needs_clarification:
+                clarification_question = clarification_result.clarification_question or ""
                 _append_memory_event(
                     user_id=effective_user_id,
                     session_id=request.session_id,
@@ -876,6 +828,7 @@ async def query(
                     clarification_required=True,
                     clarification_question=clarification_question,
                     pending_query=original_query,
+                    clarification_backend=clarification_result.backend,
                 )
 
         # Route LLM: rewrite -> rewritten_query; then intent splitting when enabled.

@@ -390,10 +390,11 @@ def _chat_handler(
             clarification_question = (
                 rewrite_result.get("clarification_question") or "Please provide more details."
             )
+            clarification_backend = rewrite_result.get("clarification_backend") or "—"
             pending_query = rewrite_result.get("pending_query") or raw_query
             _set_pending_query(session_id, pending_query)
             yield (
-                "**Clarification needed:**\n\n"
+                f"**Clarification needed ({clarification_backend}):**\n\n"
                 f"{clarification_question}\n\n"
                 "---\n"
                 "Reply with the missing details (e.g. store, ASIN, date range). "
@@ -422,8 +423,16 @@ def _chat_handler(
                 if has_bullets
                 else f"- Rewritten Query: (text length: {rewritten_len} chars) `{routed_query}`"
             )
+            clarification_status = str(
+                rewrite_result.get("clarification_status") or "—"
+            )
+            clarification_backend_value = str(
+                rewrite_result.get("clarification_backend") or "—"
+            )
             lines_parts: List[str] = [
                 "- Normalize: Completed",
+                f"- Clarification: `{clarification_status}`",
+                f"- Clarification Backend: `{clarification_backend_value}`",
                 f"- Integrate short-term memory: {memory_rounds} rounds (text length: {memory_text_len} chars)",
                 q_display,
                 f"- Rewrite Backend: `{rewrite_backend_value}`",
@@ -517,10 +526,11 @@ def _chat_handler(
     # Handle clarification response: store pending_query and display question
     if result.get("clarification_required"):
         clarification_question = result.get("clarification_question") or "Please provide more details."
+        clarification_backend = result.get("clarification_backend") or "—"
         pending_query = result.get("pending_query") or routed_query
         _set_pending_query(session_id, pending_query)
         yield (
-            f"**Clarification needed:** {clarification_question}\n\n"
+            f"**Clarification needed ({clarification_backend}):** {clarification_question}\n\n"
             "Please provide the requested information in your next message."
         )
         return

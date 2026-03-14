@@ -152,6 +152,10 @@ class QueryResponse(BaseModel):
         default=None,
         description="Original query when clarification is needed; client merges with follow-up.",
     )
+    clarification_backend: Optional[str] = Field(
+        default=None,
+        description="Backend used for clarification: ollama or deepseek.",
+    )
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -226,6 +230,14 @@ class RewriteResponse(BaseModel):
     pending_query: Optional[str] = Field(
         default=None,
         description="Original query when clarification is needed.",
+    )
+    clarification_status: Optional[str] = Field(
+        default=None,
+        description="Clarification check status: Complete (ran, no ambiguity), Skip (disabled), Required (returned early).",
+    )
+    clarification_backend: Optional[str] = Field(
+        default=None,
+        description="Backend used for clarification: ollama or deepseek.",
     )
     memory_rounds: int = Field(
         default=0,

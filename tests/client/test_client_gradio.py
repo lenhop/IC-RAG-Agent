@@ -54,6 +54,8 @@ def test_chat_handler_returns_answer():
 
         assert len(outputs) == 2
         assert "Normalize: Completed" in outputs[0]
+        assert "Clarification:" in outputs[0]
+        assert "Clarification Backend:" in outputs[0]
     assert "The answer is 42." in outputs[1]
     assert "Routed Input: `What is the answer?`" in outputs[1]
     mock_client.rewrite_sync.assert_called_once_with(
