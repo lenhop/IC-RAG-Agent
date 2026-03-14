@@ -212,11 +212,9 @@ class QueryAndResponseProcessor:
         )
         current_query = (query or "").strip()
         return (
-            "REFERENCE_HISTORY_FOR_PRONOUN_RESOLUTION_ONLY:\n"
-            "Use this block only to resolve references like it/this/that/these.\n"
-            "Do NOT clarify or summarize questions from this history.\n"
+            "# CONVERSATION HISTORY (ONLY for pronoun reference)\n"
             f"{history_block}\n\n"
-            "CURRENT_QUERY_ONLY_TO_ANALYZE:\n"
+            "# CURRENT USER QUERY (ONLY THIS ONE MATTERS)\n"
             f"{current_query}\n"
         )
 
