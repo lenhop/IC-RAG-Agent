@@ -47,10 +47,9 @@ from .gateway_logger import GatewayEventLogger
 from .intent_rewrite import IntentDetailsBuilder
 from .message import (
     get_gateway_memory,
+    ConversationHistoryHandler,
     MemoryEventWriter,
-    SessionHistoryHandler,
     TurnSummaryPersistence,
-    UserHistoryHandler,
 )
 from .plan_helper import PlanHelper
 from src.logger import get_logger_facade
@@ -64,13 +63,6 @@ async def _get_optional_user_if_required(
 ) -> dict | None:
     """FastAPI Depends: inject Authorization header and delegate to AuthGuard."""
     return await AuthGuard.get_optional_user(authorization)
-
-
-async def _require_user_for_history(
-    authorization: str | None = Header(None, alias="Authorization"),
-) -> dict:
-    """FastAPI Depends: require JWT for user history; delegate to AuthGuard."""
-    return await AuthGuard.require_user_for_history(authorization)
 
 
 # Gateway short-term memory (Redis-backed). None if Redis unreachable.
@@ -128,33 +120,11 @@ async def get_session_history(session_id: str, last_n: int = 10) -> dict[str, An
 
     Requires gateway memory (Redis) to be enabled.
     """
-    return SessionHistoryHandler.get_history(gateway_memory, session_id, min(last_n, 50))
-
-
-@app.delete("/api/v1/session/{session_id}")
-async def clear_session(session_id: str) -> dict[str, Any]:
-    """
-    Clear session history (mirror SP-API).
-
-    Requires gateway memory (Redis) to be enabled.
-    """
-    return SessionHistoryHandler.clear(gateway_memory, session_id)
-
-
-@app.get("/api/v1/user/history")
-async def get_user_history(
-    last_n: int = 5,
-    _user: dict = Depends(_require_user_for_history),
-) -> dict[str, Any]:
-    """
-    Return last N conversation turns for the authenticated user.
-
-    Requires Authorization: Bearer <token>. Extracts user_id from JWT (sub claim).
-    """
-    user_id = (_user.get("sub") or "").strip() if _user else None
-    if not user_id:
-        raise HTTPException(status_code=401, detail="Invalid token: missing user id")
-    return UserHistoryHandler.get_history(gateway_memory, user_id, last_n)
+    return ConversationHistoryHandler.get_session_history(
+        gateway_memory,
+        session_id,
+        min(last_n, 50),
+    )
 
 
 @app.post(

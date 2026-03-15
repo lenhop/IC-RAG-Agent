@@ -14,8 +14,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.gateway.api_and_auth.api import app
-from src.gateway.memory.short_term import GatewayConversationMemory
-from src.gateway.memory.short_term import MemoryEvent
+from src.memory.short_term import GatewayConversationMemory
+from src.memory.short_term import MemoryEvent
 
 
 # ---------------------------------------------------------------------------
@@ -74,14 +74,14 @@ def test_save_turn_skips_empty_user_id(memory, mock_redis):
     mock_redis.rpush.assert_not_called()
 
 
-def test_get_history_returns_last_n(memory, mock_redis):
-    """get_history should LRANGE and parse JSON."""
+def test_get_history_by_session_returns_last_n(memory, mock_redis):
+    """get_history_by_session should LRANGE and parse JSON."""
     raw = [
         '{"query": "q1", "answer": "a1", "workflow": "uds", "timestamp": "2024-01-01T00:00:00Z"}',
         '{"query": "q2", "answer": "a2", "workflow": "general", "timestamp": "2024-01-01T00:01:00Z"}',
     ]
     mock_redis.lrange.return_value = raw
-    history = memory.get_history("sess-1", last_n=10)
+    history = memory.get_history_by_session("sess-1", last_n=10)
     assert len(history) == 2
     assert history[0]["query"] == "q1"
     assert history[1]["query"] == "q2"
@@ -90,24 +90,11 @@ def test_get_history_returns_last_n(memory, mock_redis):
     )
 
 
-def test_get_history_empty_session_returns_empty(memory, mock_redis):
-    """get_history should return [] for empty session_id."""
-    assert memory.get_history("", last_n=10) == []
-    assert memory.get_history("  ", last_n=10) == []
+def test_get_history_by_session_empty_session_returns_empty(memory, mock_redis):
+    """get_history_by_session should return [] for empty session_id."""
+    assert memory.get_history_by_session("", last_n=10) == []
+    assert memory.get_history_by_session("  ", last_n=10) == []
     mock_redis.lrange.assert_not_called()
-
-
-def test_clear_session_deletes_key(memory, mock_redis):
-    """clear_session should DELETE the session key."""
-    memory.clear_session("sess-1")
-    mock_redis.delete.assert_called_once_with("gateway:session:sess-1:history")
-
-
-def test_clear_session_skips_empty(memory, mock_redis):
-    """clear_session should not call Redis when session_id is empty."""
-    memory.clear_session("")
-    memory.clear_session("  ")
-    mock_redis.delete.assert_not_called()
 
 
 def test_get_history_by_user_returns_last_n(memory, mock_redis):
@@ -133,16 +120,21 @@ def test_get_history_by_user_empty_user_returns_empty(memory, mock_redis):
     mock_redis.lrange.assert_not_called()
 
 
-def test_clear_user_history_deletes_key(memory, mock_redis):
-    """clear_user_history should DELETE the user key."""
-    memory.clear_user_history("user-1")
-    mock_redis.delete.assert_called_once_with("gateway:user:user-1:history")
+def test_no_clear_methods_exist_on_gateway_memory():
+    """Conversation history cannot be deleted; clear_session and clear_user_history must not exist."""
+    mem = GatewayConversationMemory(MagicMock())
+    assert not hasattr(mem, "clear_session"), "clear_session must be removed; history is immutable"
+    assert not hasattr(mem, "clear_user_history"), "clear_user_history must be removed; history is immutable"
 
 
-def test_clear_user_history_skips_empty(memory, mock_redis):
-    """clear_user_history should not call Redis when user_id is empty."""
-    memory.clear_user_history("")
-    memory.clear_user_history("  ")
+def test_get_history_by_session_read_only_does_not_call_delete(memory, mock_redis):
+    """get_history_by_session is read-only; it must not call Redis delete."""
+    mock_redis.lrange.return_value = [
+        '{"query": "q1", "answer": "a1", "workflow": "uds", "timestamp": "2024-01-01T00:00:00Z"}',
+    ]
+    result = memory.get_history_by_session("sess-1", last_n=10)
+    assert len(result) == 1
+    assert result[0]["query"] == "q1"
     mock_redis.delete.assert_not_called()
 
 
@@ -364,18 +356,6 @@ def test_get_session_history_when_memory_disabled():
     assert "error" in data
 
 
-def test_delete_session_when_memory_disabled():
-    """DELETE /api/v1/session/{id} returns cleared=False when memory disabled."""
-    with patch("src.gateway.api_and_auth.api.gateway_memory", None):
-        client = TestClient(app)
-        resp = client.delete("/api/v1/session/sess-1")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["session_id"] == "sess-1"
-    assert data["cleared"] is False
-    assert "error" in data
-
-
 def test_get_session_history_with_memory(mock_redis):
     """GET /api/v1/session/{id} returns history when memory enabled."""
     mock_redis.lrange.return_value = [
@@ -392,59 +372,3 @@ def test_get_session_history_with_memory(mock_redis):
     assert data["history"][0]["query"] == "q1"
 
 
-def test_delete_session_with_memory(mock_redis):
-    """DELETE /api/v1/session/{id} clears session when memory enabled."""
-    mem = GatewayConversationMemory(mock_redis)
-    with patch("src.gateway.api_and_auth.api.gateway_memory", mem):
-        client = TestClient(app)
-        resp = client.delete("/api/v1/session/sess-1")
-    assert resp.status_code == 200
-    data = resp.json()
-    assert data["session_id"] == "sess-1"
-    assert data["cleared"] is True
-    mock_redis.delete.assert_called_once_with("gateway:session:sess-1:history")
-
-
-# ---------------------------------------------------------------------------
-# User history API tests
-# ---------------------------------------------------------------------------
-
-
-@patch("src.gateway.api_and_auth.api.verify_token", return_value={"sub": "user-123"})
-def test_get_user_history_returns_history_when_authenticated(mock_verify, mock_redis):
-    """GET /api/v1/user/history returns history when JWT valid and memory enabled."""
-    mock_redis.lrange.return_value = [
-        '{"query": "q1", "answer": "a1", "workflow": "uds", "timestamp": "2024-01-01T00:00:00Z"}',
-    ]
-    mem = GatewayConversationMemory(mock_redis)
-    with patch("src.gateway.api_and_auth.api.gateway_memory", mem):
-        client = TestClient(app)
-        resp = client.get(
-            "/api/v1/user/history?last_n=5",
-            headers={"Authorization": "Bearer fake-token"},
-        )
-    assert resp.status_code == 200
-    data = resp.json()
-    assert "history" in data
-    assert len(data["history"]) == 1
-    assert data["history"][0]["query"] == "q1"
-    assert data["history"][0]["answer"] == "a1"
-    mock_redis.lrange.assert_called_once_with("gateway:user:user-123:history", -5, -1)
-
-
-def test_get_user_history_returns_401_when_no_auth():
-    """GET /api/v1/user/history returns 401 when Authorization header missing."""
-    client = TestClient(app)
-    resp = client.get("/api/v1/user/history")
-    assert resp.status_code == 401
-
-
-@patch("src.gateway.api_and_auth.api.verify_token", return_value=None)
-def test_get_user_history_returns_401_when_token_invalid(mock_verify):
-    """GET /api/v1/user/history returns 401 when token invalid or expired."""
-    client = TestClient(app)
-    resp = client.get(
-        "/api/v1/user/history",
-        headers={"Authorization": "Bearer invalid-token"},
-    )
-    assert resp.status_code == 401

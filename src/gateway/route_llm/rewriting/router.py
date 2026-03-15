@@ -27,7 +27,7 @@ from ..routing_heuristics import (
     normalize_query,
     route_workflow_heuristic as _route_workflow_heuristic,
 )
-from ...api_and_auth.message import ContextHistoryHelper
+from ...api_and_auth.message import ConversationHistoryHandler
 from ...schemas import QueryRequest
 from src.logger import get_logger_facade
 
@@ -291,12 +291,14 @@ class _RewriteRouter:
         memory_text_length = 0
         memory_context: Optional[str] = None
         last_n = RouterEnvConfig.get_memory_rounds()
-        history = ContextHistoryHelper.get_raw(
-            gateway_memory,
-            session_id=request.session_id,
-            user_id=request.user_id,
-            last_n=last_n,
-        )
+        sid = (request.session_id or "").strip()
+        if sid:
+            res = ConversationHistoryHandler.get_session_history(
+                gateway_memory, sid, last_n=last_n
+            )
+            history = res.get("history", [])
+        else:
+            history = []
         if history:
             memory_context = MemoryContextFormatter.format_history_for_llm(history)
             memory_rounds_used = len(history)

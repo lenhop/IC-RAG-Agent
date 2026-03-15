@@ -38,7 +38,7 @@ def test_rewrite_query_with_history_when_session_and_memory_present(mock_rewrite
     from unittest.mock import MagicMock
 
     mock_memory = MagicMock()
-    mock_memory.get_history.return_value = [
+    mock_memory.get_history_by_session.return_value = [
         {"query": "What were my sales?", "answer": "Your total sales were $1000.", "workflow": "uds"},
         {"query": "Break down by product", "answer": "Product A: $600, Product B: $400.", "workflow": "uds"},
     ]
@@ -56,7 +56,7 @@ def test_rewrite_query_with_history_when_session_and_memory_present(mock_rewrite
 
     assert rewritten == "rewritten with context"
     assert memory_rounds == 2
-    mock_memory.get_history.assert_called_once_with("sess-1", last_n=3)
+    mock_memory.get_history_by_session.assert_called_once_with("sess-1", last_n=3)
     mock_rewrite_context.assert_called_once()
     call_kwargs = mock_rewrite_context.call_args[1]
     assert call_kwargs["conversation_context"] is not None
@@ -64,13 +64,13 @@ def test_rewrite_query_with_history_when_session_and_memory_present(mock_rewrite
     assert "What were my sales?" in call_kwargs["conversation_context"]
 
 
-@patch("src.gateway.route_llm.rewriting.router.rewrite_with_context", return_value="rewritten with user history")
-def test_rewrite_query_with_history_when_user_id_present(mock_rewrite_context):
-    """When user_id present, rewrite uses get_history_by_user for memory merge."""
+@patch("src.gateway.route_llm.rewriting.router.rewrite_with_context", return_value="rewritten with session history")
+def test_rewrite_query_with_history_when_session_id_present(mock_rewrite_context):
+    """When session_id present, rewrite uses get_session_history for memory merge."""
     from unittest.mock import MagicMock
 
     mock_memory = MagicMock()
-    mock_memory.get_history_by_user.return_value = [
+    mock_memory.get_history_by_session.return_value = [
         {"query": "What were my sales?", "answer": "Your total sales were $1000.", "workflow": "uds"},
     ]
 
@@ -86,10 +86,9 @@ def test_rewrite_query_with_history_when_user_id_present(mock_rewrite_context):
         req, gateway_memory=mock_memory
     )
 
-    assert rewritten == "rewritten with user history"
+    assert rewritten == "rewritten with session history"
     assert memory_rounds == 1
-    mock_memory.get_history_by_user.assert_called_once_with("user-1", last_n=3)
-    mock_memory.get_history.assert_not_called()
+    mock_memory.get_history_by_session.assert_called_once_with("sess-1", last_n=3)
 
 
 @patch("src.gateway.route_llm.rewriting.router.rewrite_with_context", return_value="rewritten from turn summary")
@@ -98,7 +97,7 @@ def test_rewrite_query_reads_turn_summary_events(mock_rewrite_context):
     from unittest.mock import MagicMock
 
     mock_memory = MagicMock()
-    mock_memory.get_history_by_user.return_value = [
+    mock_memory.get_history_by_session.return_value = [
         {
             "event_type": "user_query",
             "event_content": '{"query":"hello"}',
@@ -133,7 +132,7 @@ def test_rewrite_query_merges_preloaded_and_memory_context(mock_rewrite_context)
     from unittest.mock import MagicMock
 
     mock_memory = MagicMock()
-    mock_memory.get_history_by_user.return_value = [
+    mock_memory.get_history_by_session.return_value = [
         {"query": "what was the ad spend last week", "answer": "ad spend was 1200", "workflow": "uds"},
     ]
     req = QueryRequest(
@@ -167,7 +166,7 @@ def test_rewrite_query_merges_context_without_duplicate_turns(mock_rewrite_conte
     from unittest.mock import MagicMock
 
     mock_memory = MagicMock()
-    mock_memory.get_history_by_user.return_value = [
+    mock_memory.get_history_by_session.return_value = [
         {"query": "what is fba", "answer": "fulfilled by amazon", "workflow": "ic_docs"},
         {"query": "what was ad spend last week", "answer": "1200 usd", "workflow": "uds"},
     ]
@@ -217,8 +216,7 @@ def test_rewrite_query_without_history_when_session_absent(mock_rewrite_context)
 
     assert rewritten == "rewritten no context"
     assert memory_rounds == 0
-    mock_memory.get_history.assert_not_called()
-    mock_memory.get_history_by_user.assert_not_called()
+    mock_memory.get_history_by_session.assert_not_called()
     mock_rewrite_context.assert_called_once_with(
         "What about last month?",
         conversation_context=None,

@@ -1,4 +1,4 @@
-"""Gateway memory package."""
+"""Gateway memory package (short-term Redis, long-term ClickHouse)."""
 
 from .long_term import GatewayMemoryCHClient
 from .short_term import (

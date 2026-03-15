@@ -253,34 +253,33 @@ class GatewayClient:
             data = _safe_json(r) if r else {}
             return {"error": data.get("detail", str(e))}
 
-    def get_user_history_sync(
+    def get_session_history_sync(
         self,
-        token: str,
+        session_id: str,
         last_n: int = 5,
     ) -> Dict[str, Any]:
         """
-        Fetch last N conversation turns for the authenticated user.
+        Fetch last N conversation turns for a session.
 
         Args:
-            token: JWT access token (with or without "Bearer " prefix).
+            session_id: Session identifier.
             last_n: Number of recent turns to return (default 5).
 
         Returns:
-            Dict with "history" key containing list of {query, answer, workflow, timestamp}.
-            On error, returns dict with "error" key.
+            Dict with "session_id" and "history" keys. On error, "error" key and "history": [].
         """
         if self._mock_mode:
-            return {"history": []}
-        url = f"{self._base_url}/api/v1/user/history"
+            return {"session_id": session_id or "", "history": []}
+        if not session_id or not str(session_id).strip():
+            return {"session_id": "", "history": []}
+        url = f"{self._base_url}/api/v1/session/{session_id.strip()}"
         params = {"last_n": min(max(1, last_n), 50)}
         try:
-            auth_val = token if (token or "").strip().lower().startswith("bearer ") else f"Bearer {token}"
-            headers = {"Authorization": auth_val}
-            resp = requests.get(url, params=params, headers=headers, timeout=self._timeout)
+            resp = requests.get(url, params=params, timeout=self._timeout)
             resp.raise_for_status()
             return resp.json()
         except requests.RequestException as e:
-            logger.warning("Get user history failed: %s", e)
+            logger.warning("Get session history failed: %s", e)
             try:
                 r = getattr(e, "response", None)
                 data = _safe_json(r) if r else {}

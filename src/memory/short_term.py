@@ -66,6 +66,7 @@ class GatewayConversationMemory:
 
     Stores query/answer pairs per session with configurable TTL.
     Uses Redis list (RPUSH) and optional LTRIM to cap at 50 turns.
+    Conversation history is read-only: no delete or update is supported.
     """
 
     def __init__(self, redis_client: Any) -> None:
@@ -184,13 +185,15 @@ class GatewayConversationMemory:
             except Exception as exc:
                 logger.warning("Gateway memory append_event ClickHouse write failed: %s", exc)
 
-    def get_history(
+    def get_history_by_session(
         self,
         session_id: str,
         last_n: int = 10,
     ) -> List[Dict[str, Any]]:
         """
-        Retrieve last N turns for a session.
+        Retrieve last N turns for a session (read-only).
+
+        Conversation history is immutable; no delete or update is supported.
 
         Args:
             session_id: Session identifier.
@@ -206,7 +209,7 @@ class GatewayConversationMemory:
             raw = self._redis.lrange(key, -last_n, -1)
             return [json.loads(r) for r in raw] if raw else []
         except Exception as exc:
-            logger.warning("Gateway memory get_history failed: %s", exc)
+            logger.warning("Gateway memory get_history_by_session failed: %s", exc)
             return []
 
     def get_history_by_user(
@@ -233,31 +236,3 @@ class GatewayConversationMemory:
         except Exception as exc:
             logger.warning("Gateway memory get_history_by_user failed: %s", exc)
             return []
-
-    def clear_user_history(self, user_id: str) -> None:
-        """
-        Delete all history for a user.
-
-        Args:
-            user_id: User identifier.
-        """
-        if not user_id or not str(user_id).strip():
-            return
-        try:
-            self._redis.delete(self._key_user(str(user_id).strip()))
-        except Exception as exc:
-            logger.warning("Gateway memory clear_user_history failed: %s", exc)
-
-    def clear_session(self, session_id: str) -> None:
-        """
-        Delete all history for a session (backward compat).
-
-        Args:
-            session_id: Session identifier.
-        """
-        if not session_id or not str(session_id).strip():
-            return
-        try:
-            self._redis.delete(self._key(str(session_id).strip()))
-        except Exception as exc:
-            logger.warning("Gateway memory clear_session failed: %s", exc)

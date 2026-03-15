@@ -273,7 +273,8 @@ def _auto_signin_if_skip_login() -> tuple:
     if token and show_chat:
         client = GatewayClient(base_url=GATEWAY_API_URL or None)
         try:
-            hist_result = client.get_user_history_sync(token, last_n=3)
+            sid = str(uuid4())
+            hist_result = client.get_session_history_sync(sid, last_n=3)
             if not hist_result.get("error"):
                 raw = hist_result.get("history", [])
                 for h in raw:
@@ -728,16 +729,16 @@ def create_demo() -> gr.Blocks:
                         autoscroll=True,
                     )
 
-        def on_signin(su: str, sp: str):
+        def on_signin(su: str, sp: str, session_id: str):
             token, user, msg, show_chat, show_login = _do_signin(su, sp)
             user_md = (
                 f"**UserName:** {user.get('user_name', '')}\n**Role:** {user.get('role', 'general')}"
                 if user else ""
             )
             chat_history: List[Dict[str, str]] = []
-            if token and show_chat:
+            if token and show_chat and (session_id or "").strip():
                 client = GatewayClient(base_url=GATEWAY_API_URL or None)
-                hist_result = client.get_user_history_sync(token, last_n=3)
+                hist_result = client.get_session_history_sync((session_id or "").strip(), last_n=3)
                 if not hist_result.get("error"):
                     raw = hist_result.get("history", [])
                     for h in raw:
@@ -758,16 +759,16 @@ def create_demo() -> gr.Blocks:
                 chat_history,
             )
 
-        def on_register(ru: str, rp: str, re: str):
+        def on_register(ru: str, rp: str, re: str, session_id: str):
             token, user, msg, show_chat, show_login = _do_register(ru, rp, re)
             user_md = (
                 f"**UserName:** {user.get('user_name', '')}\n**Role:** {user.get('role', 'general')}"
                 if user else ""
             )
             chat_history: List[Dict[str, str]] = []
-            if token and show_chat:
+            if token and show_chat and (session_id or "").strip():
                 client = GatewayClient(base_url=GATEWAY_API_URL or None)
-                hist_result = client.get_user_history_sync(token, last_n=3)
+                hist_result = client.get_session_history_sync((session_id or "").strip(), last_n=3)
                 if not hist_result.get("error"):
                     raw = hist_result.get("history", [])
                     for h in raw:
@@ -793,7 +794,7 @@ def create_demo() -> gr.Blocks:
 
         signin_btn.click(
             fn=on_signin,
-            inputs=[signin_user, signin_pass],
+            inputs=[signin_user, signin_pass, session_id_state],
             outputs=[
                 auth_token_state,
                 user_info_state,
@@ -823,7 +824,7 @@ def create_demo() -> gr.Blocks:
         )
         reg_btn.click(
             fn=on_register,
-            inputs=[reg_user, reg_pass, reg_email],
+            inputs=[reg_user, reg_pass, reg_email, session_id_state],
             outputs=[
                 auth_token_state,
                 user_info_state,
