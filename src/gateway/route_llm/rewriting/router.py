@@ -19,7 +19,7 @@ import json
 import logging
 import os
 import re
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 from .rewriters import rewrite_with_context
 from ..routing_heuristics import (
@@ -27,11 +27,9 @@ from ..routing_heuristics import (
     normalize_query,
     route_workflow_heuristic as _route_workflow_heuristic,
 )
+from ...api_and_auth.message import ContextHistoryHelper
 from ...schemas import QueryRequest
 from src.logger import get_logger_facade
-
-if TYPE_CHECKING:
-    from ...memory.short_term import GatewayConversationMemory
 
 logger = logging.getLogger(__name__)
 
@@ -242,7 +240,7 @@ class _RewriteRouter:
     def rewrite_query(
         cls,
         request: QueryRequest,
-        gateway_memory: Optional["GatewayConversationMemory"] = None,
+        gateway_memory: Optional[Any] = None,
         conversation_context: Optional[str] = None,
     ) -> Tuple[str, Optional[List[str]], int, int]:
         """
@@ -292,19 +290,17 @@ class _RewriteRouter:
         memory_rounds_used = 0
         memory_text_length = 0
         memory_context: Optional[str] = None
-        if gateway_memory:
-            last_n = RouterEnvConfig.get_memory_rounds()
-            history: list = []
-            if request.user_id and str(request.user_id).strip():
-                history = gateway_memory.get_history_by_user(
-                    str(request.user_id).strip(), last_n=last_n
-                )
-            elif request.session_id and str(request.session_id).strip():
-                history = gateway_memory.get_history(request.session_id, last_n=last_n)
-            if history:
-                memory_context = MemoryContextFormatter.format_history_for_llm(history)
-                memory_rounds_used = len(history)
-                logger.debug("rewrite_query: loaded %d memory rounds", memory_rounds_used)
+        last_n = RouterEnvConfig.get_memory_rounds()
+        history = ContextHistoryHelper.get_raw(
+            gateway_memory,
+            session_id=request.session_id,
+            user_id=request.user_id,
+            last_n=last_n,
+        )
+        if history:
+            memory_context = MemoryContextFormatter.format_history_for_llm(history)
+            memory_rounds_used = len(history)
+            logger.debug("rewrite_query: loaded %d memory rounds", memory_rounds_used)
 
         conversation_context = MemoryContextFormatter.merge_conversation_context(
             conversation_context, memory_context
@@ -428,7 +424,7 @@ class _RewriteRouter:
 
 def rewrite_query(
     request: QueryRequest,
-    gateway_memory: Optional["GatewayConversationMemory"] = None,
+    gateway_memory: Optional[Any] = None,
     conversation_context: Optional[str] = None,
 ) -> Tuple[str, Optional[List[str]], int, int]:
     """Normalize and rewrite query. Backward-compatible wrapper."""

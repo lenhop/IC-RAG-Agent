@@ -90,10 +90,10 @@ The gateway routes queries to RAG, UDS, and SP-API backends. Route LLM (clarific
 When running gateway locally against ECS backends, use ECS Ollama for Route LLM. Add to `.env`:
 
 ```bash
-GATEWAY_REWRITE_OLLAMA_URL=http://${CH_HOST}:11434/api/generate
-GATEWAY_REWRITE_OLLAMA_MODEL=qwen3:1.7b
-GATEWAY_ROUTE_LLM_OLLAMA_URL=http://${CH_HOST}:11434
-GATEWAY_ROUTE_LLM_OLLAMA_MODEL=qwen3:1.7b
+OLLAMA_BASE_URL=http://${CH_HOST}:11434
+OLLAMA_GENERATE_MODEL=qwen3:1.7b
+OLLAMA_REQUEST_TIMEOUT=120
+OLLAMA_EMBED_MODEL=all-minilm:latest
 ```
 
 Where `CH_HOST` is the ECS host already set in `.env`. Test connectivity: `./bin/test_ecs_ollama_connection.sh`

@@ -55,7 +55,7 @@ def test_chat_handler_returns_answer():
         assert len(outputs) == 2
         assert "Normalize: Completed" in outputs[0]
         assert "Clarification:" in outputs[0]
-        assert "Clarification Backend:" in outputs[0]
+        assert "Clarification backend:" in outputs[0]
     assert "The answer is 42." in outputs[1]
     assert "Routed Input: `What is the answer?`" in outputs[1]
     mock_client.rewrite_sync.assert_called_once_with(
@@ -365,9 +365,9 @@ def test_format_intent_classification_lines_readable_layout():
         workflows_list=["general", "sp_api"],
     )
     text = "\n".join(lines)
-    assert "- Intent classification list:" in text
-    assert "- how does chunking strategy affect rag quality" in text
-    assert "- check inventory levels for asin b09xyz1234 at each fulfillment center" in text
+    assert "Intent classification list:" in text
+    assert "how does chunking strategy affect rag quality" in text
+    assert "check inventory levels for asin b09xyz1234 at each fulfillment center" in text
     assert "Keyword: sp_api, Vector: general, Final: sp_api" in text
-    assert "background-color: #f1f3f5;" in text
-    assert "- Intent classification result: general, sp_api" in text
+    assert "Intent classification result:" in text
+    assert "general, sp_api" in text

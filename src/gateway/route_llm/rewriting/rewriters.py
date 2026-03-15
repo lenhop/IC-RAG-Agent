@@ -20,12 +20,13 @@ import os
 import re
 from typing import Optional
 
-import requests
 from pydantic import ValidationError
 
 from ...schemas import RewritePlan, TaskGroup, TaskItem
 from ...prompt_loader import load_prompt
 from src.logger import get_logger_facade
+from src.llm.call_deepseek import DeepSeekChat
+from src.llm.call_ollama import OllamaClient
 
 logger = logging.getLogger(__name__)
 
@@ -43,32 +44,9 @@ class RewriteEnvValidator:
     """
     Validate and resolve rewrite env parameters from os.environ.
 
-    Uses defaults for rewrite (unlike clarification which requires all).
+    Ollama rewrite uses OLLAMA_BASE_URL, OLLAMA_GENERATE_MODEL,
+    OLLAMA_REQUEST_TIMEOUT, OLLAMA_EMBED_MODEL (via OllamaClient).
     """
-
-    @staticmethod
-    def get_timeout() -> int:
-        """Read GATEWAY_REWRITE_TIMEOUT from env (default 10s)."""
-        try:
-            raw = os.getenv("GATEWAY_REWRITE_TIMEOUT", "10")
-            val = int(raw)
-            if val <= 0:
-                logger.warning("GATEWAY_REWRITE_TIMEOUT must be positive, using 10")
-                return 10
-            return val
-        except ValueError:
-            logger.warning("GATEWAY_REWRITE_TIMEOUT invalid, using 10")
-            return 10
-
-    @staticmethod
-    def get_ollama_url() -> str:
-        """Read GATEWAY_REWRITE_OLLAMA_URL from env."""
-        return (os.getenv("GATEWAY_REWRITE_OLLAMA_URL") or "http://localhost:11434/api/generate").strip()
-
-    @staticmethod
-    def get_ollama_model() -> str:
-        """Read GATEWAY_REWRITE_OLLAMA_MODEL from env."""
-        return (os.getenv("GATEWAY_REWRITE_OLLAMA_MODEL") or "qwen3:1.7b").strip()
 
     @staticmethod
     def get_deepseek_model() -> str:
@@ -437,38 +415,14 @@ class _RewriteLLM:
         fallback_query: str,
         model: Optional[str] = None,
     ) -> str:
-        """Call Ollama; raises RuntimeError on failure."""
-        url = RewriteEnvValidator.get_ollama_url()
-        mdl = model or RewriteEnvValidator.get_ollama_model()
-        timeout = RewriteEnvValidator.get_timeout()
-        logger.debug("Ollama rewrite: url=%s model=%s timeout=%s", url, mdl, timeout)
-
-        payload = {
-            "model": mdl,
-            "prompt": f"{cls.REWRITE_PROMPT}\n\nUser question: {prompt_content}",
-            "stream": False,
-        }
-        try:
-            resp = requests.post(url, json=payload, timeout=timeout)
-        except (requests.ConnectionError, requests.Timeout, requests.RequestException) as exc:
-            logger.error("Ollama rewrite connection failed (%s): %s", url, exc, exc_info=True)
-            raise RuntimeError(f"Ollama rewrite failed: {exc}") from exc
-
-        if resp.status_code != 200:
-            try:
-                detail = resp.json().get("error", resp.text)
-            except Exception:
-                detail = resp.text
-            logger.error("Ollama rewrite HTTP %s (%s): %s", resp.status_code, url, detail)
-            raise RuntimeError(f"Ollama rewrite HTTP {resp.status_code}: {detail}")
-
-        try:
-            data = resp.json()
-            rewritten = (data.get("response") or "").strip()
-            return rewritten if rewritten else fallback_query
-        except (ValueError, TypeError) as exc:
-            logger.error("Ollama rewrite invalid JSON (%s): %s", url, exc, exc_info=True)
-            raise RuntimeError(f"Ollama rewrite invalid response: {exc}") from exc
+        """Call Ollama via OllamaClient (OLLAMA_* env only)."""
+        logger.debug("Ollama rewrite via OllamaClient")
+        prompt = f"{cls.REWRITE_PROMPT}\n\nUser question: {prompt_content}"
+        return OllamaClient().generate(
+            prompt,
+            model=model,
+            empty_fallback=fallback_query,
+        )
 
     @classmethod
     def _call_deepseek(
@@ -477,44 +431,21 @@ class _RewriteLLM:
         fallback_query: str,
         model: Optional[str] = None,
     ) -> str:
-        """Call DeepSeek; raises RuntimeError on failure."""
-        api_key = RewriteEnvValidator.get_deepseek_api_key()
-        if not api_key:
+        """Call DeepSeek via unified DeepSeekChat; raises RuntimeError on failure."""
+        if not RewriteEnvValidator.get_deepseek_api_key():
             logger.error("DEEPSEEK_API_KEY not set; cannot call DeepSeek rewrite")
             raise ValueError("DEEPSEEK_API_KEY must be set for DeepSeek rewrite")
-
-        mdl = model or RewriteEnvValidator.get_deepseek_model()
-        timeout = RewriteEnvValidator.get_timeout()
-        base_url = RewriteEnvValidator.get_deepseek_base_url()
-        logger.debug("DeepSeek rewrite: base_url=%s model=%s", base_url, mdl)
-
+        logger.debug("DeepSeek rewrite via DeepSeekChat (stage=rewrite)")
         try:
-            from openai import OpenAI
-        except ImportError as exc:
-            logger.error("openai client not installed: %s", exc)
-            raise RuntimeError("openai client not installed; cannot call DeepSeek rewrite") from exc
-
-        client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
-        messages = [
-            {"role": "system", "content": cls.REWRITE_PROMPT},
-            {"role": "user", "content": prompt_content},
-        ]
-        try:
-            response = client.chat.completions.create(
-                model=mdl,
-                messages=messages,
-                max_tokens=256,
-                temperature=0.3,
+            out = DeepSeekChat().complete(
+                cls.REWRITE_PROMPT,
+                prompt_content,
+                model_override=model,
             )
-            choice = response.choices[0] if response.choices else None
-            if choice and choice.message and choice.message.content:
-                rewritten = (choice.message.content or "").strip()
-                return rewritten if rewritten else fallback_query
+            return out if out else fallback_query
         except Exception as exc:
             logger.error("DeepSeek rewrite failed: %s", exc, exc_info=True)
             raise RuntimeError(f"DeepSeek rewrite failed: {exc}") from exc
-
-        return fallback_query
 
 
 # --- Backward-compatible public API (delegates to classes) ---

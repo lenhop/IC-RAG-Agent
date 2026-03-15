@@ -119,20 +119,17 @@ def _format_intent_classification_lines(
     intent_details_list: List[Dict[str, Any]],
     intents_list: List[str],
     workflows_list: List[str],
+    classification_time_ms: Optional[int] = None,
 ) -> List[str]:
     """
-    Build a readable markdown block for intent classification.
-
-    Layout goals:
-    - First row: show the sub-intent text only.
-    - Second row: show Keyword/Vector/Final on an indented gray background.
-    - Keep one block per sub-intent for fast scanning.
+    Build HTML list block for intent classification (renders as bullet points).
     """
     lines: List[str] = []
     if not (intent_details_list or intents_list or workflows_list):
         return lines
 
-    lines.append("- Intent classification list:")
+    lines.append("<h4 style=\"margin: 0 0 8px 0;\">3. Classification</h4>")
+    lines.append("<p style=\"margin: 4px 0;\"><strong>Intent classification list:</strong></p>")
     if intent_details_list:
         for detail in intent_details_list:
             intent_text = (detail.get("intent") or "").strip()
@@ -141,25 +138,27 @@ def _format_intent_classification_lines(
             final_wf = (detail.get("workflow") or "general").strip() or "general"
             keyword_wf = (detail.get("keyword") or "—").strip()
             vector_wf = (detail.get("vector") or "—").strip()
-
-            # Row 1: intent text only.
-            lines.append(f"  - {intent_text}")
-            # Row 2: classification row with indentation and gray background.
+            lines.append(f"<p style=\"margin: 4px 0 2px 0;\">{intent_text}</p>")
             lines.append(
-                "    <div style=\"margin: 2px 0 8px 1.6em; padding: 4px 8px; "
-                "background-color: #f1f3f5; border-radius: 6px; color: #4b5563;\">"
+                f"<div style=\"margin: 2px 0 8px 0; padding: 6px 10px; background-color: #e5e7eb; border-radius: 6px; color: #4b5563;\">"
                 f"Keyword: {keyword_wf}, Vector: {vector_wf}, Final: {final_wf}"
                 "</div>"
             )
     else:
+        lines.append("<ul style=\"margin: 0; padding-left: 20px;\">")
         for item in intents_list:
             line = (item or "").strip()
             if line:
-                lines.append(f"  - {line}")
+                lines.append(f"<li>{line}</li>")
+        lines.append("</ul>")
 
+    lines.append("<ul style=\"margin: 8px 0 0 0; padding-left: 20px;\">")
     if workflows_list:
         workflows_str = ", ".join(workflows_list)
-        lines.append(f"- Intent classification result: {workflows_str}")
+        lines.append(f"<li><strong>Intent classification result:</strong> {workflows_str}</li>")
+    if classification_time_ms is not None:
+        lines.append(f"<li><strong>Classification time:</strong> {classification_time_ms} ms</li>")
+    lines.append("</ul>")
     return lines
 
 
@@ -370,7 +369,10 @@ def _chat_handler(
     rewrite_backend_value = "none"
     rewrite_message: Optional[str] = None
 
-    if rewrite_enable:
+    # In rewrite-only test mode, always run rewrite (recommended for this mode).
+    effective_rewrite_enable = rewrite_enable or REWRITE_ONLY_TEST_MODE
+
+    if effective_rewrite_enable:
         rewrite_result = client.rewrite_sync(
             query=raw_query,
             rewrite_enable=True,
@@ -385,6 +387,8 @@ def _chat_handler(
                 "Rewrite failed; continuing with original query.\n"
                 f"Error: {rewrite_error}"
             )
+            if REWRITE_ONLY_TEST_MODE:
+                return  # Avoid showing "rewriting is disabled" when rewrite actually failed
         elif rewrite_result.get("clarification_required"):
             # Clarification needed: display question and store pending for follow-up
             clarification_question = (
@@ -403,9 +407,6 @@ def _chat_handler(
             return
         else:
             routed_query = _to_single_line(str(rewrite_result.get("rewritten_query") or raw_query))
-            # Rewrite stage outputs one sentence; do not split for display (splitting is intent-classification step).
-            display_query = routed_query
-            has_bullets = False
             rewrite_ms = int(rewrite_result.get("rewrite_time_ms") or 0)
             rewrite_backend_value = str(
                 rewrite_result.get("rewrite_backend")
@@ -413,38 +414,54 @@ def _chat_handler(
             )
             memory_rounds = int(rewrite_result.get("memory_rounds") or 0)
             memory_text_len = int(rewrite_result.get("memory_text_length") or 0)
-            rewritten_len = int(rewrite_result.get("rewritten_query_length") or 0)
             intents_list = rewrite_result.get("intents") or []
             intent_details_list = rewrite_result.get("intent_details") or []
             workflows_list = rewrite_result.get("workflows") or []
-
-            q_display = (
-                f"- Rewritten Query: (text length: {rewritten_len} chars)\n{display_query}"
-                if has_bullets
-                else f"- Rewritten Query: (text length: {rewritten_len} chars) `{routed_query}`"
-            )
             clarification_status = str(
                 rewrite_result.get("clarification_status") or "—"
             )
             clarification_backend_value = str(
                 rewrite_result.get("clarification_backend") or "—"
             )
+            clarification_time_raw = rewrite_result.get("clarification_time_ms")
+            clarification_time_display = (
+                f"{int(clarification_time_raw)} ms"
+                if clarification_time_raw is not None
+                else "N/A"
+            )
             lines_parts: List[str] = [
-                "- Normalize: Completed",
-                f"- Clarification: `{clarification_status}`",
-                f"- Clarification Backend: `{clarification_backend_value}`",
-                f"- Integrate short-term memory: {memory_rounds} rounds (text length: {memory_text_len} chars)",
-                q_display,
-                f"- Rewrite Backend: `{rewrite_backend_value}`",
-                f"- Rewrite Time: `{rewrite_ms} ms`",
+                "<div style=\"border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px 12px; margin: 8px 0;\">",
+                "<h4 style=\"margin: 0 0 8px 0;\">1. Clarification</h4>",
+                "<ul style=\"margin: 0; padding-left: 20px;\">",
+                f"<li>Integrate historical conversations: {memory_rounds} rounds (text length: {memory_text_len} chars)</li>",
+                f"<li>Clarification backend: {clarification_backend_value}</li>",
+                f"<li>Clarification: {clarification_status}</li>",
+                f"<li>Clarification time: {clarification_time_display}</li>",
+                "</ul>",
+                "</div>",
+                "",
+                "<div style=\"border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px 12px; margin: 8px 0;\">",
+                "<h4 style=\"margin: 0 0 8px 0;\">2. Rewritten</h4>",
+                "<ul style=\"margin: 0; padding-left: 20px;\">",
+                f"<li>Integrate short-term memory: {memory_rounds} rounds (text length: {memory_text_len} chars)</li>",
+                "<li>Normalize: Completed</li>",
+                f"<li>Rewritten query: {_to_single_line(routed_query)}</li>",
+                f"<li>Rewrite backend: {rewrite_backend_value}</li>",
+                f"<li>Rewrite time: {rewrite_ms} ms</li>",
+                "</ul>",
+                "</div>",
+                "",
+                "<div style=\"border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px 12px; margin: 8px 0;\">",
             ]
             lines_parts.extend(
                 _format_intent_classification_lines(
                     intent_details_list=intent_details_list,
                     intents_list=intents_list,
                     workflows_list=workflows_list,
+                    classification_time_ms=int(rewrite_ms) if rewrite_ms is not None else None,
                 )
             )
+            lines_parts.append("</div>")
             rewrite_message = "\n".join(lines_parts)
             # Include execution plan when available (planner mode)
             plan = rewrite_result.get("plan")

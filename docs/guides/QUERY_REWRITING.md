@@ -35,12 +35,20 @@ Example: `"what is FBA get order 112-123 which table stores fee show me trend"` 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | **GATEWAY_REWRITE_BACKEND** | ollama | Default backend when the client does not send `rewrite_backend`. Use `ollama` or `deepseek`. |
-| **GATEWAY_REWRITE_OLLAMA_URL** | http://localhost:11434/api/generate | Ollama generate endpoint URL. |
-| **GATEWAY_REWRITE_OLLAMA_MODEL** | qwen3:1.7b | Model used for local rewriting. |
-| **GATEWAY_REWRITE_DEEPSEEK_MODEL** | deepseek-chat | Model used for DeepSeek API. |
-| **GATEWAY_REWRITE_TIMEOUT** | 10 | Timeout in seconds for LLM calls. |
+| **OLLAMA_BASE_URL** | http://localhost:11434 | Ollama API base (append /api/generate internally). |
+| **OLLAMA_GENERATE_MODEL** | qwen3:1.7b | Model for generate (rewrite, clarification, intent split). |
+| **OLLAMA_REQUEST_TIMEOUT** | 120 | HTTP timeout seconds for Ollama. |
+| **OLLAMA_EMBED_MODEL** | all-minilm:latest | Model for /api/embed. |
 | **GATEWAY_REWRITE_PLANNER_ENABLED** | true (gateway) | When true, uses two-phase intent classification for multi-question queries. |
-| **DEEPSEEK_API_KEY** | (from .env) | Required for DeepSeek backend. |
+| **DEEPSEEK_API_KEY** | (required) | Required for any DeepSeek Route LLM call. |
+| **DEEPSEEK_LLM_MODEL** | deepseek-chat | Model for all DeepSeek chat calls (clarification, rewrite, intent split). |
+| **DEEPSEEK_BASE_URL** | https://api.deepseek.com | OpenAI-compatible API base URL. |
+| **DEEPSEEK_REQUEST_TIMEOUT** | 60 | HTTP timeout (seconds) for DeepSeek requests. |
+| **GATEWAY_INTENT_SPLIT_BACKEND** | ollama | Intent split: `ollama` or `deepseek` (`split_intents`). |
+
+**Unified clients:**
+- **DeepSeek:** `src/llm/call_deepseek.py` — `DeepSeekChat.complete()`.
+- **Ollama:** `src/llm/call_ollama.py` — `OllamaClient.generate()` / `.embed()`. Config is **only** from env (no hardcoded host/model/timeout): set at least one URL key (`OLLAMA_URL`, `OLLAMA_BASE_URL`, or `GATEWAY_REWRITE_OLLAMA_URL`), one model key (`OLLAMA_MODEL` or `GATEWAY_REWRITE_OLLAMA_MODEL`), and one timeout key (`OLLAMA_TIMEOUT` or `GATEWAY_REWRITE_TIMEOUT`). Clarification may still override URL/model/timeout per call.
 
 **Precedence:** If the client sends `rewrite_backend` in the request, it overrides `GATEWAY_REWRITE_BACKEND`.
 
@@ -108,7 +116,7 @@ Example: `"what is FBA get order 112-123 which table stores fee show me trend"` 
 | Rewriting has no effect | Rewriting Enable unchecked | Enable the checkbox in Options. |
 | "Connection refused" with Local | Ollama not running | Start Ollama: `ollama serve`. |
 | "DEEPSEEK_API_KEY not set" | Key missing or empty | Set `DEEPSEEK_API_KEY` in `.env`. |
-| Timeout | LLM too slow or unreachable | Increase `GATEWAY_REWRITE_TIMEOUT` or switch backend. |
+| Timeout | LLM too slow or unreachable | Increase `OLLAMA_REQUEST_TIMEOUT` or switch backend. |
 | Original query returned | LLM failed (connection, timeout, API error) | Check logs; gateway falls back to normalized query. |
 
 ---

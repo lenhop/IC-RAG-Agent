@@ -29,10 +29,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import requests
-
 from ...prompt_loader import load_prompt
 from src.logger import get_logger_facade
+from src.llm.call_deepseek import DeepSeekChat
+from src.llm.call_ollama import OllamaClient, get_ollama_config
 
 logger = logging.getLogger(__name__)
 _gateway_logger = None
@@ -43,10 +43,6 @@ except Exception:
 
 _DEFAULT_HIGH_CONF = 0.3
 _DEFAULT_LOW_CONF = 0.7
-_DEFAULT_OLLAMA_URL = "http://localhost:11434"
-_DEFAULT_OLLAMA_MODEL = "qwen3:1.7b"
-
-
 @dataclass
 class IntentResult:
     """Result of intent classification."""
@@ -74,16 +70,9 @@ def _get_low_conf_threshold() -> float:
         return _DEFAULT_LOW_CONF
 
 
-def _get_ollama_url() -> str:
-    return os.getenv("GATEWAY_REWRITE_OLLAMA_URL", _DEFAULT_OLLAMA_URL).rstrip("/")
-
-
-def _get_ollama_model() -> str:
-    return os.getenv("GATEWAY_REWRITE_OLLAMA_MODEL", _DEFAULT_OLLAMA_MODEL)
-
-
 def _get_embedding_model() -> str:
-    return os.getenv("GATEWAY_INTENT_EMBEDDING_MODEL", "all-minilm")
+    """Embed model from OLLAMA_EMBED_MODEL (same as OllamaClient)."""
+    return get_ollama_config().embed_model
 
 
 # ---------------------------------------------------------------------------
@@ -143,11 +132,17 @@ def _fallback_split(query: str) -> List[str]:
     return [q]
 
 
+def _intent_split_backend() -> str:
+    """ollama (default) or deepseek via GATEWAY_INTENT_SPLIT_BACKEND."""
+    return (os.getenv("GATEWAY_INTENT_SPLIT_BACKEND") or "ollama").strip().lower()
+
+
 def split_intents(query: str) -> List[str]:
     """
     Split a rewritten query into distinct single-intent sub-questions.
 
-    Uses qwen3:1.7b with intent_split_query.txt prompt.
+    Backend: GATEWAY_INTENT_SPLIT_BACKEND ollama (default) or deepseek.
+    Ollama uses OllamaClient (OLLAMA_* four vars); DeepSeek uses DeepSeekChat.
     When the LLM returns one item or fails, tries heuristic split for long comma/and-separated queries.
 
     Args:
@@ -160,25 +155,26 @@ def split_intents(query: str) -> List[str]:
         return []
 
     prompt_template = load_prompt("classification/intent_split_query")
-    prompt = f"{prompt_template}\n\nInput: {query.strip()}"
+    user_line = f"Input: {query.strip()}"
+    text = ""
 
-    url = f"{_get_ollama_url()}/api/generate"
-    model = _get_ollama_model()
-
-    try:
-        resp = requests.post(
-            url,
-            json={"model": model, "prompt": prompt, "stream": False},
-            timeout=15,
-        )
-        if resp.status_code != 200:
-            logger.warning("Intent split HTTP %s; trying heuristic fallback", resp.status_code)
+    if _intent_split_backend() == "deepseek" and (os.getenv("DEEPSEEK_API_KEY") or "").strip():
+        try:
+            text = DeepSeekChat().complete(
+                prompt_template,
+                user_line,
+                max_tokens=512,
+            )
+        except Exception as exc:
+            logger.warning("Intent split DeepSeek failed: %s; heuristic fallback", exc)
             return _fallback_split(query)
-        data = resp.json()
-        text = (data.get("response") or "").strip()
-    except Exception as exc:
-        logger.warning("Intent split LLM call failed: %s; trying heuristic fallback", exc)
-        return _fallback_split(query)
+    else:
+        prompt = f"{prompt_template}\n\n{user_line}"
+        try:
+            text = OllamaClient().generate(prompt, empty_fallback="")
+        except Exception as exc:
+            logger.warning("Intent split LLM call failed: %s; trying heuristic fallback", exc)
+            return _fallback_split(query)
 
     if not text:
         return _fallback_split(query)
@@ -328,20 +324,15 @@ def _keyword_match_intent(query: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _embed_query(query: str) -> List[float]:
-    """Embed a single query via Ollama /api/embed."""
-    url = f"{_get_ollama_url()}/api/embed"
-    model = _get_embedding_model()
-    resp = requests.post(
-        url,
-        json={"model": model, "input": [query]},
+    """Embed a single query via OllamaClient /api/embed."""
+    vecs = OllamaClient().embed(
+        [query],
+        model=_get_embedding_model(),
         timeout=10,
     )
-    resp.raise_for_status()
-    data = resp.json()
-    embeddings = data.get("embeddings")
-    if not embeddings or not embeddings[0]:
+    if not vecs or not vecs[0]:
         raise ValueError("Empty embedding response from Ollama")
-    return embeddings[0]
+    return vecs[0]
 
 
 def _query_chroma(query_embedding: List[float], n_results: int = 3) -> Dict[str, Any]:

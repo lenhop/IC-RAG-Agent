@@ -274,6 +274,10 @@ class RewriteResponse(BaseModel):
         default=None,
         description="Bullet-point formatted rewritten query for UI display. Use when present.",
     )
+    error: Optional[str] = Field(
+        default=None,
+        description="Error message when rewrite/LLM step failed; client should display this.",
+    )
 
     model_config = ConfigDict(
         json_schema_extra={

@@ -12,6 +12,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 import requests
 
+# Four Ollama env vars required by get_ollama_config().
+_OLLAMA_ENV = {
+    "OLLAMA_BASE_URL": "http://127.0.0.1:11434",
+    "OLLAMA_GENERATE_MODEL": "qwen3:1.7b",
+    "OLLAMA_REQUEST_TIMEOUT": "10",
+    "OLLAMA_EMBED_MODEL": "all-minilm:latest",
+}
+
 from src.gateway.route_llm.rewriting.rewriters import (
     REWRITE_PROMPT,
     _enforce_rewrite_responsibility,
@@ -28,7 +36,8 @@ from src.gateway.route_llm.rewriting.rewriters import (
 # ---------------------------------------------------------------------------
 
 
-@patch("src.gateway.route_llm.rewriting.rewriters.requests.post")
+@patch.dict("os.environ", _OLLAMA_ENV, clear=False)
+@patch("src.llm.call_ollama.requests.post")
 def test_rewrite_with_ollama_success(mock_post):
     """rewrite_with_ollama returns rewritten text when HTTP 200 with response field."""
     mock_resp = MagicMock()
@@ -49,8 +58,8 @@ def test_rewrite_with_ollama_success(mock_post):
     assert call_kwargs["json"]["stream"] is False
 
 
-@patch("src.gateway.route_llm.rewriting.rewriters.requests.post")
-@patch.dict("os.environ", {"GATEWAY_REWRITE_PLANNER_ENABLED": "true"})
+@patch.dict("os.environ", {**_OLLAMA_ENV, "GATEWAY_REWRITE_PLANNER_ENABLED": "true"}, clear=False)
+@patch("src.llm.call_ollama.requests.post")
 def test_rewrite_with_ollama_uses_planner_prompt_when_enabled(mock_post):
     """Planner functionality was refactored; this test checks basic rewrite behavior."""
     mock_resp = MagicMock()
@@ -65,7 +74,8 @@ def test_rewrite_with_ollama_uses_planner_prompt_when_enabled(mock_post):
     assert REWRITE_PROMPT in call_kwargs["json"]["prompt"]
 
 
-@patch("src.gateway.route_llm.rewriting.rewriters.requests.post")
+@patch.dict("os.environ", _OLLAMA_ENV, clear=False)
+@patch("src.llm.call_ollama.requests.post")
 def test_rewrite_with_ollama_connection_error_returns_original(mock_post):
     """On ConnectionError, rewrite_with_ollama returns original query."""
     mock_post.side_effect = requests.ConnectionError("Connection refused")
@@ -76,7 +86,8 @@ def test_rewrite_with_ollama_connection_error_returns_original(mock_post):
     mock_post.assert_called_once()
 
 
-@patch("src.gateway.route_llm.rewriting.rewriters.requests.post")
+@patch.dict("os.environ", _OLLAMA_ENV, clear=False)
+@patch("src.llm.call_ollama.requests.post")
 def test_rewrite_with_ollama_timeout_returns_original(mock_post):
     """On Timeout, rewrite_with_ollama returns original query."""
     mock_post.side_effect = requests.Timeout("Request timed out")
@@ -87,7 +98,8 @@ def test_rewrite_with_ollama_timeout_returns_original(mock_post):
     mock_post.assert_called_once()
 
 
-@patch("src.gateway.route_llm.rewriting.rewriters.requests.post")
+@patch.dict("os.environ", _OLLAMA_ENV, clear=False)
+@patch("src.llm.call_ollama.requests.post")
 def test_rewrite_with_ollama_http_error_returns_original(mock_post):
     """On HTTP non-200, rewrite_with_ollama returns original query."""
     mock_resp = MagicMock()
@@ -103,7 +115,8 @@ def test_rewrite_with_ollama_http_error_returns_original(mock_post):
     mock_post.assert_called_once()
 
 
-@patch("src.gateway.route_llm.rewriting.rewriters.requests.post")
+@patch.dict("os.environ", _OLLAMA_ENV, clear=False)
+@patch("src.llm.call_ollama.requests.post")
 def test_rewrite_with_ollama_empty_response_returns_original(mock_post):
     """When response field is empty, returns original query."""
     mock_resp = MagicMock()
@@ -129,8 +142,15 @@ def test_rewrite_with_ollama_empty_query_returns_as_is():
 # ---------------------------------------------------------------------------
 
 
-@patch("openai.OpenAI")
-@patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test-key-123"})
+@patch("src.llm.call_deepseek.OpenAI")
+@patch.dict(
+    "os.environ",
+    {
+        "DEEPSEEK_API_KEY": "test-key-123",
+        "DEEPSEEK_LLM_MODEL": "deepseek-chat",
+        "DEEPSEEK_REQUEST_TIMEOUT": "30",
+    },
+)
 def test_rewrite_with_deepseek_success(mock_openai_class):
     """rewrite_with_deepseek returns rewritten text when API succeeds."""
     mock_client = MagicMock()
@@ -154,11 +174,13 @@ def test_rewrite_with_deepseek_success(mock_openai_class):
     assert call_kwargs["messages"][1]["content"] == "What is the profit margin?"
 
 
-@patch("openai.OpenAI")
+@patch("src.llm.call_deepseek.OpenAI")
 @patch.dict(
     "os.environ",
     {
         "DEEPSEEK_API_KEY": "test-key-123",
+        "DEEPSEEK_LLM_MODEL": "deepseek-chat",
+        "DEEPSEEK_REQUEST_TIMEOUT": "30",
         "GATEWAY_REWRITE_PLANNER_ENABLED": "true",
     },
 )
@@ -178,8 +200,15 @@ def test_rewrite_with_deepseek_uses_planner_prompt_when_enabled(mock_openai_clas
     assert REWRITE_PROMPT in call_kwargs["messages"][0]["content"]
 
 
-@patch("openai.OpenAI")
-@patch.dict("os.environ", {"DEEPSEEK_API_KEY": "test-key"})
+@patch("src.llm.call_deepseek.OpenAI")
+@patch.dict(
+    "os.environ",
+    {
+        "DEEPSEEK_API_KEY": "test-key",
+        "DEEPSEEK_LLM_MODEL": "deepseek-chat",
+        "DEEPSEEK_REQUEST_TIMEOUT": "30",
+    },
+)
 def test_rewrite_with_deepseek_api_error_returns_original(mock_openai_class):
     """On API exception, rewrite_with_deepseek returns original query."""
     mock_client = MagicMock()

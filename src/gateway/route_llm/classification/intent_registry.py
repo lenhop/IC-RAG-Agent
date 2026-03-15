@@ -23,8 +23,9 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import requests
 import yaml
+
+from src.llm.call_ollama import OllamaClient, get_ollama_config
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +33,6 @@ _PROJECT_ROOT = Path(__file__).parent.parent.parent.parent.parent
 _DEFAULT_REGISTRY_PATH = str(_PROJECT_ROOT / "data" / "intent_registry" / "intents.yaml")
 _DEFAULT_CHROMA_PATH = str(_PROJECT_ROOT / "data" / "chroma_db" / "intent_registry")
 _DEFAULT_COLLECTION_NAME = "intent_registry"
-_DEFAULT_EMBEDDING_MODEL = "all-minilm"
-_DEFAULT_OLLAMA_URL = "http://localhost:11434"
-
 # Module-level cache
 _collection = None
 _intent_metadata: Optional[Dict[str, Dict[str, Any]]] = None
@@ -53,31 +51,15 @@ def _get_collection_name() -> str:
 
 
 def _get_embedding_model() -> str:
-    return os.getenv("GATEWAY_INTENT_EMBEDDING_MODEL", _DEFAULT_EMBEDDING_MODEL)
-
-
-def _get_ollama_url() -> str:
-    return os.getenv("GATEWAY_REWRITE_OLLAMA_URL", _DEFAULT_OLLAMA_URL).rstrip("/")
+    return get_ollama_config().embed_model
 
 
 def _embed_texts(texts: List[str]) -> List[List[float]]:
-    """Embed a batch of texts via Ollama /api/embed endpoint."""
-    url = f"{_get_ollama_url()}/api/embed"
-    model = _get_embedding_model()
+    """Embed a batch of texts via OllamaClient /api/embed (OLLAMA_EMBED_MODEL)."""
     try:
-        resp = requests.post(
-            url,
-            json={"model": model, "input": texts},
-            timeout=60,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        embeddings = data.get("embeddings")
-        if not embeddings or len(embeddings) != len(texts):
-            raise ValueError(f"Expected {len(texts)} embeddings, got {len(embeddings) if embeddings else 0}")
-        return embeddings
+        return OllamaClient().embed(texts, timeout=60)
     except Exception as exc:
-        logger.error("Ollama embed failed (%s): %s", url, exc)
+        logger.error("Ollama embed failed: %s", exc)
         raise
 
 

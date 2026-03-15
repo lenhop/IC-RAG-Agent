@@ -42,24 +42,20 @@ DEFAULT_EMBED_MODEL = os.getenv("DOC_LOAD_EMBED_MODEL", "ollama")
 
 
 def _ollama_base_url() -> str:
-    """Normalize GATEWAY_REWRITE_OLLAMA_URL to Ollama API base (no /api/generate)."""
-    url = (os.getenv("GATEWAY_REWRITE_OLLAMA_URL") or "http://localhost:11434").rstrip("/")
-    for suffix in ("/api/generate", "/api"):
-        if url.endswith(suffix):
-            url = url[: -len(suffix)]
-            break
-    return url.rstrip("/")
+    """Ollama base URL from OLLAMA_BASE_URL."""
+    from src.llm.call_ollama import get_ollama_config
+
+    return get_ollama_config().base_url.rstrip("/")
 
 
 def _embed_kwargs_for_model(embed_model: str) -> dict:
-    """Build create_embeddings kwargs for Ollama (URL + model from env)."""
+    """Build create_embeddings kwargs for Ollama (OLLAMA_BASE_URL + OLLAMA_EMBED_MODEL)."""
     if (embed_model or "").strip().lower() != "ollama":
         return {}
-    model = (
-        os.getenv("DOC_LOAD_OLLAMA_MODEL")
-        or os.getenv("GATEWAY_INTENT_EMBEDDING_MODEL")
-        or "all-minilm"
-    )
+    from src.llm.call_ollama import get_ollama_config
+
+    cfg = get_ollama_config()
+    model = (os.getenv("DOC_LOAD_OLLAMA_MODEL") or "").strip() or cfg.embed_model
     return {"ollama_model": model, "ollama_base_url": _ollama_base_url()}
 
 

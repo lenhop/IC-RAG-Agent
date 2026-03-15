@@ -10,6 +10,13 @@ import pytest
 
 from src.gateway.route_llm.clarification.clarification import check_ambiguity
 
+_OLLAMA_ENV = {
+    "OLLAMA_BASE_URL": "http://127.0.0.1:11434",
+    "OLLAMA_GENERATE_MODEL": "qwen3:1.7b",
+    "OLLAMA_REQUEST_TIMEOUT": "30",
+    "OLLAMA_EMBED_MODEL": "all-minilm:latest",
+}
+
 
 def test_check_ambiguity_empty_query_returns_no_clarification():
     """Empty query should not require clarification."""
@@ -20,7 +27,7 @@ def test_check_ambiguity_empty_query_returns_no_clarification():
     assert result["needs_clarification"] is False
 
 
-@patch.dict("os.environ", {"GATEWAY_CLARIFICATION_BACKEND": "ollama"})
+@patch.dict("os.environ", {**_OLLAMA_ENV, "GATEWAY_CLARIFICATION_BACKEND": "ollama"}, clear=False)
 @patch("src.gateway.route_llm.clarification.clarification._ClarificationLLM._call_ollama_check_ambiguity")
 def test_check_ambiguity_ollama_clear_returns_no_clarification(mock_ollama):
     """When LLM returns needs_clarification false, proceed normally."""
@@ -31,7 +38,7 @@ def test_check_ambiguity_ollama_clear_returns_no_clarification(mock_ollama):
     mock_ollama.assert_called_once_with("what are my sales last month?", None)
 
 
-@patch.dict("os.environ", {"GATEWAY_CLARIFICATION_BACKEND": "ollama"})
+@patch.dict("os.environ", {**_OLLAMA_ENV, "GATEWAY_CLARIFICATION_BACKEND": "ollama"}, clear=False)
 @patch("src.gateway.route_llm.clarification.clarification._ClarificationLLM._call_ollama_check_ambiguity")
 def test_check_ambiguity_ollama_ambiguous_returns_clarification(mock_ollama):
     """When LLM returns needs_clarification true, return question."""
@@ -45,7 +52,7 @@ def test_check_ambiguity_ollama_ambiguous_returns_clarification(mock_ollama):
     mock_ollama.assert_called_once_with("what about my order?", None)
 
 
-@patch.dict("os.environ", {"GATEWAY_CLARIFICATION_BACKEND": "ollama"})
+@patch.dict("os.environ", {**_OLLAMA_ENV, "GATEWAY_CLARIFICATION_BACKEND": "ollama"}, clear=False)
 @patch("src.gateway.route_llm.clarification.clarification._ClarificationLLM._call_ollama_check_ambiguity")
 def test_check_ambiguity_ollama_empty_response_raises(mock_ollama):
     """When LLM returns empty, raise ValueError."""
@@ -54,7 +61,7 @@ def test_check_ambiguity_ollama_empty_response_raises(mock_ollama):
         check_ambiguity("test query")
 
 
-@patch.dict("os.environ", {"GATEWAY_CLARIFICATION_BACKEND": "ollama"})
+@patch.dict("os.environ", {**_OLLAMA_ENV, "GATEWAY_CLARIFICATION_BACKEND": "ollama"}, clear=False)
 @patch("src.gateway.route_llm.clarification.clarification._ClarificationLLM._call_ollama_check_ambiguity")
 def test_check_ambiguity_ollama_invalid_json_returns_no_clarification(mock_ollama):
     """When LLM returns invalid JSON, fall back to no clarification."""
@@ -63,7 +70,7 @@ def test_check_ambiguity_ollama_invalid_json_returns_no_clarification(mock_ollam
     assert result["needs_clarification"] is False
 
 
-@patch.dict("os.environ", {"GATEWAY_CLARIFICATION_BACKEND": "ollama"})
+@patch.dict("os.environ", {**_OLLAMA_ENV, "GATEWAY_CLARIFICATION_BACKEND": "ollama"}, clear=False)
 @patch("src.gateway.route_llm.clarification.clarification._ClarificationLLM._call_ollama_generate_question")
 @patch("src.gateway.route_llm.clarification.clarification._ClarificationLLM._call_ollama_check_ambiguity")
 def test_check_ambiguity_needs_true_but_empty_question_uses_fallback(mock_ollama, mock_gen):
@@ -76,7 +83,7 @@ def test_check_ambiguity_needs_true_but_empty_question_uses_fallback(mock_ollama
     mock_gen.assert_called_once()
 
 
-@patch.dict("os.environ", {"GATEWAY_CLARIFICATION_BACKEND": "ollama"})
+@patch.dict("os.environ", {**_OLLAMA_ENV, "GATEWAY_CLARIFICATION_BACKEND": "ollama"}, clear=False)
 @patch("src.gateway.route_llm.clarification.clarification._ClarificationLLM._call_ollama_check_ambiguity")
 def test_check_ambiguity_needs_true_empty_question_fallback_fails_uses_generic(mock_ollama):
     """When needs_clarification true, question empty, and fallback fails, use generic message."""
@@ -90,7 +97,7 @@ def test_check_ambiguity_needs_true_empty_question_fallback_fails_uses_generic(m
     assert "details" in result["clarification_question"].lower()
 
 
-@patch.dict("os.environ", {"GATEWAY_CLARIFICATION_BACKEND": "ollama"})
+@patch.dict("os.environ", {**_OLLAMA_ENV, "GATEWAY_CLARIFICATION_BACKEND": "ollama"}, clear=False)
 @patch("src.gateway.route_llm.clarification.clarification._ClarificationLLM._call_ollama_check_ambiguity")
 def test_check_ambiguity_show_me_the_fees_returns_clarification(mock_ollama):
     """Ambiguous query 'Show me the fees' should trigger clarification (LLM)."""
@@ -103,7 +110,7 @@ def test_check_ambiguity_show_me_the_fees_returns_clarification(mock_ollama):
     assert "fees" in result["clarification_question"].lower()
 
 
-@patch.dict("os.environ", {"GATEWAY_CLARIFICATION_BACKEND": "ollama"})
+@patch.dict("os.environ", {**_OLLAMA_ENV, "GATEWAY_CLARIFICATION_BACKEND": "ollama"}, clear=False)
 @patch("src.gateway.route_llm.clarification.clarification._ClarificationLLM._call_ollama_check_ambiguity")
 def test_check_ambiguity_what_is_the_fee_returns_clarification(mock_ollama):
     """Ambiguous query 'what is the fee ?' should trigger clarification (LLM)."""
@@ -116,7 +123,7 @@ def test_check_ambiguity_what_is_the_fee_returns_clarification(mock_ollama):
     assert "fee" in result["clarification_question"].lower()
 
 
-@patch.dict("os.environ", {"GATEWAY_CLARIFICATION_BACKEND": "ollama"})
+@patch.dict("os.environ", {**_OLLAMA_ENV, "GATEWAY_CLARIFICATION_BACKEND": "ollama"}, clear=False)
 @patch("src.gateway.route_llm.clarification.clarification._ClarificationLLM._call_ollama_check_ambiguity")
 def test_check_ambiguity_what_is_fee_with_context_llm_says_clear_trusts_llm(mock_ollama):
     """When LLM (with context) returns false, trust LLM."""
@@ -126,7 +133,7 @@ def test_check_ambiguity_what_is_fee_with_context_llm_says_clear_trusts_llm(mock
     assert result["needs_clarification"] is False
 
 
-@patch.dict("os.environ", {"GATEWAY_CLARIFICATION_BACKEND": "ollama"})
+@patch.dict("os.environ", {**_OLLAMA_ENV, "GATEWAY_CLARIFICATION_BACKEND": "ollama"}, clear=False)
 @patch("src.gateway.route_llm.clarification.clarification._ClarificationLLM._call_ollama_check_ambiguity")
 def test_check_ambiguity_llm_empty_response_raises(mock_ollama):
     """When LLM returns empty (failure), raise ValueError."""
@@ -151,20 +158,21 @@ def test_check_ambiguity_missing_backend_raises():
             check_ambiguity("what about my order?")
 
 
-def test_check_ambiguity_missing_ollama_url_raises():
-    """When backend=ollama but GATEWAY_CLARIFICATION_OLLAMA_URL is not set, raises ValueError."""
+def test_check_ambiguity_missing_ollama_base_url_raises():
+    """When backend=ollama but OLLAMA_BASE_URL is not set, raises ValueError."""
     env = {
         "GATEWAY_CLARIFICATION_BACKEND": "ollama",
-        "GATEWAY_CLARIFICATION_OLLAMA_URL": "",
-        "GATEWAY_CLARIFICATION_MODEL": "llama3.2",
-        "GATEWAY_CLARIFICATION_TIMEOUT": "30",
+        "OLLAMA_BASE_URL": "",
+        "OLLAMA_GENERATE_MODEL": "qwen3:1.7b",
+        "OLLAMA_REQUEST_TIMEOUT": "30",
+        "OLLAMA_EMBED_MODEL": "all-minilm:latest",
     }
     with patch.dict("os.environ", env, clear=False):
-        with pytest.raises(ValueError, match="GATEWAY_CLARIFICATION_OLLAMA_URL must be set"):
+        with pytest.raises(ValueError, match="OLLAMA_BASE_URL is not set"):
             check_ambiguity("what about my order?")
 
 
-@patch.dict("os.environ", {"GATEWAY_CLARIFICATION_BACKEND": "ollama"})
+@patch.dict("os.environ", {**_OLLAMA_ENV, "GATEWAY_CLARIFICATION_BACKEND": "ollama"}, clear=False)
 @patch("src.gateway.route_llm.clarification.clarification._ClarificationLLM._call_ollama_check_ambiguity")
 def test_check_ambiguity_sales_with_yyyymmdd_returns_no_clarification(mock_ollama):
     """Sales query with YYYYMMDD date: LLM returns false (has date)."""

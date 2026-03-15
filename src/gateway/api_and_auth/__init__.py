@@ -1,6 +1,7 @@
 """Gateway API and auth package."""
 
-from .api import app
-from .auth_routes import get_auth_service, router
-
-__all__ = ["app", "router", "get_auth_service"]
+# No top-level imports to avoid pulling in api/auth_routes when only message is needed (e.g. router).
+# Use: from src.gateway.api_and_auth.api import app
+# Use: from src.gateway.api_and_auth.auth_routes import router, get_auth_service
+# Use: from src.gateway.api_and_auth.message import ...
+__all__: list[str] = []

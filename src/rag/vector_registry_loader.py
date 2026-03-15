@@ -20,26 +20,17 @@ logger = logging.getLogger(__name__)
 _DEFAULT_CSV_REL = "data/intent_classification/vector_retrieval/vector_intent_registry.csv"
 _DEFAULT_CHROMA_REL = "data/chroma_db/intent_registry"
 _DEFAULT_COLLECTION = "intent_registry"
-_DEFAULT_OLLAMA_URL = "http://localhost:11434"
-_DEFAULT_EMBED_MODEL = "all-minilm"
-
-
-def _cfg(key: str, default: str) -> str:
-    return os.getenv(key, default)
-
-
 def _ollama_url() -> str:
-    """Ollama base URL; strip /api/generate if present."""
-    url = _cfg("GATEWAY_REWRITE_OLLAMA_URL", _DEFAULT_OLLAMA_URL).rstrip("/")
-    for suffix in ("/api/generate", "/api"):
-        if url.endswith(suffix):
-            url = url[: -len(suffix)]
-            break
-    return url.rstrip("/")
+    """Ollama base URL from OLLAMA_BASE_URL."""
+    from src.llm.call_ollama import get_ollama_config
+
+    return get_ollama_config().base_url.rstrip("/")
 
 
 def _embed_model() -> str:
-    return _cfg("GATEWAY_INTENT_EMBEDDING_MODEL", _DEFAULT_EMBED_MODEL)
+    from src.llm.call_ollama import get_ollama_config
+
+    return get_ollama_config().embed_model
 
 
 def _embed_batch(texts: List[str]) -> List[List[float]]:
