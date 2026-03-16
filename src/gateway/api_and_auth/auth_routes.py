@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from src.auth.schemas import RegisterRequest, RegisterResponse, SignInRequest, SignInResponse, UserInfo
 from src.auth.service import AuthService
 from src.auth.jwt_util import verify_token
-from src.uds.uds_client import QueryError
+from src.agent.uds.uds_client import QueryError
 
 logger = logging.getLogger(__name__)
 

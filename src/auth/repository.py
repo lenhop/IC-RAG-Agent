@@ -9,8 +9,8 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import UUID
 
-from src.uds.config import UDSConfig
-from src.uds.uds_client import UDSClient
+from src.agent.uds.config import UDSConfig
+from src.agent.uds.uds_client import UDSClient
 
 logger = logging.getLogger(__name__)
 

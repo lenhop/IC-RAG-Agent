@@ -254,7 +254,7 @@ def _load_keyword_map() -> List[Dict[str, str]]:
     if _keyword_map_cache is not None:
         return _keyword_map_cache
 
-    csv_path = Path(__file__).parent.parent.parent.parent / "prompts" / "retrieval" / "keyword_intents.csv"
+    csv_path = Path(__file__).resolve().parents[4] / "data" / "intent_classification" / "keyword_retrieval" / "keyword_intents.csv"
     rows: List[Dict[str, str]] = []
     try:
         with open(csv_path, newline="", encoding="utf-8") as f:
