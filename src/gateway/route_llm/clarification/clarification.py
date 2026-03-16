@@ -3,12 +3,12 @@ Route LLM clarification: detect ambiguous queries before rewriting.
 
 Clarification workflow (方案一 统一 LLM):
   1. Skip: empty query, documentation/policy questions
-  2. Single LLM: call clarification_detect_ambiguity.txt to decide needs_clarification
+  2. Single LLM: call clarification_detect_ambiguity prompt to decide needs_clarification
      - Covers: referent not in history, multiple referents, semantically vague,
        conflict with history, missing identifiers
      - General knowledge (FBA, ASIN, compliance) -> no clarification
   3. Fallback: when LLM returns needs_clarification=true but empty question,
-     call clarification_generate_question.txt to generate one
+     call clarification_generate_question prompt to generate one
 
 Backend and all config from env (no defaults); missing values raise ValueError.
 """
@@ -22,7 +22,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from ...api_and_auth.message import ConversationHistoryHandler
+from ...message import ConversationHistoryHandler
 from ...prompt_loader import load_prompt
 from src.llm.call_deepseek import DeepSeekChat
 from src.llm.call_ollama import OllamaClient
@@ -272,7 +272,7 @@ def check_ambiguity(
 
     Flow (方案一 统一 LLM):
       1. 空查询/文档类 -> 直接返回 needs_clarification=False
-      2. 调用 LLM (clarification_detect_ambiguity.txt) 做歧义检测
+      2. 调用 LLM (clarification_detect_ambiguity) 做歧义检测
       3. 若 needs_clarification=true 且 question 为空，用 clarification_generate_question 生成
 
     Args:
@@ -360,7 +360,7 @@ class ClarificationService:
     Service that runs clarification check using session history from message.py.
 
     Loads history via ConversationHistoryHandler.get_session_history and
-    format_history_for_llm, then passes formatted context to the ambiguity checker.
+    format_history_for_llm_markdown, then passes formatted context to the ambiguity checker.
     """
 
     @staticmethod
@@ -394,7 +394,7 @@ class ClarificationService:
             res = ConversationHistoryHandler.get_session_history(memory, sid, last_n=last_n)
             history = res.get("history") or []
             if history:
-                conversation_context = ConversationHistoryHandler.format_history_for_llm(history)
+                conversation_context = ConversationHistoryHandler.format_history_for_llm_markdown(history)
         raw = ambiguity_checker(query, conversation_context=conversation_context)
         needs = bool(raw.get("needs_clarification"))
         question = raw.get("clarification_question")

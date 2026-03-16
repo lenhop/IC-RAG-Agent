@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 from typing import Any, List, Optional, Tuple
 
 from .rewriters import rewrite_with_context
@@ -27,7 +26,7 @@ from ..routing_heuristics import (
     normalize_query,
     route_workflow_heuristic as _route_workflow_heuristic,
 )
-from ...api_and_auth.message import ConversationHistoryHandler
+from ...message import ConversationHistoryHandler
 from ...schemas import QueryRequest
 from src.logger import get_logger_facade
 
@@ -97,100 +96,12 @@ class RouterEnvConfig:
         return (os.getenv("GATEWAY_ROUTE_BACKEND", "ollama") or "ollama").strip().lower()
 
 
-class MemoryContextFormatter:
-    """
-    Format and merge conversation context for LLM rewrite.
-
-    - format_history_for_llm: turn list -> formatted string
-    - merge_conversation_context: deduplicate preloaded + memory context
-    - count_context_rounds: count turns from formatted context
-    """
-
-    @classmethod
-    def format_history_for_llm(cls, history: list) -> str:
-        """
-        Format session history for LLM prompt. Delegates to message.py for single source.
-        """
-        return ConversationHistoryHandler.format_history_for_llm(history)
-
-    @classmethod
-    def merge_conversation_context(
-        cls,
-        preloaded_context: Optional[str],
-        memory_context: Optional[str],
-    ) -> Optional[str]:
-        """
-        Merge caller-provided context with Redis memory context (deduplicated).
-
-        This ensures rewrite always benefits from recent conversation history even
-        when an upstream caller already passed a partial context payload.
-        """
-        preloaded = (preloaded_context or "").strip()
-        memory = (memory_context or "").strip()
-        if not preloaded and not memory:
-            return None
-        if not preloaded:
-            return memory
-        if not memory:
-            return preloaded
-
-        merged_turns: List[Tuple[str, str]] = []
-        seen_keys: set[str] = set()
-        for block in (preloaded, memory):
-            for query, answer in cls._parse_turns(block):
-                key = f"{query.lower()}::{answer.lower()}"
-                if key in seen_keys:
-                    continue
-                seen_keys.add(key)
-                merged_turns.append((query, answer))
-
-        if not merged_turns:
-            return None
-        normalized_lines = [
-            f'Turn {idx}: User asked "{q}" -> Answer: "{a}"'
-            for idx, (q, a) in enumerate(merged_turns, start=1)
-        ]
-        return "\n".join(normalized_lines)
-
-    @staticmethod
-    def _parse_turns(block: str) -> List[Tuple[str, str]]:
-        """
-        Parse context lines to (query, answer) pairs.
-
-        Expected line format:
-            Turn N: User asked "..." -> Answer: "..."
-        """
-        turns: List[Tuple[str, str]] = []
-        pattern = re.compile(r'^Turn\s+\d+:\s+User asked\s+"(.*)"\s+->\s+Answer:\s+"(.*)"$')
-        for raw_line in block.splitlines():
-            line = (raw_line or "").strip()
-            if not line:
-                continue
-            m = pattern.match(line)
-            if m:
-                q = (m.group(1) or "").strip()
-                a = (m.group(2) or "").strip()
-                if q:
-                    turns.append((q, a))
-                continue
-            # Best-effort fallback for non-standard lines.
-            turns.append((line, ""))
-        return turns
-
-    @staticmethod
-    def count_context_rounds(context: Optional[str]) -> int:
-        """Best-effort count of conversation rounds from formatted context lines."""
-        text = (context or "").strip()
-        if not text:
-            return 0
-        return len([ln for ln in text.splitlines() if ln.strip()])
-
-
 class _RewriteRouter:
     """
     Router workflow: rewrite_query and route_workflow.
 
-    Assembles RouterEnvConfig, MemoryContextFormatter, and rewrite_with_context.
+    Assembles RouterEnvConfig and rewrite_with_context. All history/context
+    operations go through ConversationHistoryHandler (message.py).
     """
 
     @classmethod
@@ -257,17 +168,20 @@ class _RewriteRouter:
         else:
             history = []
         if history:
-            memory_context = ConversationHistoryHandler.format_history_for_llm(history)
+            memory_context = ConversationHistoryHandler.format_history_for_llm_markdown(history)
             memory_rounds_used = len(history)
             logger.debug("rewrite_query: loaded %d memory rounds", memory_rounds_used)
 
-        conversation_context = MemoryContextFormatter.merge_conversation_context(
+        # conversation_context: from api.py (clarification_context), pre-formatted session
+        # history used in clarification. memory_context: loaded above from Redis for this
+        # session, same markdown format. Merge and deduplicate so the rewrite LLM sees one.
+        conversation_context = ConversationHistoryHandler.merge_context_strings(
             conversation_context, memory_context
         )
         if conversation_context and conversation_context.strip():
             memory_text_length = len(conversation_context)
             if memory_rounds_used <= 0:
-                memory_rounds_used = MemoryContextFormatter.count_context_rounds(
+                memory_rounds_used = ConversationHistoryHandler.count_context_rounds(
                     conversation_context
                 )
 

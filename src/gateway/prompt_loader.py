@@ -1,7 +1,9 @@
 """
 Prompt loader for externalized LLM prompts.
 
-Reads .txt files from src/gateway/route_llm/ subdirectories (clarification, rewriting, classification).
+Reads .md files from src/gateway/route_llm/ (clarification, rewriting, classification);
+falls back to .txt if .md is not present. Base path: src/gateway/route_llm/.
+
 Usage:
     from src.gateway.prompt_loader import load_prompt
     prompt = load_prompt("clarification/clarification_detect_ambiguity")
@@ -22,15 +24,15 @@ _cache: Dict[str, str] = {}
 
 def load_prompt(name: str) -> str:
     """
-    Load a prompt by name (filename without .txt extension).
+    Load a prompt by name (filename without extension).
 
-    Reads from src/gateway/route_llm/{name}.txt, caches after first load.
+    Looks for src/gateway/route_llm/{name}.md first, then {name}.txt. Caches after first load.
     Supports subdirectory paths, e.g.:
         "clarification/clarification_detect_ambiguity"
         "rewriting/rewrite_query_clean"
         "classification/intent_split_query"
 
-    Raises FileNotFoundError if the prompt file does not exist.
+    Raises FileNotFoundError if neither .md nor .txt exists.
 
     Args:
         name: Prompt path, e.g. "clarification/clarification_detect_ambiguity".
@@ -41,9 +43,11 @@ def load_prompt(name: str) -> str:
     if name in _cache:
         return _cache[name]
 
-    filepath = _PROMPTS_BASE / f"{name}.txt"
+    filepath_md = _PROMPTS_BASE / f"{name}.md"
+    filepath_txt = _PROMPTS_BASE / f"{name}.txt"
+    filepath = filepath_md if filepath_md.is_file() else filepath_txt
     if not filepath.is_file():
-        raise FileNotFoundError(f"Prompt file not found: {filepath}")
+        raise FileNotFoundError(f"Prompt file not found: {filepath_md} or {filepath_txt}")
 
     text = filepath.read_text(encoding="utf-8").strip()
     if not text:

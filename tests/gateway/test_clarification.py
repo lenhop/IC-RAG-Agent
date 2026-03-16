@@ -210,14 +210,20 @@ def test_clarification_service_is_enabled_true():
 
 @patch("src.gateway.route_llm.clarification.clarification.ConversationHistoryHandler")
 def test_clarification_service_check_loads_history_from_message_py(mock_handler):
-    """ClarificationService.check loads history via message.py and passes formatted context."""
+    """ClarificationService.check loads history via message.py and passes markdown context."""
     mock_handler.get_session_history.return_value = {
         "session_id": "sess-1",
         "history": [
             {"event_type": "turn_summary", "event_content": '{"query": "q1", "answer": "a1"}'},
         ],
     }
-    mock_handler.format_history_for_llm.return_value = "Turn 1: User asked \"q1\" -> Answer: \"a1\""
+    markdown_ctx = (
+        "## Historical Conversation\n\n"
+        "### Turn1: happened at 2026-03-14 08:59:20 UTC\n\n"
+        "- **user_query:** q1\n"
+        "- **answer:** a1\n"
+    )
+    mock_handler.format_history_for_llm_markdown.return_value = markdown_ctx
     ambiguity_checker = MagicMock(return_value={"needs_clarification": False, "clarification_backend": "ollama"})
     memory = MagicMock()
 
@@ -230,14 +236,14 @@ def test_clarification_service_check_loads_history_from_message_py(mock_handler)
     )
 
     mock_handler.get_session_history.assert_called_once_with(memory, "sess-1", last_n=3)
-    mock_handler.format_history_for_llm.assert_called_once()
+    mock_handler.format_history_for_llm_markdown.assert_called_once()
     ambiguity_checker.assert_called_once_with(
         "what is the fee?",
-        conversation_context="Turn 1: User asked \"q1\" -> Answer: \"a1\"",
+        conversation_context=markdown_ctx,
     )
     assert result.needs_clarification is False
     assert result.backend == "ollama"
-    assert result.conversation_context == "Turn 1: User asked \"q1\" -> Answer: \"a1\""
+    assert result.conversation_context == markdown_ctx
 
 
 def test_clarification_service_check_no_memory_uses_none_context():

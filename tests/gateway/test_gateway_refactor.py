@@ -19,16 +19,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
 # ---------------------------------------------------------------------------
-# 1. Prompt files exist at new paths
+# 1. Prompt files exist at new paths (src/gateway/route_llm, .md)
 # ---------------------------------------------------------------------------
 
-PROMPTS_ROOT = Path(__file__).parent.parent.parent / "src" / "prompts"
+PROMPTS_ROOT = Path(__file__).parent.parent.parent / "src" / "gateway" / "route_llm"
 
 @pytest.mark.parametrize("rel_path", [
-    "query_clarification/clarification_detect_ambiguity.txt",
-    "query_clarification/clarification_generate_question.txt",
-    "query_rewriting/rewrite_query_clean.txt",
-    "intent_classification/intent_verify_candidate.txt",
+    "clarification/clarification_detect_ambiguity.md",
+    "clarification/clarification_generate_question.md",
+    "rewriting/rewrite_query_clean.md",
+    "classification/intent_split_query.md",
+    "classification/intent_verify_candidate.md",
 ])
 def test_prompt_file_exists(rel_path):
     p = PROMPTS_ROOT / rel_path
@@ -37,14 +38,13 @@ def test_prompt_file_exists(rel_path):
 
 
 def test_retired_prompts_not_in_active_dir():
-    """Retired prompts must not exist outside bak/."""
+    """Retired prompts must not exist in route_llm."""
     for name in ("intent_classification.txt", "intent_verify.txt",
                  "route_classification.txt", "intent_route_single.txt"):
-        active = PROMPTS_ROOT / name
-        assert not active.exists(), f"Retired prompt still in active dir: {active}"
-        # Also not in intent_classification/ subfolder
-        sub = PROMPTS_ROOT / "intent_classification" / name
-        assert not sub.exists(), f"Retired prompt still in intent_classification/: {sub}"
+        for subdir in ("", "classification"):
+            folder = PROMPTS_ROOT / subdir if subdir else PROMPTS_ROOT
+            active = folder / name
+            assert not active.exists(), f"Retired prompt still present: {active}"
 
 
 # ---------------------------------------------------------------------------
@@ -55,10 +55,11 @@ def test_prompt_loader_loads_all_active():
     from src.gateway.prompt_loader import load_prompt, clear_cache
     clear_cache()
     names = [
-        "query_clarification/clarification_detect_ambiguity",
-        "query_clarification/clarification_generate_question",
-        "query_rewriting/rewrite_query_clean",
-        "intent_classification/intent_verify_candidate",
+        "clarification/clarification_detect_ambiguity",
+        "clarification/clarification_generate_question",
+        "rewriting/rewrite_query_clean",
+        "classification/intent_split_query",
+        "classification/intent_verify_candidate",
     ]
     for name in names:
         text = load_prompt(name)
@@ -74,10 +75,10 @@ def test_prompt_loader_raises_for_retired():
 
 
 def test_intent_split_query_prompt_exists():
-    """intent_split_query.txt is still active (used by split_intents)."""
+    """intent_split_query prompt is still active (used by split_intents)."""
     from src.gateway.prompt_loader import load_prompt, clear_cache
     clear_cache()
-    text = load_prompt("intent_classification/intent_split_query")
+    text = load_prompt("classification/intent_split_query")
     assert isinstance(text, str) and len(text) > 10
 
 
@@ -180,7 +181,7 @@ def test_intent_classifier_prompt_path():
     from src.gateway.prompt_loader import load_prompt, clear_cache
     clear_cache()
     # This is what intent_classifier._llm_verify calls
-    text = load_prompt("intent_classification/intent_verify_candidate")
+    text = load_prompt("classification/intent_verify_candidate")
     assert "{candidates}" in text
     assert "{query}" in text
 

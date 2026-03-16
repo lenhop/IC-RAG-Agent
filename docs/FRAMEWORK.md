@@ -783,7 +783,7 @@ src/gateway/
     short_term.py          # MemoryEvent model; GatewayConversationMemory: append_event, get_history*, save_turn
     long_term.py           # GatewayMemoryCHClient (ClickHouse rag_agent_message_event)
   route_llm/rewriting/
-    router.py              # _format_history_for_llm: v0 turns + v1 turn_summary
+    router.py              # uses message.py format_history_for_llm_markdown for context
 
 scripts/
   create_gateway_memory_events.sql   # DDL for rag_agent_message_event
@@ -800,7 +800,7 @@ Run gateway: `python scripts/run_gateway.py` (Uvicorn: `src.gateway.api_and_auth
 | `memory/short_term.py` | Pydantic `MemoryEvent`; Redis append; optional CH dual-write via long_term client; `save_turn` (legacy); `append_event` (v1). |
 | `memory/long_term.py` | ClickHouse connect; `ensure_table`; `write_event` to `rag_agent_message_event`. |
 | `api_and_auth/api.py` | Generate `request_id`; call `_append_memory_event` at each stage; pass `request_id` through. |
-| `route_llm/rewriting/router.py` | `_format_history_for_llm`: support v0 turns and v1 `turn_summary`; parse `event_content` JSON. |
+| `route_llm/rewriting/router.py` | Uses `ConversationHistoryHandler.format_history_for_llm_markdown` (message.py) for history context. |
 | `create_gateway_memory_events.sql` | DDL: MergeTree, partition by month, order by user_id, session_id, ts, request_id. |
 
 ---

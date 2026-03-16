@@ -45,7 +45,7 @@ from .dispatcher import DispatcherExecutor
 from .gateway_config import GatewayConfig
 from .gateway_logger import GatewayEventLogger
 from .intent_rewrite import IntentDetailsBuilder
-from .message import (
+from ..message import (
     get_gateway_memory,
     ConversationHistoryHandler,
     MemoryEventWriter,
