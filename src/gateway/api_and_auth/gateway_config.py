@@ -36,8 +36,8 @@ class GatewayConfig:
     @classmethod
     def clarification_enabled(cls) -> bool:
         """Check if clarification is enabled via env."""
-        from ..route_llm.clarification import clarification_enabled
-        return clarification_enabled()
+        from ..route_llm.clarification.clarification import ClarificationEnvValidator
+        return ClarificationEnvValidator.is_enabled()
 
     @classmethod
     def resolve_rewrite_backend(cls, request: QueryRequest) -> Optional[str]:

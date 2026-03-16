@@ -28,7 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from ..dispatcher.dispatcher import build_execution_plan
 from ..logging_utils import format_route_metadata
-from ..route_llm.clarification import clarification_enabled, check_ambiguity
+from ..route_llm.clarification import check_ambiguity
 from ..route_llm.rewriting.rewriters import route_workflow, rewrite_query
 from ..schemas import (
     QueryRequest,

@@ -37,6 +37,12 @@ class ClarificationEnvValidator:
     """
 
     @staticmethod
+    def is_enabled() -> bool:
+        """Return True when clarification is enabled via GATEWAY_CLARIFICATION_ENABLED env."""
+        value = (os.getenv("GATEWAY_CLARIFICATION_ENABLED") or "").strip().lower()
+        return value in ("1", "true", "yes", "on")
+
+    @staticmethod
     def get_backend() -> str:
         """Read and validate GATEWAY_CLARIFICATION_BACKEND. Must be 'ollama' or 'deepseek'."""
         value = (os.getenv("GATEWAY_CLARIFICATION_BACKEND") or "").strip().lower()
@@ -259,9 +265,6 @@ def check_ambiguity(
     }
 
 
-def clarification_enabled() -> bool:
-    """Return True when clarification is enabled via env."""
-    value = (os.getenv("GATEWAY_CLARIFICATION_ENABLED") or "").strip().lower()
-    return value in ("1", "true", "yes", "on")
+
 
 
