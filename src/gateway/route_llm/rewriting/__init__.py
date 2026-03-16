@@ -2,7 +2,6 @@
 
 from .rewriters import (
     REWRITE_PROMPT,
-    parse_rewrite_plan_text,
     rewrite_with_context,
     rewrite_with_deepseek,
     rewrite_with_ollama,
@@ -12,7 +11,6 @@ from .rewriters import (
 
 __all__ = [
     "REWRITE_PROMPT",
-    "parse_rewrite_plan_text",
     "rewrite_with_context",
     "rewrite_with_ollama",
     "rewrite_with_deepseek",

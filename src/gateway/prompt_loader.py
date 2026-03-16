@@ -29,7 +29,7 @@ def load_prompt(name: str) -> str:
     Looks for src/gateway/route_llm/{name}.md first, then {name}.txt. Caches after first load.
     Supports subdirectory paths, e.g.:
         "clarification/clarification_prompt"
-        "rewriting/rewrite_query_clean"
+        "rewriting/rewrite_prompt"
         "classification/intent_split_query"
 
     Raises FileNotFoundError if neither .md nor .txt exists.

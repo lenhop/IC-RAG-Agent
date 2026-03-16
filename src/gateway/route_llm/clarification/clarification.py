@@ -265,34 +265,3 @@ def clarification_enabled() -> bool:
     return value in ("1", "true", "yes", "on")
 
 
-# Default number of conversation rounds to load for clarification context.
-_CLARIFICATION_MEMORY_ROUNDS = 3
-
-
-def load_clarification_context(
-    memory: Any,
-    session_id: str | None,
-) -> str | None:
-    """
-    Load and format conversation history for clarification.
-
-    Reads last N turns from Redis via ConversationHistoryHandler,
-    formats as markdown for LLM context.
-
-    Returns formatted context string, or None if no history available.
-    """
-    sid = (session_id or "").strip()
-    if not sid or not memory:
-        return None
-    try:
-        n = int(os.getenv("GATEWAY_CLARIFICATION_MEMORY_ROUNDS", str(_CLARIFICATION_MEMORY_ROUNDS)))
-    except (TypeError, ValueError):
-        n = _CLARIFICATION_MEMORY_ROUNDS
-    last_n = min(max(n, 1), 50)
-    res = ConversationHistoryHandler.get_session_history(memory, sid, last_n=last_n)
-    history = res.get("history") or []
-    if history:
-        return ConversationHistoryHandler.format_history_for_llm_markdown(history)
-    return None
-
-
