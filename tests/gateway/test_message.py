@@ -60,6 +60,64 @@ def test_session_history_handler_get_history_with_memory(memory, mock_redis):
     assert "error" not in result
 
 
+def test_format_history_for_llm_empty_list():
+    """ConversationHistoryHandler.format_history_for_llm returns empty string for empty history."""
+    assert ConversationHistoryHandler.format_history_for_llm([]) == ""
+
+
+def test_format_history_for_llm_turn_summary_events():
+    """ConversationHistoryHandler.format_history_for_llm formats turn_summary events."""
+    history = [
+        {
+            "event_type": "turn_summary",
+            "event_content": json.dumps({"query": "what is the fee?", "answer": "The fee is 5%."}),
+        },
+        {
+            "event_type": "user_query",
+            "event_content": "{}",
+        },
+        {
+            "event_type": "turn_summary",
+            "event_content": json.dumps({"query": "and the rate?", "answer": "Rate is 3%."}),
+        },
+    ]
+    out = ConversationHistoryHandler.format_history_for_llm(history)
+    assert "Turn 1:" in out
+    assert "what is the fee?" in out
+    assert "The fee is 5%." in out
+    assert "Turn 2:" in out
+    assert "and the rate?" in out
+    assert "Rate is 3%." in out
+    assert out.count("Turn ") == 2
+
+
+def test_format_history_for_llm_legacy_turns():
+    """ConversationHistoryHandler.format_history_for_llm formats legacy query/answer turns."""
+    history = [
+        {"query": "first q", "answer": "first a"},
+        {"query": "second q", "answer": "second a"},
+    ]
+    out = ConversationHistoryHandler.format_history_for_llm(history)
+    assert "Turn 1:" in out
+    assert "first q" in out
+    assert "first a" in out
+    assert "Turn 2:" in out
+    assert "second q" in out
+    assert "second a" in out
+
+
+def test_format_history_for_llm_skips_empty_query():
+    """ConversationHistoryHandler.format_history_for_llm skips turns with empty query."""
+    history = [
+        {"query": "only this", "answer": "only a"},
+        {"query": "", "answer": "ignored"},
+    ]
+    out = ConversationHistoryHandler.format_history_for_llm(history)
+    assert "only this" in out
+    assert "only a" in out
+    assert out.count("Turn ") == 1
+
+
 # ---------------------------------------------------------------------------
 # MemoryEventWriter
 # ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from ...api_and_auth.message import ConversationHistoryHandler
 from ...prompt_loader import load_prompt
 from src.llm.call_deepseek import DeepSeekChat
 from src.llm.call_ollama import OllamaClient
@@ -348,6 +349,64 @@ def check_ambiguity(
         "clarification_question": question.strip(),
         "clarification_backend": used_backend,
     }
+
+
+# Default number of conversation rounds to load for clarification context.
+_CLARIFICATION_MEMORY_ROUNDS = 3
+
+
+class ClarificationService:
+    """
+    Service that runs clarification check using session history from message.py.
+
+    Loads history via ConversationHistoryHandler.get_session_history and
+    format_history_for_llm, then passes formatted context to the ambiguity checker.
+    """
+
+    @staticmethod
+    def is_enabled() -> bool:
+        """Return True when clarification is enabled via env."""
+        value = (os.getenv("GATEWAY_CLARIFICATION_ENABLED") or "").strip().lower()
+        return value in ("1", "true", "yes", "on")
+
+    @staticmethod
+    def check(
+        query: str,
+        memory: Any,
+        user_id: Optional[str],
+        session_id: Optional[str],
+        ambiguity_checker: Callable[..., dict],
+    ) -> "ClarificationCheckResult":
+        """
+        Run clarification: load session history from message.py, format, then call checker.
+
+        Returns ClarificationCheckResult with conversation_context set from
+        message.py so api.py and dispatcher receive the same context.
+        """
+        conversation_context: Optional[str] = None
+        sid = (session_id or "").strip()
+        if sid and memory:
+            try:
+                n = int(os.getenv("GATEWAY_CLARIFICATION_MEMORY_ROUNDS", str(_CLARIFICATION_MEMORY_ROUNDS)))
+            except (TypeError, ValueError):
+                n = _CLARIFICATION_MEMORY_ROUNDS
+            last_n = min(max(n, 1), 50)
+            res = ConversationHistoryHandler.get_session_history(memory, sid, last_n=last_n)
+            history = res.get("history") or []
+            if history:
+                conversation_context = ConversationHistoryHandler.format_history_for_llm(history)
+        raw = ambiguity_checker(query, conversation_context=conversation_context)
+        needs = bool(raw.get("needs_clarification"))
+        question = raw.get("clarification_question")
+        if isinstance(question, str):
+            question = question.strip() or None
+        backend = raw.get("clarification_backend") or "unknown"
+        return ClarificationCheckResult(
+            needs_clarification=needs,
+            clarification_question=question,
+            backend=backend,
+            conversation_context=conversation_context,
+        )
 
 
 @dataclass

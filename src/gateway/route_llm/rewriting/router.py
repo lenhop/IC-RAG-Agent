@@ -109,52 +109,9 @@ class MemoryContextFormatter:
     @classmethod
     def format_history_for_llm(cls, history: list) -> str:
         """
-        Format session history for LLM prompt (oldest first, chronological order).
-
-        Args:
-            history: List of turn dicts with query, answer, workflow, timestamp.
-
-        Returns:
-            Formatted string like "Turn 1: User asked "..." -> Answer: "...""
+        Format session history for LLM prompt. Delegates to message.py for single source.
         """
-        lines = []
-        normalized_turns: List[dict] = []
-        for turn in history:
-            # v1 event: consume only turn_summary events for LLM context.
-            if "event_type" in turn:
-                if (turn.get("event_type") or "").strip() != "turn_summary":
-                    continue
-                raw_content = turn.get("event_content")
-                try:
-                    content = json.loads(raw_content) if isinstance(raw_content, str) else (raw_content or {})
-                except Exception as exc:
-                    logger.debug("Failed to parse turn event_content: %s", exc)
-                    content = {}
-                if not isinstance(content, dict):
-                    content = {}
-                normalized_turns.append(
-                    {
-                        "query": content.get("query", ""),
-                        "answer": content.get("answer", ""),
-                    }
-                )
-                continue
-
-            # v0 legacy turn
-            normalized_turns.append(
-                {
-                    "query": turn.get("query", ""),
-                    "answer": turn.get("answer", ""),
-                }
-            )
-
-        for idx, turn in enumerate(normalized_turns, start=1):
-            q = (turn.get("query") or "").strip()
-            a = (turn.get("answer") or "").strip()
-            if not q:
-                continue
-            lines.append(f'Turn {idx}: User asked "{q}" -> Answer: "{a}"')
-        return "\n".join(lines) if lines else ""
+        return ConversationHistoryHandler.format_history_for_llm(history)
 
     @classmethod
     def merge_conversation_context(
@@ -300,7 +257,7 @@ class _RewriteRouter:
         else:
             history = []
         if history:
-            memory_context = MemoryContextFormatter.format_history_for_llm(history)
+            memory_context = ConversationHistoryHandler.format_history_for_llm(history)
             memory_rounds_used = len(history)
             logger.debug("rewrite_query: loaded %d memory rounds", memory_rounds_used)
 
