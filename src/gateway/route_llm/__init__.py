@@ -1,6 +1,6 @@
 """Route LLM package: clarification, rewriting, and classification."""
 
-from .rewriting.router import route_with_llm
+from .rewriting.rewriters import route_with_llm
 from .routing_heuristics import (
     apply_docs_preference,
     format_rewritten_query_bullets,

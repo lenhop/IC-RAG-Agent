@@ -120,7 +120,7 @@ def test_schema_accepts_request_without_route_backend():
 # ---------------------------------------------------------------------------
 
 def test_route_workflow_manual_override():
-    from src.gateway.route_llm.rewriting.router import route_workflow
+    from src.gateway.route_llm.rewriting.rewriters import route_workflow
     from src.gateway.schemas import QueryRequest
     req = QueryRequest(query="test", workflow="uds")
     wf, conf, source, backend, llm_conf = route_workflow("test", req)
@@ -130,7 +130,7 @@ def test_route_workflow_manual_override():
 
 
 def test_route_workflow_auto_uses_heuristic():
-    from src.gateway.route_llm.rewriting.router import route_workflow
+    from src.gateway.route_llm.rewriting.rewriters import route_workflow
     from src.gateway.schemas import QueryRequest
     req = QueryRequest(query="what is FBA", workflow="auto")
     wf, conf, source, backend, llm_conf = route_workflow("what is FBA", req)
@@ -142,7 +142,7 @@ def test_route_workflow_auto_uses_heuristic():
 
 def test_route_workflow_no_llm_even_with_env_flag():
     """Even if someone sets GATEWAY_ROUTE_LLM_ENABLED, it must be ignored."""
-    from src.gateway.route_llm.rewriting.router import route_workflow
+    from src.gateway.route_llm.rewriting.rewriters import route_workflow
     from src.gateway.schemas import QueryRequest
     req = QueryRequest(query="check order status", workflow="auto")
     with patch.dict(os.environ, {"GATEWAY_ROUTE_LLM_ENABLED": "true"}):
@@ -159,8 +159,11 @@ def test_rewriters_import():
     from src.gateway import rewriters
     assert hasattr(rewriters, "REWRITE_PROMPT")
     assert not hasattr(rewriters, "INTENT_CLASSIFICATION_PROMPT")
-    assert not hasattr(rewriters, "intent_classification_enabled")
-    assert not hasattr(rewriters, "rewrite_intents_only")
+    # After router.py merge, rewriters now has these symbols
+    assert hasattr(rewriters, "intent_classification_enabled")
+    assert hasattr(rewriters, "rewrite_intents_only")
+    assert hasattr(rewriters, "rewrite_query")
+    assert hasattr(rewriters, "route_workflow")
     assert len(rewriters.REWRITE_PROMPT) > 10
 
 

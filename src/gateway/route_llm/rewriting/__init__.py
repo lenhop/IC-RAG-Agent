@@ -6,8 +6,9 @@ from .rewriters import (
     rewrite_with_context,
     rewrite_with_deepseek,
     rewrite_with_ollama,
+    rewrite_query,
+    route_workflow,
 )
-from .router import rewrite_query, route_workflow
 
 __all__ = [
     "REWRITE_PROMPT",

@@ -298,7 +298,7 @@ def test_query_backend_error_propagated_to_response(mock_rewrite, mock_route, mo
     "src.gateway.api_and_auth.api.route_workflow",
     return_value=("general", 0.95, "manual", None, None),
 )
-@patch("src.gateway.route_llm.rewriting.router.rewrite_with_context", return_value="rewritten by ollama")
+@patch("src.gateway.route_llm.rewriting.rewriters.rewrite_with_context", return_value="rewritten by ollama")
 def test_query_rewrite_backend_ollama(mock_rewrite_context, mock_route, mock_call, mock_clar):
     """POST with rewrite_enable=True, rewrite_backend=ollama uses rewrite_with_context."""
     payload = {
@@ -324,7 +324,7 @@ def test_query_rewrite_backend_ollama(mock_rewrite_context, mock_route, mock_cal
     "src.gateway.api_and_auth.api.route_workflow",
     return_value=("general", 0.95, "manual", None, None),
 )
-@patch("src.gateway.route_llm.rewriting.router.rewrite_with_context", return_value="rewritten by deepseek")
+@patch("src.gateway.route_llm.rewriting.rewriters.rewrite_with_context", return_value="rewritten by deepseek")
 def test_query_rewrite_backend_deepseek(mock_rewrite_context, mock_route, mock_call, mock_clar):
     """POST with rewrite_enable=True, rewrite_backend=deepseek uses rewrite_with_context."""
     payload = {

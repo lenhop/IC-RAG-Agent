@@ -18,15 +18,21 @@ import json
 import logging
 import os
 import re
-from typing import Optional
+from typing import Any, List, Optional, Tuple
 
 from pydantic import ValidationError
 
-from ...schemas import RewritePlan, TaskGroup, TaskItem
+from ...schemas import RewritePlan, TaskGroup, TaskItem, QueryRequest
 from ...prompt_loader import load_prompt
+from ...message import ConversationHistoryHandler
 from src.logger import get_logger_facade
 from src.llm.call_deepseek import DeepSeekChat
 from src.llm.call_ollama import OllamaClient
+from ..routing_heuristics import (
+    apply_docs_preference as _apply_docs_preference,
+    normalize_query,
+    route_workflow_heuristic as _route_workflow_heuristic,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -505,10 +511,290 @@ def rewrite_with_deepseek(query: str, model: Optional[str] = None) -> str:
 _enforce_rewrite_responsibility = RewriteResponseProcessor.enforce_rewrite_responsibility
 _strip_echoed_context_from_rewrite = RewriteResponseProcessor.strip_echoed_context
 
+
+# ---------------------------------------------------------------------------
+# Rewrite pipeline orchestration + workflow routing (merged from router.py)
+# ---------------------------------------------------------------------------
+
+
+class RouterEnvConfig:
+    """
+    Validate and resolve router/rewrite env parameters from os.environ.
+    """
+
+    @staticmethod
+    def route_llm_enabled() -> bool:
+        """Return True when Route LLM routing is enabled."""
+        return os.getenv("GATEWAY_ROUTE_LLM_ENABLED", "false").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+
+    @staticmethod
+    def route_llm_threshold() -> float:
+        """Read Route LLM confidence threshold."""
+        try:
+            return float(os.getenv("GATEWAY_ROUTE_LLM_THRESHOLD", "0.8"))
+        except (ValueError, TypeError):
+            logger.warning("GATEWAY_ROUTE_LLM_THRESHOLD invalid; using 0.8")
+            return 0.8
+
+    @staticmethod
+    def get_memory_rounds() -> int:
+        """Read GATEWAY_REWRITE_MEMORY_ROUNDS from env (default 3)."""
+        try:
+            return max(1, int(os.getenv("GATEWAY_REWRITE_MEMORY_ROUNDS", "3")))
+        except (ValueError, TypeError):
+            logger.warning("GATEWAY_REWRITE_MEMORY_ROUNDS invalid; using 3")
+            return 3
+
+    @staticmethod
+    def get_rewrite_backend(request_backend: Optional[str]) -> str:
+        """Resolve rewrite backend from request or env."""
+        backend = (request_backend or "").strip().lower()
+        if backend:
+            return backend
+        return (os.getenv("GATEWAY_REWRITE_BACKEND", "ollama") or "ollama").strip().lower()
+
+    @staticmethod
+    def get_route_backend(request: QueryRequest) -> str:
+        """Resolve route backend from request or env."""
+        backend = (getattr(request, "route_backend", None) or "").strip().lower()
+        if backend:
+            return backend
+        return (os.getenv("GATEWAY_ROUTE_BACKEND", "ollama") or "ollama").strip().lower()
+
+
+class _RewriteRouter:
+    """
+    Rewrite pipeline orchestration and workflow routing.
+
+    - rewrite_query: normalize → load history → rewrite_with_context → optional intent classification
+    - route_workflow: manual override or LLM/heuristic workflow selection
+    """
+
+    @classmethod
+    def rewrite_query(
+        cls,
+        request: QueryRequest,
+        gateway_memory: Optional[Any] = None,
+        conversation_context: Optional[str] = None,
+    ) -> Tuple[str, Optional[List[str]], int, int]:
+        """
+        Normalize and rewrite query with optional conversation context.
+
+        Returns:
+            (rewritten_query, intents, memory_rounds_used, memory_text_length) tuple.
+        """
+        normalized = normalize_query(request.query or "")
+        if _gateway_logger:
+            try:
+                _gateway_logger.log_runtime(
+                    event_name="router_rewrite_start",
+                    stage="router_rewrite",
+                    message="rewrite_query started",
+                    status="started",
+                    session_id=request.session_id,
+                    user_id=request.user_id,
+                    workflow=request.workflow,
+                    query_raw=request.query or "",
+                    query_rewritten=normalized,
+                )
+            except Exception:
+                pass
+
+        if not normalized or not normalized.strip():
+            logger.debug("rewrite_query: empty query, early exit")
+            return ("", None, 0, 0)
+
+        if not request.rewrite_enable:
+            logger.debug("rewrite_query: rewrite disabled, returning normalized")
+            return (normalized, None, 0, 0)
+
+        backend = RouterEnvConfig.get_rewrite_backend(request.rewrite_backend)
+        logger.info("rewrite_query: backend=%s session=%s", backend, request.session_id)
+
+        memory_rounds_used = 0
+        memory_text_length = 0
+        memory_context: Optional[str] = None
+        last_n = RouterEnvConfig.get_memory_rounds()
+        sid = (request.session_id or "").strip()
+        if sid:
+            res = ConversationHistoryHandler.get_session_history(
+                gateway_memory, sid, last_n=last_n
+            )
+            history = res.get("history", [])
+        else:
+            history = []
+        if history:
+            memory_context = ConversationHistoryHandler.format_history_for_llm_markdown(history)
+            memory_rounds_used = len(history)
+            logger.debug("rewrite_query: loaded %d memory rounds", memory_rounds_used)
+
+        conversation_context = ConversationHistoryHandler.merge_context_strings(
+            conversation_context, memory_context
+        )
+        if conversation_context and conversation_context.strip():
+            memory_text_length = len(conversation_context)
+            if memory_rounds_used <= 0:
+                memory_rounds_used = ConversationHistoryHandler.count_context_rounds(
+                    conversation_context
+                )
+
+        optimized_query = rewrite_with_context(
+            normalized,
+            conversation_context=conversation_context,
+            backend=backend,
+        )
+
+        intents: Optional[List[str]] = None
+        if intent_classification_enabled():
+            try:
+                intents_payload = rewrite_intents_only(optimized_query)
+                if isinstance(intents_payload, dict):
+                    intents_raw = intents_payload.get("intents")
+                else:
+                    intents_raw = intents_payload
+                if isinstance(intents_raw, list):
+                    intents = [str(item).strip() for item in intents_raw if str(item).strip()] or None
+            except Exception as exc:
+                logger.warning("rewrite_query: intent classification failed: %s", exc)
+                intents = None
+
+        if _gateway_logger:
+            try:
+                _gateway_logger.log_runtime(
+                    event_name="router_rewrite_done",
+                    stage="router_rewrite",
+                    message="rewrite_query completed",
+                    status="success",
+                    session_id=request.session_id,
+                    user_id=request.user_id,
+                    workflow=request.workflow,
+                    query_raw=request.query or "",
+                    query_rewritten=optimized_query,
+                    latency_ms=None,
+                    metadata={
+                        "memory_rounds_used": memory_rounds_used,
+                        "memory_text_length": memory_text_length,
+                    },
+                )
+            except Exception:
+                pass
+
+        logger.debug("rewrite_query: done, query_len=%d", len(optimized_query))
+        return (optimized_query, intents, memory_rounds_used, memory_text_length)
+
+    @classmethod
+    def route_workflow(
+        cls,
+        query: str,
+        request: QueryRequest,
+    ) -> tuple[str, float, str, str | None, float | None]:
+        """
+        Choose workflow and routing confidence based on query and request.
+
+        Returns:
+            (workflow, confidence, method, backend, llm_confidence) tuple.
+        """
+        explicit = (request.workflow or "auto").strip().lower()
+        if explicit != "auto":
+            logger.debug("route_workflow: manual workflow=%s", explicit)
+            return explicit, 1.0, "manual", None, None
+
+        backend = RouterEnvConfig.get_route_backend(request)
+        if _route_llm_enabled():
+            from src.gateway import route_llm as route_pkg
+
+            llm_wf, llm_conf = route_pkg.route_with_llm(query or "", backend)
+            llm_wf = _apply_docs_preference(query or "", llm_wf)
+            if llm_conf >= _route_llm_threshold():
+                logger.debug("route_workflow: llm workflow=%s conf=%.2f", llm_wf, llm_conf)
+                return llm_wf, llm_conf, "llm", backend, llm_conf
+
+        wf, conf = _route_workflow_heuristic(query or "")
+        wf = _apply_docs_preference(query or "", wf)
+        logger.debug("route_workflow: heuristic workflow=%s conf=%.2f", wf, conf)
+        return wf, conf, "heuristic", None, None
+
+    @staticmethod
+    def _intent_classification_enabled() -> bool:
+        """Return True when rewrite-stage intent classification is enabled."""
+        return False
+
+    @staticmethod
+    def _rewrite_intents_only(query: str):
+        """Classify rewritten query into intents; returns dict with intents or None."""
+        try:
+            from ..classification import split_intents
+            intents = split_intents(query)
+            if intents:
+                return {"intents": intents}
+        except Exception as exc:
+            logger.debug("rewrite_intents_only failed: %s", exc)
+            return None
+        return None
+
+
+# --- Public API: rewrite pipeline + routing ---
+
+def rewrite_query(
+    request: QueryRequest,
+    gateway_memory: Optional[Any] = None,
+    conversation_context: Optional[str] = None,
+) -> Tuple[str, Optional[List[str]], int, int]:
+    """Normalize and rewrite query."""
+    return _RewriteRouter.rewrite_query(
+        request,
+        gateway_memory=gateway_memory,
+        conversation_context=conversation_context,
+    )
+
+
+def route_workflow(
+    query: str, request: QueryRequest
+) -> tuple[str, float, str, str | None, float | None]:
+    """Choose workflow and routing confidence."""
+    return _RewriteRouter.route_workflow(query, request)
+
+
+def route_with_llm(query: str, backend: str = "ollama") -> tuple[str, float]:
+    """
+    Placeholder Route LLM routing hook.
+    Returns safe default so heuristic routing remains authoritative.
+    """
+    _ = backend
+    return "general", 0.0
+
+
+def intent_classification_enabled() -> bool:
+    """Return True when rewrite-stage intent classification is enabled."""
+    return _RewriteRouter._intent_classification_enabled()
+
+
+def rewrite_intents_only(query: str):
+    """Classify rewritten query into intents; returns dict with intents or None."""
+    return _RewriteRouter._rewrite_intents_only(query)
+
+
+def _route_llm_enabled() -> bool:
+    """Return True when Route LLM routing is enabled."""
+    return RouterEnvConfig.route_llm_enabled()
+
+
+def _route_llm_threshold() -> float:
+    """Read Route LLM confidence threshold."""
+    return RouterEnvConfig.route_llm_threshold()
+
 __all__ = [
     "REWRITE_PROMPT",
     "parse_rewrite_plan_text",
     "rewrite_with_context",
     "rewrite_with_ollama",
     "rewrite_with_deepseek",
+    "rewrite_query",
+    "route_workflow",
+    "route_with_llm",
+    "intent_classification_enabled",
+    "rewrite_intents_only",
+    "_route_llm_enabled",
 ]

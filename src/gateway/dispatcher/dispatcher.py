@@ -307,7 +307,7 @@ def build_execution_plan(
         (RewritePlan, clarification_question) — clarification_question is None when
         all required fields are present.
     """
-    from ..route_llm.rewriting.router import route_workflow
+    from ..route_llm.rewriting.rewriters import route_workflow
 
     explicit = (request.workflow or "auto").strip().lower() or "auto"
     normalized_query = normalize_query(request.query or "")
