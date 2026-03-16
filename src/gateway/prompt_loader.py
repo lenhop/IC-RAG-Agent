@@ -6,7 +6,7 @@ falls back to .txt if .md is not present. Base path: src/gateway/route_llm/.
 
 Usage:
     from src.gateway.prompt_loader import load_prompt
-    prompt = load_prompt("clarification/clarification_detect_ambiguity")
+    prompt = load_prompt("clarification/clarification_prompt")
 """
 
 from __future__ import annotations
@@ -28,14 +28,14 @@ def load_prompt(name: str) -> str:
 
     Looks for src/gateway/route_llm/{name}.md first, then {name}.txt. Caches after first load.
     Supports subdirectory paths, e.g.:
-        "clarification/clarification_detect_ambiguity"
+        "clarification/clarification_prompt"
         "rewriting/rewrite_query_clean"
         "classification/intent_split_query"
 
     Raises FileNotFoundError if neither .md nor .txt exists.
 
     Args:
-        name: Prompt path, e.g. "clarification/clarification_detect_ambiguity".
+        name: Prompt path, e.g. "clarification/clarification_prompt".
 
     Returns:
         Prompt text content.

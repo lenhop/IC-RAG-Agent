@@ -1,14 +1,13 @@
 """
 Route LLM clarification: detect ambiguous queries before rewriting.
 
-Clarification workflow (方案一 统一 LLM):
-  1. Skip: empty query, documentation/policy questions
-  2. Single LLM: call clarification_detect_ambiguity prompt to decide needs_clarification
-     - Covers: referent not in history, multiple referents, semantically vague,
-       conflict with history, missing identifiers
-     - General knowledge (FBA, ASIN, compliance) -> no clarification
-  3. Fallback: when LLM returns needs_clarification=true but empty question,
-     call clarification_generate_question prompt to generate one
+Clarification workflow (unified single-prompt):
+  1. Skip: empty query
+  2. Single LLM call with clarification_prompt (detect + generate in one prompt)
+     - Part 1: checklist-based ambiguity detection
+     - Part 2: if ambiguous, generate one short clarification question
+  3. Fallback: if LLM returns needs_clarification=true but empty question,
+     use a generic fallback question
 
 Backend and all config from env (no defaults); missing values raise ValueError.
 """
@@ -19,8 +18,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 from ...message import ConversationHistoryHandler
 from ...prompt_loader import load_prompt
@@ -114,11 +112,10 @@ class QueryAndResponseProcessor:
 
 class _ClarificationLLM:
     """
-    Unified LLM caller for clarification: ambiguity detection and question generation.
+    Unified LLM caller for clarification (single prompt: detect + generate).
     Supports DeepSeek (remote) and Ollama (local) backends.
     """
-    CLARIFICATION_PROMPT = load_prompt("clarification/clarification_detect_ambiguity")
-    GENERATE_QUESTION_PROMPT = load_prompt("clarification/clarification_generate_question")
+    CLARIFICATION_PROMPT = load_prompt("clarification/clarification_prompt")
 
     @classmethod
     def call(
@@ -155,8 +152,8 @@ class _ClarificationLLM:
     def _call_ollama_check_ambiguity(cls,
         query: str, conversation_context: Optional[str] = None
     ) -> str:
-        """Call Ollama for ambiguity detection via OllamaClient (OLLAMA_* env only)."""
-        logger.debug("Ollama check_ambiguity via OllamaClient")
+        """Call Ollama for clarification via OllamaClient (OLLAMA_* env only)."""
+        logger.debug("Ollama clarification via OllamaClient")
         user_input = QueryAndResponseProcessor.build_user_input(query, conversation_context)
         prompt = f"{cls.CLARIFICATION_PROMPT}{user_input}"
         return OllamaClient().generate(prompt, empty_fallback="")
@@ -165,9 +162,9 @@ class _ClarificationLLM:
     def _call_deepseek_check_ambiguity(cls,
         query: str, conversation_context: Optional[str] = None
     ) -> str:
-        """Call DeepSeek for ambiguity detection via unified DeepSeekChat."""
+        """Call DeepSeek for clarification via unified DeepSeekChat."""
         user_input = QueryAndResponseProcessor.build_user_input(query, conversation_context)
-        logger.debug("DeepSeek check_ambiguity via DeepSeekChat (stage=clarification)")
+        logger.debug("DeepSeek clarification via DeepSeekChat")
         try:
             return DeepSeekChat().complete(
                 cls.CLARIFICATION_PROMPT,
@@ -177,91 +174,6 @@ class _ClarificationLLM:
             logger.error("DeepSeek clarification failed: %s", exc, exc_info=True)
             raise RuntimeError(f"DeepSeek clarification failed: {exc}") from exc
 
-    @classmethod
-    def generate_question(
-        cls,
-        query: str,
-        conversation_context: Optional[str] = None,
-    ) -> Optional[str]:
-        """
-        Generate clarification question when ambiguity LLM returns empty.
-        Backend is read from GATEWAY_CLARIFICATION_BACKEND env (required).
-        Dispatches to DeepSeek or Ollama. Returns question string or None.
-        """
-        effective = ClarificationEnvValidator.get_backend()
-        logger.info("Generate clarification question: backend=%s", effective)
-        if effective == "deepseek":
-            text = cls._call_deepseek_generate_question(query, conversation_context)
-            if text:
-                logger.debug("DeepSeek generate_question returned %d chars", len(text))
-                return text
-            else :
-                logger.warning("DeepSeek generate_question returned empty, falling back to Ollama")
-                raise ValueError("DeepSeek generate_question failed")
-        elif effective == "ollama":
-            text = cls._call_ollama_generate_question(query, conversation_context)
-            if text:
-                logger.debug("Ollama generate_question returned %d chars", len(text))
-                return text
-            else:
-                logger.error("Ollama generate_question returned empty")
-                raise ValueError("Ollama generate_question failed")
-        else:
-            logger.error("Unknown backend: %s", effective)
-            raise ValueError(f"Unknown backend {effective}; must be 'ollama' or 'deepseek'")
-
-    @classmethod
-    def _call_ollama_generate_question(
-        cls,
-        query: str,
-        conversation_context: Optional[str] = None,
-    ) -> Optional[str]:
-        """Call Ollama to generate clarification question via OllamaClient (OLLAMA_* env only)."""
-        logger.debug("Ollama generate_question via OllamaClient")
-        user_input = QueryAndResponseProcessor.build_user_input(query, conversation_context)
-        prompt = f"{cls.GENERATE_QUESTION_PROMPT}{user_input}"
-        text = OllamaClient().generate(prompt, empty_fallback="")
-        return cls._parse_clarification_question(text)
-
-    @classmethod
-    def _call_deepseek_generate_question(
-        cls,
-        query: str,
-        conversation_context: Optional[str] = None,
-    ) -> Optional[str]:
-        """Call DeepSeek to generate clarification question via DeepSeekChat."""
-        user_input = QueryAndResponseProcessor.build_user_input(query, conversation_context)
-        try:
-            text = DeepSeekChat().complete(
-                cls.GENERATE_QUESTION_PROMPT,
-                user_input,
-            )
-            return cls._parse_clarification_question(text)
-        except Exception as exc:
-            logger.error("DeepSeek generate-question failed: %s", exc, exc_info=True)
-            raise RuntimeError(f"DeepSeek generate-question failed: {exc}") from exc
-
-    @classmethod
-    def _parse_clarification_question(cls, text: Optional[str]) -> Optional[str]:
-        """Parse clarification_question from LLM JSON output."""
-        if not text or not text.strip():
-            logger.debug("_parse_clarification_question: empty input")
-            return None
-        raw = QueryAndResponseProcessor.strip_markdown_fences(text)
-        candidate = QueryAndResponseProcessor.extract_first_json_object(raw)
-        if not candidate:
-            logger.warning("_parse_clarification_question: no JSON object found in response")
-            return None
-        try:
-            parsed = json.loads(candidate)
-            q = parsed.get("clarification_question")
-            if isinstance(q, str) and q.strip():
-                return q.strip()
-            logger.warning("_parse_clarification_question: missing or empty clarification_question")
-        except (ValueError, TypeError) as exc:
-            logger.warning("_parse_clarification_question: JSON parse failed: %s", exc)
-        return None
-
 
 def check_ambiguity(
     query: str,
@@ -270,10 +182,10 @@ def check_ambiguity(
     """
     [入口] 澄清流程主入口。判断用户查询是否需澄清。
 
-    Flow (方案一 统一 LLM):
-      1. 空查询/文档类 -> 直接返回 needs_clarification=False
-      2. 调用 LLM (clarification_detect_ambiguity) 做歧义检测
-      3. 若 needs_clarification=true 且 question 为空，用 clarification_generate_question 生成
+    Flow (unified single-prompt):
+      1. 空查询 -> 直接返回 needs_clarification=False
+      2. 调用 LLM (clarification_prompt) 做歧义检测 + 生成澄清问题
+      3. 若 needs_clarification=true 且 question 为空，用 generic fallback
 
     Args:
         query: Raw user query text.
@@ -332,14 +244,10 @@ def check_ambiguity(
         logger.debug("check_ambiguity: needs_clarification=false, backend=%s", used_backend)
         return {"needs_clarification": False, "clarification_backend": used_backend}
 
-    # Try to get the clarification question. If missing or blank, call model to generate one.
+    # Try to get the clarification question. If missing or blank, use generic fallback.
     question = parsed.get("clarification_question")
     if not isinstance(question, str) or not question.strip():
-        logger.info("check_ambiguity: needs_clarification=true but empty question, generating")
-        question = _ClarificationLLM.generate_question(query.strip(), conversation_context)
-    # If still blank, fallback to a generic prompt.
-    if not question or not question.strip():
-        logger.warning("check_ambiguity: generate_question returned empty, using generic")
+        logger.warning("check_ambiguity: needs_clarification=true but empty question, using generic")
         question = "Could you please provide more details?"
 
     # All checks passed; log and return structured response for frontend/services.
@@ -351,71 +259,40 @@ def check_ambiguity(
     }
 
 
+def clarification_enabled() -> bool:
+    """Return True when clarification is enabled via env."""
+    value = (os.getenv("GATEWAY_CLARIFICATION_ENABLED") or "").strip().lower()
+    return value in ("1", "true", "yes", "on")
+
+
 # Default number of conversation rounds to load for clarification context.
 _CLARIFICATION_MEMORY_ROUNDS = 3
 
 
-class ClarificationService:
+def load_clarification_context(
+    memory: Any,
+    session_id: str | None,
+) -> str | None:
     """
-    Service that runs clarification check using session history from message.py.
+    Load and format conversation history for clarification.
 
-    Loads history via ConversationHistoryHandler.get_session_history and
-    format_history_for_llm_markdown, then passes formatted context to the ambiguity checker.
+    Reads last N turns from Redis via ConversationHistoryHandler,
+    formats as markdown for LLM context.
+
+    Returns formatted context string, or None if no history available.
     """
-
-    @staticmethod
-    def is_enabled() -> bool:
-        """Return True when clarification is enabled via env."""
-        value = (os.getenv("GATEWAY_CLARIFICATION_ENABLED") or "").strip().lower()
-        return value in ("1", "true", "yes", "on")
-
-    @staticmethod
-    def check(
-        query: str,
-        memory: Any,
-        user_id: Optional[str],
-        session_id: Optional[str],
-        ambiguity_checker: Callable[..., dict],
-    ) -> "ClarificationCheckResult":
-        """
-        Run clarification: load session history from message.py, format, then call checker.
-
-        Returns ClarificationCheckResult with conversation_context set from
-        message.py so api.py and dispatcher receive the same context.
-        """
-        conversation_context: Optional[str] = None
-        sid = (session_id or "").strip()
-        if sid and memory:
-            try:
-                n = int(os.getenv("GATEWAY_CLARIFICATION_MEMORY_ROUNDS", str(_CLARIFICATION_MEMORY_ROUNDS)))
-            except (TypeError, ValueError):
-                n = _CLARIFICATION_MEMORY_ROUNDS
-            last_n = min(max(n, 1), 50)
-            res = ConversationHistoryHandler.get_session_history(memory, sid, last_n=last_n)
-            history = res.get("history") or []
-            if history:
-                conversation_context = ConversationHistoryHandler.format_history_for_llm_markdown(history)
-        raw = ambiguity_checker(query, conversation_context=conversation_context)
-        needs = bool(raw.get("needs_clarification"))
-        question = raw.get("clarification_question")
-        if isinstance(question, str):
-            question = question.strip() or None
-        backend = raw.get("clarification_backend") or "unknown"
-        return ClarificationCheckResult(
-            needs_clarification=needs,
-            clarification_question=question,
-            backend=backend,
-            conversation_context=conversation_context,
-        )
-
-
-@dataclass
-class ClarificationCheckResult:
-    """Normalized clarification check output used by API endpoints."""
-
-    needs_clarification: bool
-    clarification_question: Optional[str]
-    backend: str
-    conversation_context: Optional[str]
+    sid = (session_id or "").strip()
+    if not sid or not memory:
+        return None
+    try:
+        n = int(os.getenv("GATEWAY_CLARIFICATION_MEMORY_ROUNDS", str(_CLARIFICATION_MEMORY_ROUNDS)))
+    except (TypeError, ValueError):
+        n = _CLARIFICATION_MEMORY_ROUNDS
+    last_n = min(max(n, 1), 50)
+    res = ConversationHistoryHandler.get_session_history(memory, sid, last_n=last_n)
+    history = res.get("history") or []
+    if history:
+        return ConversationHistoryHandler.format_history_for_llm_markdown(history)
+    return None
 
 

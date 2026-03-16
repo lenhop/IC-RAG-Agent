@@ -9,8 +9,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.gateway.route_llm.clarification.clarification import (
-    ClarificationService,
     check_ambiguity,
+    clarification_enabled,
+    load_clarification_context,
 )
 
 _OLLAMA_ENV = {
@@ -74,28 +75,11 @@ def test_check_ambiguity_ollama_invalid_json_returns_no_clarification(mock_ollam
 
 
 @patch.dict("os.environ", {**_OLLAMA_ENV, "GATEWAY_CLARIFICATION_BACKEND": "ollama"}, clear=False)
-@patch("src.gateway.route_llm.clarification.clarification._ClarificationLLM._call_ollama_generate_question")
 @patch("src.gateway.route_llm.clarification.clarification._ClarificationLLM._call_ollama_check_ambiguity")
-def test_check_ambiguity_needs_true_but_empty_question_uses_fallback(mock_ollama, mock_gen):
-    """When needs_clarification true but question empty, use fallback to generate question."""
+def test_check_ambiguity_needs_true_but_empty_question_uses_generic(mock_ollama):
+    """When needs_clarification true but question empty, use generic fallback."""
     mock_ollama.return_value = '{"needs_clarification": true, "clarification_question": ""}'
-    mock_gen.return_value = "Which fees do you mean?"
     result = check_ambiguity("test")
-    assert result["needs_clarification"] is True
-    assert result["clarification_question"] == "Which fees do you mean?"
-    mock_gen.assert_called_once()
-
-
-@patch.dict("os.environ", {**_OLLAMA_ENV, "GATEWAY_CLARIFICATION_BACKEND": "ollama"}, clear=False)
-@patch("src.gateway.route_llm.clarification.clarification._ClarificationLLM._call_ollama_check_ambiguity")
-def test_check_ambiguity_needs_true_empty_question_fallback_fails_uses_generic(mock_ollama):
-    """When needs_clarification true, question empty, and fallback fails, use generic message."""
-    mock_ollama.return_value = '{"needs_clarification": true, "clarification_question": ""}'
-    with patch(
-        "src.gateway.route_llm.clarification.clarification._ClarificationLLM.generate_question",
-        return_value=None,
-    ):
-        result = check_ambiguity("test")
     assert result["needs_clarification"] is True
     assert "details" in result["clarification_question"].lower()
 
@@ -188,29 +172,34 @@ def test_check_ambiguity_sales_with_yyyymmdd_returns_no_clarification(mock_ollam
 
 
 # ---------------------------------------------------------------------------
-# ClarificationService (history from message.py)
+# clarification_enabled
 # ---------------------------------------------------------------------------
 
 
-def test_clarification_service_is_enabled_false():
-    """ClarificationService.is_enabled returns False when env not set."""
+def test_clarification_enabled_false():
+    """clarification_enabled returns False when env not set."""
     with patch.dict("os.environ", {}, clear=True):
-        assert ClarificationService.is_enabled() is False
+        assert clarification_enabled() is False
     with patch.dict("os.environ", {"GATEWAY_CLARIFICATION_ENABLED": "false"}, clear=False):
-        assert ClarificationService.is_enabled() is False
+        assert clarification_enabled() is False
 
 
-def test_clarification_service_is_enabled_true():
-    """ClarificationService.is_enabled returns True when GATEWAY_CLARIFICATION_ENABLED is on."""
+def test_clarification_enabled_true():
+    """clarification_enabled returns True when GATEWAY_CLARIFICATION_ENABLED is on."""
     with patch.dict("os.environ", {"GATEWAY_CLARIFICATION_ENABLED": "true"}, clear=False):
-        assert ClarificationService.is_enabled() is True
+        assert clarification_enabled() is True
     with patch.dict("os.environ", {"GATEWAY_CLARIFICATION_ENABLED": "1"}, clear=False):
-        assert ClarificationService.is_enabled() is True
+        assert clarification_enabled() is True
+
+
+# ---------------------------------------------------------------------------
+# load_clarification_context
+# ---------------------------------------------------------------------------
 
 
 @patch("src.gateway.route_llm.clarification.clarification.ConversationHistoryHandler")
-def test_clarification_service_check_loads_history_from_message_py(mock_handler):
-    """ClarificationService.check loads history via message.py and passes markdown context."""
+def test_load_clarification_context_with_history(mock_handler):
+    """load_clarification_context loads history via message.py and returns markdown."""
     mock_handler.get_session_history.return_value = {
         "session_id": "sess-1",
         "history": [
@@ -224,41 +213,23 @@ def test_clarification_service_check_loads_history_from_message_py(mock_handler)
         "- **answer:** a1\n"
     )
     mock_handler.format_history_for_llm_markdown.return_value = markdown_ctx
-    ambiguity_checker = MagicMock(return_value={"needs_clarification": False, "clarification_backend": "ollama"})
     memory = MagicMock()
 
-    result = ClarificationService.check(
-        query="what is the fee?",
-        memory=memory,
-        user_id="u1",
-        session_id="sess-1",
-        ambiguity_checker=ambiguity_checker,
-    )
+    result = load_clarification_context(memory, "sess-1")
 
     mock_handler.get_session_history.assert_called_once_with(memory, "sess-1", last_n=3)
     mock_handler.format_history_for_llm_markdown.assert_called_once()
-    ambiguity_checker.assert_called_once_with(
-        "what is the fee?",
-        conversation_context=markdown_ctx,
-    )
-    assert result.needs_clarification is False
-    assert result.backend == "ollama"
-    assert result.conversation_context == markdown_ctx
+    assert result == markdown_ctx
 
 
-def test_clarification_service_check_no_memory_uses_none_context():
-    """ClarificationService.check with no memory passes None conversation_context to checker."""
-    ambiguity_checker = MagicMock(return_value={"needs_clarification": True, "clarification_question": "Which one?", "clarification_backend": "ollama"})
+def test_load_clarification_context_no_memory():
+    """load_clarification_context with no memory returns None."""
+    result = load_clarification_context(None, "sess-1")
+    assert result is None
 
-    result = ClarificationService.check(
-        query="what about it?",
-        memory=None,
-        user_id="u1",
-        session_id="sess-1",
-        ambiguity_checker=ambiguity_checker,
-    )
 
-    ambiguity_checker.assert_called_once_with("what about it?", conversation_context=None)
-    assert result.needs_clarification is True
-    assert result.clarification_question == "Which one?"
-    assert result.conversation_context is None
+def test_load_clarification_context_no_session():
+    """load_clarification_context with empty session returns None."""
+    memory = MagicMock()
+    result = load_clarification_context(memory, "")
+    assert result is None

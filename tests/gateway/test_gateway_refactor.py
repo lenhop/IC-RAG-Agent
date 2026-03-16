@@ -25,8 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 PROMPTS_ROOT = Path(__file__).parent.parent.parent / "src" / "gateway" / "route_llm"
 
 @pytest.mark.parametrize("rel_path", [
-    "clarification/clarification_detect_ambiguity.md",
-    "clarification/clarification_generate_question.md",
+    "clarification/clarification_prompt.md",
     "rewriting/rewrite_query_clean.md",
     "classification/intent_split_query.md",
     "classification/intent_verify_candidate.md",
@@ -55,8 +54,7 @@ def test_prompt_loader_loads_all_active():
     from src.gateway.prompt_loader import load_prompt, clear_cache
     clear_cache()
     names = [
-        "clarification/clarification_detect_ambiguity",
-        "clarification/clarification_generate_question",
+        "clarification/clarification_prompt",
         "rewriting/rewrite_query_clean",
         "classification/intent_split_query",
         "classification/intent_verify_candidate",

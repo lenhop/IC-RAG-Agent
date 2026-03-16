@@ -1,15 +1,15 @@
 """Clarification stage for Route LLM."""
 
 from .clarification import (
-    ClarificationCheckResult,
     ClarificationEnvValidator,
-    ClarificationService,
     check_ambiguity,
+    clarification_enabled,
+    load_clarification_context,
 )
 
 __all__ = [
     "check_ambiguity",
-    "ClarificationCheckResult",
+    "clarification_enabled",
+    "load_clarification_context",
     "ClarificationEnvValidator",
-    "ClarificationService",
 ]

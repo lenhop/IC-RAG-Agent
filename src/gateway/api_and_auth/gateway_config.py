@@ -7,7 +7,7 @@ GatewayConfig: rewrite-only mode, clarification enabled, rewrite backend.
 from __future__ import annotations
 
 import os
-from typing import Any, Optional
+from typing import Optional
 
 from ..schemas import QueryRequest
 
@@ -34,11 +34,10 @@ class GatewayConfig:
         return v in ("1", "true", "yes", "on")
 
     @classmethod
-    def clarification_enabled(cls, clarification_service: Any) -> bool:
-        """Delegate to ClarificationService.is_enabled(). Pass service from api.py."""
-        if clarification_service is None:
-            return False
-        return clarification_service.is_enabled()
+    def clarification_enabled(cls) -> bool:
+        """Check if clarification is enabled via env."""
+        from ..route_llm.clarification import clarification_enabled
+        return clarification_enabled()
 
     @classmethod
     def resolve_rewrite_backend(cls, request: QueryRequest) -> Optional[str]:

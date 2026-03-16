@@ -28,8 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from ..dispatcher.dispatcher import build_execution_plan
 from ..logging_utils import format_route_metadata
-from ..route_llm.clarification import ClarificationService
-from ..route_llm.clarification.clarification import check_ambiguity
+from ..route_llm.clarification import clarification_enabled, load_clarification_context, check_ambiguity
 from ..route_llm.rewriting.router import route_workflow, rewrite_query
 from ..schemas import (
     QueryRequest,
@@ -55,7 +54,6 @@ from .plan_helper import PlanHelper
 from src.logger import get_logger_facade
 
 logger = logging.getLogger(__name__)
-clarification_service = ClarificationService()
 
 
 async def _get_optional_user_if_required(
@@ -163,18 +161,12 @@ async def rewrite(
     clarification_status: str = "Skip"
     clarification_backend: str | None = None
     try:
-        if GatewayConfig.clarification_enabled(clarification_service):
-            clarification_result = clarification_service.check(
-                query=original_query,
-                memory=gateway_memory,
-                user_id=effective_user_id,
-                session_id=request.session_id,
-                ambiguity_checker=check_ambiguity,
-            )
-            clarification_backend = clarification_result.backend
-            clarification_context = clarification_result.conversation_context
-            if clarification_result.needs_clarification:
-                clarification_question = clarification_result.clarification_question or ""
+        if GatewayConfig.clarification_enabled():
+            clarification_context = load_clarification_context(gateway_memory, request.session_id)
+            clarification_raw = check_ambiguity(original_query, conversation_context=clarification_context)
+            clarification_backend = clarification_raw.get("clarification_backend")
+            if clarification_raw.get("needs_clarification"):
+                clarification_question = clarification_raw.get("clarification_question") or ""
                 GatewayEventLogger.log_interaction(
                     event_name="gateway_rewrite_clarification",
                     status="success",
@@ -237,7 +229,7 @@ async def rewrite(
             answer=rewritten_query,
             latency_ms=rewrite_time_ms,
         )
-        if GatewayConfig.clarification_enabled(clarification_service):
+        if GatewayConfig.clarification_enabled():
             clarification_status = "Complete"
         return RewriteResponse(
             original_query=original_query,
@@ -328,17 +320,11 @@ async def query(
 
     try:
         # Clarification check (required, before rewrite): return early if query is ambiguous
-        if GatewayConfig.clarification_enabled(clarification_service):
-            clarification_result = clarification_service.check(
-                query=original_query,
-                memory=gateway_memory,
-                user_id=effective_user_id,
-                session_id=request.session_id,
-                ambiguity_checker=check_ambiguity,
-            )
-            clarification_context = clarification_result.conversation_context
-            if clarification_result.needs_clarification:
-                clarification_question = clarification_result.clarification_question or ""
+        if GatewayConfig.clarification_enabled():
+            clarification_context = load_clarification_context(gateway_memory, request.session_id)
+            clarification_raw = check_ambiguity(original_query, conversation_context=clarification_context)
+            if clarification_raw.get("needs_clarification"):
+                clarification_question = clarification_raw.get("clarification_question") or ""
                 MemoryEventWriter.append_event(
                     gateway_memory,
                     user_id=effective_user_id,
@@ -384,7 +370,7 @@ async def query(
                     clarification_required=True,
                     clarification_question=clarification_question,
                     pending_query=original_query,
-                    clarification_backend=clarification_result.backend,
+                    clarification_backend=clarification_raw.get("clarification_backend"),
                 )
 
         # Route LLM: rewrite -> rewritten_query; then intent splitting when enabled.
