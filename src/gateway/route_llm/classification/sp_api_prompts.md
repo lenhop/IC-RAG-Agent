@@ -50,6 +50,11 @@ Your ONLY task is to determine if the user query belongs to "SPI-API" intent.
 - Check the latest data for ASIN B09YYYYY
 
 ## OUTPUT FORMAT (MANDATORY)
-Output ONLY **Yes** or **No**:
+Output ONLY **Yes** or **No**, like below:
+```json
+{"result": "Yes"}
+```
+
 - Yes = the query is SPI-API intent
 - No = the query is NOT SPI-API intent
+
