@@ -24,7 +24,6 @@ from fastapi import Depends, FastAPI, Header
 from fastapi.middleware.cors import CORSMiddleware
 
 from ..dispatcher import build_execution_plan, DispatcherExecutor
-from ..logging_utils import format_route_metadata
 from ..route_llm.clarification import check_ambiguity
 from ..route_llm.rewriting.rewriters import rewrite_and_route
 from ..schemas import (
@@ -45,7 +44,7 @@ from .view_helpers import (
     IntentDetailsBuilder,
     PlanHelper,
 )
-from src.logger import get_logger_facade
+from src.logger import format_route_metadata, get_logger_facade
 
 logger = logging.getLogger(__name__)
 
@@ -167,18 +166,39 @@ def _log_and_persist(
         )
 
 
-def _split_intents(rewritten_query: str) -> list[str] | None:
-    """Optional intent splitting when GATEWAY_INTENT_CLASSIFICATION_ENABLED is on."""
+def _prepare_intent_classification(
+    rewritten_query: str,
+    conversation_context: str | None,
+) -> tuple[list[str] | None, list[dict[str, Any]] | None]:
+    """Prepare intent split and optional batch classification results.
+
+    Returns:
+      (intents, classified_intents)
+      - intents: split sub-queries (or None if disabled/unavailable)
+      - classified_intents: optional per-intent metadata from classify_intents_batch
+    """
     if not (rewritten_query or "").strip():
-        return None
+        return None, None
     if os.getenv("GATEWAY_INTENT_CLASSIFICATION_ENABLED", "").lower() not in ("1", "true", "yes", "on"):
-        return None
+        return None, None
+
     try:
-        from ..route_llm.classification import split_intents
-        return split_intents(rewritten_query)
+        from ..route_llm.classification import classify_intents_batch, split_intents
+
+        intents = split_intents(rewritten_query)
+        if not intents:
+            return None, None
+
+        classified_intents: list[dict[str, Any]] | None = None
+        try:
+            classified_intents = classify_intents_batch(intents, conversation_context)
+        except Exception as exc:
+            logger.warning("Intent batch classification failed (non-fatal): %s", exc)
+
+        return intents, classified_intents
     except Exception as exc:
         logger.warning("Intent split failed (non-fatal): %s", exc)
-        return None
+        return None, None
 
 
 # ---------------------------------------------------------------------------
@@ -360,12 +380,16 @@ class QueryPipeline:
                 status="ok",
             )
 
-            # 3. Intent classification
-            intents = _split_intents(rewritten_query)
+            # 3. Intent classification: split -> per-intent prompt chain -> merge
+            intents, classified_intents = _prepare_intent_classification(rewritten_query, ctx)
             MemoryEventWriter.append_event(
                 memory, user_id=uid, session_id=request.session_id,
                 request_id=request_id, event_type="intent_classification",
-                event_content={"rewritten_query": rewritten_query, "intents": intents or []},
+                event_content={
+                    "rewritten_query": rewritten_query,
+                    "intents": intents or [],
+                    "classified_intents": classified_intents or [],
+                },
                 status="ok",
             )
 
@@ -387,7 +411,11 @@ class QueryPipeline:
 
             # 5. Build execution plan
             plan_result = build_execution_plan(
-                request, rewritten_query, intents=intents, conversation_context=ctx,
+                request,
+                rewritten_query,
+                intents=intents,
+                conversation_context=ctx,
+                classified_intents=classified_intents,
             )
             if isinstance(plan_result, tuple):
                 execution_plan, field_clar = plan_result

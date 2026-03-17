@@ -87,6 +87,7 @@ def _classify_query_to_workflow(
 def _build_plan_from_extracted_intents(
     intents: List[str],
     conversation_context: Optional[str] = None,
+    classified_intents: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[RewritePlan, List[Dict]]:
     """
     Build execution plan from extracted intents.
@@ -103,11 +104,13 @@ def _build_plan_from_extracted_intents(
     intents_with_meta: List[Dict] = []
 
     # ── Batch classification via public API（流程图中 loop 在 classification 内部） ──
-    try:
-        batch_results = classify_intents_batch(intents, conversation_context)
-    except Exception as exc:
-        logger.warning("Batch classification failed, falling back to general: %s", exc)
-        batch_results = None
+    batch_results = classified_intents
+    if batch_results is None:
+        try:
+            batch_results = classify_intents_batch(intents, conversation_context)
+        except Exception as exc:
+            logger.warning("Batch classification failed, falling back to general: %s", exc)
+            batch_results = None
 
     if batch_results is not None:
         for idx, item in enumerate(batch_results, start=1):
@@ -294,6 +297,7 @@ def build_execution_plan(
     rewritten_query: str,
     intents: Optional[List[str]] = None,
     conversation_context: Optional[str] = None,
+    classified_intents: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[RewritePlan, Optional[str]]:
     """
     Build a validated execution plan for query orchestration.
@@ -309,6 +313,7 @@ def build_execution_plan(
         rewritten_query: Optimized retrieval query from Route LLM.
         intents: Optional list of sub-queries from intent classification.
         conversation_context: Optional conversation history for classification context.
+        classified_intents: Optional pre-classified intent metadata from caller.
 
     Returns:
         (RewritePlan, clarification_question) — clarification_question is None when
@@ -341,7 +346,11 @@ def build_execution_plan(
 
     # Intent classification ran on optimized retrieval query; use intents when available.
     if intents and len(intents) > 0:
-        plan, intents_with_meta = _build_plan_from_extracted_intents(intents, conversation_context)
+        plan, intents_with_meta = _build_plan_from_extracted_intents(
+            intents,
+            conversation_context,
+            classified_intents=classified_intents,
+        )
         plan = _correct_plan_workflows(plan)
 
         # Phase 5: validate required fields per intent.

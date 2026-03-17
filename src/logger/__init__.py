@@ -6,6 +6,7 @@ Public entry points:
 - LoggerFacade: class for dependency injection/testing
 """
 
+from .utils import enrich_log_fields, format_route_metadata
 from .logger import LoggerFacade, get_logger_facade
 from .models import ErrorLog, InteractionLog, LogKind, LogStatus, RuntimeLog
 from .settings import LoggerSettings
@@ -18,5 +19,7 @@ __all__ = [
     "LoggerFacade",
     "LoggerSettings",
     "RuntimeLog",
+    "enrich_log_fields",
+    "format_route_metadata",
     "get_logger_facade",
 ]

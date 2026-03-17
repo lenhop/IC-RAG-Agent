@@ -10,7 +10,7 @@ from .route_llm.rewriting import rewriters
 
 try:
     # Optional import: api module defines the FastAPI app.
-    from .api_and_auth.api import app  # type: ignore[attr-defined]
+    from .api.api import app  # type: ignore[attr-defined]
 except Exception:
     # Avoid import-time failures if FastAPI or dependencies are missing.
     app = None  # type: ignore[assignment]

@@ -42,11 +42,11 @@ The gateway code lives under `src/gateway/` in five logical groups plus shared m
 
 | Group | Path | Responsibility |
 |-------|------|----------------|
-| **API and auth** | `api_and_auth/` | FastAPI app (`api.py`), JWT auth + routes (`auth.py`), config + logger (`config.py`), view helpers (`view_helpers.py`). Entry: `src.gateway.api_and_auth.api:app` (see `scripts/run_gateway.py`). |
+| **API** | `api/` | FastAPI app (`api.py`), JWT auth + routes (`auth.py`), config + logger (`config.py`), view helpers (`view_helpers.py`). Entry: `src.gateway.api.api:app` (see `scripts/run_gateway.py`). |
 | **Route LLM** | `route_llm/` | Clarification (`clarification/`), rewriting + routing entry (`rewriting/router.py`, `rewriting/rewriters.py`), intent classification (`classification/`). |
 | **Dispatcher** | `dispatcher/` | Execution plan build, worker invocation, merge (`dispatcher.py`, `services.py`). |
 | **Memory** | `memory/` | Short-term Redis + event envelope + optional CH dual-write (`short_term.py`); ClickHouse client for message events (`long_term.py`). |
-| **Shared** | gateway root | `schemas.py`, `prompt_loader.py`, `logging_utils.py`. |
+| **Shared** | gateway root | `schemas.py`, `prompt_loader.py`. |
 
 Conceptually unchanged: **Route LLM** then **Dispatcher**; memory and logger integrate at the API and router layers.
 
@@ -532,7 +532,7 @@ Scope: **gateway observability** — dual-write **short-term** (Redis) and **lon
 ```mermaid
 flowchart TB
     subgraph GW["Gateway"]
-        API[api_and_auth/api.py]
+        API[api/api.py]
         RTR[route_llm/rewriting/router.py]
         DSP[dispatcher/dispatcher.py]
         RW[route_llm/rewriting/rewriters.py]
@@ -665,7 +665,7 @@ Scope: **event-based conversation memory** shared by Redis (short-term, TTL) and
 ```mermaid
 flowchart TB
     subgraph GW["Gateway API"]
-        API[api_and_auth/api.py]
+        API[api/api.py]
         MEM[memory/short_term.py]
     end
     subgraph Envelope["Event Envelope"]
@@ -767,7 +767,7 @@ flowchart LR
 
 | Step | Responsibility |
 |------|----------------|
-| 1 | `api_and_auth/api.py` emits events at clarification, rewrite, intent, answer, and turn_summary stages. |
+| 1 | `api/api.py` emits events at clarification, rewrite, intent, answer, and turn_summary stages. |
 | 2 | `append_event` validates via `MemoryEvent` (in `memory/short_term.py`); writes to Redis user key (and optional session key). |
 | 3 | Optional CH write when `GATEWAY_MEMORY_CH_ENABLED=true`; same payload, no transformation. |
 
@@ -777,7 +777,7 @@ flowchart LR
 
 ```text
 src/gateway/
-  api_and_auth/
+  api/
     api.py                 # Emit points: _append_memory_event at each stage; FastAPI app
   memory/
     short_term.py          # MemoryEvent model; GatewayConversationMemory: append_event, get_history*, save_turn
@@ -789,7 +789,7 @@ scripts/
   create_gateway_memory_events.sql   # DDL for rag_agent_message_event
 ```
 
-Run gateway: `python scripts/run_gateway.py` (Uvicorn: `src.gateway.api_and_auth.api:app`).
+Run gateway: `python scripts/run_gateway.py` (Uvicorn: `src.gateway.api.api:app`).
 
 ---
 
@@ -799,7 +799,7 @@ Run gateway: `python scripts/run_gateway.py` (Uvicorn: `src.gateway.api_and_auth
 |------|----------------|
 | `memory/short_term.py` | Pydantic `MemoryEvent`; Redis append; optional CH dual-write via long_term client; `save_turn` (legacy); `append_event` (v1). |
 | `memory/long_term.py` | ClickHouse connect; `ensure_table`; `write_event` to `rag_agent_message_event`. |
-| `api_and_auth/api.py` | Generate `request_id`; call `_append_memory_event` at each stage; pass `request_id` through. |
+| `api/api.py` | Generate `request_id`; call `_append_memory_event` at each stage; pass `request_id` through. |
 | `route_llm/rewriting/router.py` | Uses `ConversationHistoryHandler.format_history_for_llm_markdown` (message.py) for history context. |
 | `create_gateway_memory_events.sql` | DDL: MergeTree, partition by month, order by user_id, session_id, ts, request_id. |
 

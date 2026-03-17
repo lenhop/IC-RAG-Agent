@@ -54,7 +54,11 @@ Output ONLY **Yes** or **No**, like below:
 ```json
 {"result": "Yes"}
 ```
-
 - Yes = the query is SPI-API intent
 - No = the query is NOT SPI-API intent
 
+If NOT a SPI-API intent:
+
+```json
+{"result": "No"}
+```

@@ -43,7 +43,7 @@ if __name__ == "__main__":
     print(f"Log level: {GATEWAY_LOG_LEVEL}, Workers: {GATEWAY_WORKERS}, Reload: {GATEWAY_RELOAD}")
 
     uvicorn.run(
-        "src.gateway.api_and_auth.api:app",
+        "src.gateway.api.api:app",
         host=GATEWAY_HOST,
         port=GATEWAY_PORT,
         log_level=GATEWAY_LOG_LEVEL,

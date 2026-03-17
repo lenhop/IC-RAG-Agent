@@ -47,8 +47,8 @@ check_ambiguity (public)
 
 | File | Location | Context |
 |------|----------|---------|
-| `src/gateway/api_and_auth/api.py` | L596 | Rewrite endpoint – when clarification enabled, before rewrite |
-| `src/gateway/api_and_auth/api.py` | L818 | Query endpoint – when clarification enabled, before rewrite |
+| `src/gateway/api/api.py` | L596 | Rewrite endpoint – when clarification enabled, before rewrite |
+| `src/gateway/api/api.py` | L818 | Query endpoint – when clarification enabled, before rewrite |
 
 ### `check_ambiguity` – exported from
 
