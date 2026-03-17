@@ -1,11 +1,10 @@
 """
-View-layer helpers for gateway API endpoints.
+View-layer pure helpers for gateway API endpoints.
 
-IntentDetailsBuilder: intent + workflow details for /rewrite UI preview.
-PlanHelper: execution plan helpers (extract query, derive workflow, merge answers).
-DebugTraceBuilder: debug trace dict for UI clients.
-
-Merged from: intent_rewrite.py + plan_helper.py + debug_trace.py
+Builders (stateless helper classes):
+  IntentDetailsBuilder: intent + workflow details for /rewrite UI preview.
+  PlanHelper: execution plan helpers (extract query, derive workflow, merge answers).
+  DebugTraceBuilder: debug trace dict for UI clients.
 """
 
 from __future__ import annotations
@@ -13,7 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..schemas import QueryRequest, RewritePlan, TaskExecutionResult
+from ..schemas import RewritePlan, TaskExecutionResult
 from .config import GatewayConfig
 
 logger = logging.getLogger(__name__)
@@ -60,12 +59,7 @@ class IntentDetailsBuilder:
                         continue
                     result = classify_intent(q)
                     wf = result.workflow if result else "general"
-                    intent_details.append(
-                        {
-                            "intent": q,
-                            "workflow": wf,
-                        }
-                    )
+                    intent_details.append({"intent": q, "workflow": wf})
                     if wf and wf not in workflows:
                         workflows.append(wf)
             if not workflows and (intents or []):
@@ -76,18 +70,10 @@ class IntentDetailsBuilder:
                     if wf:
                         workflows = [wf]
         except Exception as exc:
-            logger.warning(
-                "Intent split or classification failed (rewrite response): %s", exc
-            )
-            # Fallback: single "general" intent for the whole query
+            logger.warning("Intent split or classification failed (rewrite response): %s", exc)
             q = (rewritten_query or "").strip()
             if q:
-                intent_details.append(
-                    {
-                        "intent": q,
-                        "workflow": "general",
-                    }
-                )
+                intent_details.append({"intent": q, "workflow": "general"})
                 workflows = ["general"]
         return intents, intent_details, workflows
 
@@ -98,19 +84,13 @@ class IntentDetailsBuilder:
 
 
 class PlanHelper:
-    """
-    Helpers for execution plan and route metadata.
-
-    Pure functions; no gateway state. All class methods.
-    """
+    """Helpers for execution plan and route metadata. Pure class methods."""
 
     @classmethod
     def extract_route_input_query(cls, plan: RewritePlan, fallback_query: str) -> str:
         """Build route-input summary query from plan task queries."""
         task_queries = [
-            task.query
-            for group in plan.task_groups
-            for task in group.tasks
+            task.query for group in plan.task_groups for task in group.tasks
             if (task.query or "").strip()
         ]
         if not task_queries:
@@ -121,7 +101,7 @@ class PlanHelper:
 
     @classmethod
     def derive_workflow(
-        cls, plan: RewritePlan, task_results: List[TaskExecutionResult], fallback: str
+        cls, plan: RewritePlan, task_results: List[TaskExecutionResult], fallback: str,
     ) -> str:
         """Derive top-level workflow label from plan/result context."""
         workflows = {task.workflow for group in plan.task_groups for task in group.tasks}
@@ -133,7 +113,7 @@ class PlanHelper:
 
     @classmethod
     def merge_task_answers(
-        cls, plan: RewritePlan, task_results: List[TaskExecutionResult]
+        cls, plan: RewritePlan, task_results: List[TaskExecutionResult],
     ) -> str:
         """Build deterministic merged answer from successful task outputs."""
         completed = [
@@ -151,9 +131,7 @@ class PlanHelper:
             for result in completed:
                 merged_lines.append(f"- [{result.workflow}] {result.answer.strip()}")
             return "\n".join(merged_lines)
-        return "\n".join(
-            f"- [{r.workflow}] {r.answer.strip()}" for r in completed
-        )
+        return "\n".join(f"- [{r.workflow}] {r.answer.strip()}" for r in completed)
 
 
 # ---------------------------------------------------------------------------
@@ -162,21 +140,16 @@ class PlanHelper:
 
 
 class DebugTraceBuilder:
-    """
-    Build optional observability trace returned to UI clients.
-    """
+    """Build optional observability trace returned to UI clients."""
 
     @classmethod
-    def build_debug_trace(
-        cls,
-        original_query: str,
-        rewritten_query: str,
-        rewrite_time_ms: int,
-        request: QueryRequest,
-        route_input_query: str,
-        route_source: str,
-        route_backend: str | None,
-        route_llm_confidence: float | None,
+    def build(
+        cls, *,
+        original_query: str, rewritten_query: str, rewrite_time_ms: int,
+        request: Any, route_input_query: str,
+        route_source: str = "unknown",
+        route_backend: str | None = None,
+        route_llm_confidence: float | None = None,
     ) -> Dict[str, Any]:
         """Build debug trace dict with rewrite and route metadata."""
         return {
@@ -190,3 +163,6 @@ class DebugTraceBuilder:
             "route_backend": route_backend,
             "route_llm_confidence": route_llm_confidence,
         }
+
+    # Backward-compatible alias
+    build_debug_trace = build

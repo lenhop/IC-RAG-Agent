@@ -1,29 +1,26 @@
 """
-Gateway FastAPI application (Dispatcher / Supervisor Agent).
+Gateway FastAPI application — routes + pipeline orchestration.
 
 Exposes REST API for the unified query gateway:
-- POST /api/v1/query: accept QueryRequest, return QueryResponse
-- POST /api/v1/rewrite: rewrite-only endpoint (no execution)
-- GET /health: health check
+- POST /api/v1/query   → QueryPipeline.run()
+- POST /api/v1/rewrite → RewritePipeline.run()
+- GET  /health         → health check
+- GET  /api/v1/session → conversation history
 
-Architecture: Route LLM (clarification, rewriters, router) does 3 steps: Clarification,
-Rewriting (normalize, memory merge, rewrite with context), Intent classification.
-Dispatcher (build_execution_plan, services) builds the plan and executes tasks.
-This module (Dispatcher) receives the plan, executes tasks in parallel within groups,
-invokes worker agents (RAG, Amazon docs RAG, SP-API Agent, UDS Agent), and merges results.
+Pipeline classes (RewritePipeline, QueryPipeline) orchestrate the full
+request lifecycle; pure helpers live in view_helpers.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
 import time
 import uuid
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header
 from fastapi.middleware.cors import CORSMiddleware
 
 from ..dispatcher import build_execution_plan, DispatcherExecutor
@@ -33,25 +30,31 @@ from ..route_llm.rewriting.rewriters import rewrite_and_route
 from ..schemas import (
     QueryRequest,
     QueryResponse,
-    RewritePlan,
     RewriteResponse,
-    TaskExecutionResult,
 )
-from .auth import AuthGuard, router as auth_router
-from .config import GatewayConfig, GatewayEventLogger
-from .view_helpers import DebugTraceBuilder, IntentDetailsBuilder, PlanHelper
 from ..message import (
     get_gateway_memory,
     ConversationHistoryHandler,
     MemoryEventWriter,
     TurnSummaryPersistence,
 )
+from .auth import AuthGuard, router as auth_router
+from .config import GatewayConfig, GatewayEventLogger
+from .view_helpers import (
+    DebugTraceBuilder,
+    IntentDetailsBuilder,
+    PlanHelper,
+)
 from src.logger import get_logger_facade
 
 logger = logging.getLogger(__name__)
 
 
-async def _get_optional_user_if_required(
+# ---------------------------------------------------------------------------
+# Gateway singletons (module-level init)
+# ---------------------------------------------------------------------------
+
+async def _get_optional_user(
     authorization: str | None = Header(None, alias="Authorization"),
 ) -> dict | None:
     """FastAPI Depends: inject Authorization header and delegate to AuthGuard."""
@@ -62,18 +65,17 @@ async def _get_optional_user_if_required(
 gateway_memory = get_gateway_memory()
 
 # Unified logger facade (short-term Redis + long-term ClickHouse). Best effort.
-gateway_logger = None
+_gateway_logger = None
 try:
-    gateway_logger = get_logger_facade()
+    _gateway_logger = get_logger_facade()
 except Exception as exc:
     logger.warning("Gateway logger disabled (init failed): %s", exc)
-    gateway_logger = None
-if gateway_logger is not None:
-    GatewayEventLogger.set_facade(gateway_logger)
+if _gateway_logger is not None:
+    GatewayEventLogger.set_facade(_gateway_logger)
 
 
 # ---------------------------------------------------------------------------
-# FastAPI app and route handlers (thin layer; logic in auth, message, dispatcher, etc.)
+# FastAPI app
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
@@ -96,24 +98,14 @@ app.include_router(auth_router)
 
 
 # ---------------------------------------------------------------------------
-# Clarification context loader (moved from clarification.py)
+# Shared internal helpers for pipelines
 # ---------------------------------------------------------------------------
 
 _CLARIFICATION_MEMORY_ROUNDS = 3
 
 
-def load_clarification_context(
-    memory: Any,
-    session_id: str | None,
-) -> str | None:
-    """
-    Load and format conversation history for clarification.
-
-    Reads last N turns from Redis via ConversationHistoryHandler,
-    formats as markdown for LLM context.
-
-    Returns formatted context string, or None if no history available.
-    """
+def _load_clarification_context(memory: Any, session_id: str | None) -> str | None:
+    """Load last-N conversation history from Redis, formatted as markdown."""
     sid = (session_id or "").strip()
     if not sid or not memory:
         return None
@@ -124,670 +116,476 @@ def load_clarification_context(
     last_n = min(max(n, 1), 50)
     res = ConversationHistoryHandler.get_session_history(memory, sid, last_n=last_n)
     history = res.get("history") or []
-    if history:
-        return ConversationHistoryHandler.format_history_for_llm_markdown(history)
-    return None
+    return ConversationHistoryHandler.format_history_for_llm_markdown(history) if history else None
+
+
+def _run_clarification(
+    original_query: str, session_id: str | None, memory: Any,
+) -> tuple[str | None, dict | None]:
+    """Return (context, raw) — raw is non-None only when clarification is needed."""
+    if not GatewayConfig.clarification_enabled():
+        return None, None
+    context = _load_clarification_context(memory, session_id)
+    raw = check_ambiguity(original_query, conversation_context=context)
+    if raw.get("needs_clarification"):
+        return context, raw
+    return context, None
+
+
+def _run_rewrite(
+    request: QueryRequest, effective_user_id: str | None,
+    clarification_context: str | None, memory: Any,
+) -> tuple[str, int]:
+    """Execute rewrite pipeline → (rewritten_query, elapsed_ms)."""
+    req = request.model_copy(update={"user_id": effective_user_id}) if effective_user_id else request
+    started = time.perf_counter()
+    rewritten_query, _, *_ = rewrite_and_route(
+        req, gateway_memory=memory,
+        conversation_context=clarification_context, enable_routing=False,
+    )
+    rewritten_query = re.sub(r"\s+", " ", (rewritten_query or "")).strip()
+    return rewritten_query, int((time.perf_counter() - started) * 1000)
+
+
+def _log_and_persist(
+    memory: Any, *,
+    event_type: str, content: dict,
+    status: str = "ok", note: str | None = None,
+    user_id: str | None, session_id: str | None, request_id: str,
+    original_query: str, answer: str, workflow: str,
+    persist: bool = True,
+) -> None:
+    """Unified MemoryEventWriter.append_event + optional TurnSummaryPersistence.persist_turn."""
+    MemoryEventWriter.append_event(
+        memory, user_id=user_id, session_id=session_id, request_id=request_id,
+        event_type=event_type, event_content=content, status=status, note=note,
+    )
+    if persist and memory and user_id:
+        TurnSummaryPersistence.persist_turn(
+            memory, user_id=user_id, session_id=session_id or "",
+            request_id=request_id, query=original_query, answer=answer, workflow=workflow,
+        )
+
+
+def _split_intents(rewritten_query: str) -> list[str] | None:
+    """Optional intent splitting when GATEWAY_INTENT_CLASSIFICATION_ENABLED is on."""
+    if not (rewritten_query or "").strip():
+        return None
+    if os.getenv("GATEWAY_INTENT_CLASSIFICATION_ENABLED", "").lower() not in ("1", "true", "yes", "on"):
+        return None
+    try:
+        from ..route_llm.classification import split_intents
+        return split_intents(rewritten_query)
+    except Exception as exc:
+        logger.warning("Intent split failed (non-fatal): %s", exc)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# RewritePipeline — /api/v1/rewrite orchestration
+# ---------------------------------------------------------------------------
+
+
+class RewritePipeline:
+    """
+    Orchestrates the /rewrite preview endpoint:
+      1) Clarification check (early return if ambiguous)
+      2) Rewrite (normalize, memory merge, rewrite with context)
+      3) Intent classification preview
+    """
+
+    @classmethod
+    def run(cls, request: QueryRequest, user_payload: dict | None, memory: Any) -> RewriteResponse:
+        request_id = str(uuid.uuid4())
+        original_query = (request.query or "").strip()
+        uid = AuthGuard.resolve_user_id(request, user_payload)
+
+        GatewayEventLogger.log_runtime(
+            event_name="gateway_rewrite_request", stage="rewrite",
+            message="rewrite endpoint request started", status="started",
+            request_id=request_id, session_id=request.session_id,
+            user_id=uid, workflow=request.workflow or "auto", query_raw=original_query,
+        )
+
+        clarification_status: str = "Skip"
+        clarification_backend: str | None = None
+        try:
+            # 1. Clarification
+            ctx, clar_raw = _run_clarification(original_query, request.session_id, memory)
+            if clar_raw:
+                q = clar_raw.get("clarification_question") or ""
+                clarification_backend = clar_raw.get("clarification_backend")
+                GatewayEventLogger.log_interaction(
+                    event_name="gateway_rewrite_clarification", status="success",
+                    request_id=request_id, session_id=request.session_id,
+                    user_id=uid, workflow="clarification", query_raw=original_query,
+                    clarification_question=q, answer=q, latency_ms=0,
+                )
+                return RewriteResponse(
+                    original_query=original_query, rewritten_query=original_query,
+                    rewrite_enabled=bool(request.rewrite_enable),
+                    rewrite_backend=GatewayConfig.resolve_rewrite_backend(request),
+                    rewrite_time_ms=0, plan=None,
+                    clarification_required=True, clarification_question=q,
+                    pending_query=original_query, clarification_status="Required",
+                    clarification_backend=clarification_backend,
+                )
+
+            # 2. Rewrite (needs memory_rounds, so call rewrite_and_route directly)
+            req = request.model_copy(update={"user_id": uid}) if uid else request
+            started = time.perf_counter()
+            rewritten_query, _, memory_rounds, memory_text_length, *_ = rewrite_and_route(
+                req, gateway_memory=memory, conversation_context=ctx, enable_routing=False,
+            )
+            rewritten_query = re.sub(r"\s+", " ", (rewritten_query or "")).strip()
+            rewrite_time_ms = int((time.perf_counter() - started) * 1000)
+
+            # 3. Intent classification preview
+            intents, intent_details, workflows = IntentDetailsBuilder.build_intent_details(rewritten_query)
+
+            GatewayEventLogger.log_interaction(
+                event_name="gateway_rewrite_preview", status="success",
+                request_id=request_id, session_id=request.session_id,
+                user_id=uid, workflow="rewrite_only_preview",
+                query_raw=original_query, query_rewritten=rewritten_query,
+                intent_list=intents or [], intent_details=intent_details or [],
+                answer=rewritten_query, latency_ms=rewrite_time_ms,
+            )
+            if GatewayConfig.clarification_enabled():
+                clarification_status = "Complete"
+
+            return RewriteResponse(
+                original_query=original_query, rewritten_query=rewritten_query,
+                rewrite_enabled=bool(request.rewrite_enable),
+                rewrite_backend=GatewayConfig.resolve_rewrite_backend(request),
+                rewrite_time_ms=rewrite_time_ms, plan=None,
+                clarification_status=clarification_status,
+                clarification_backend=clarification_backend,
+                memory_rounds=memory_rounds, memory_text_length=memory_text_length,
+                rewritten_query_length=len(rewritten_query or ""),
+                intents=intents or None, intent_details=intent_details or None,
+                workflows=workflows or None, rewritten_query_display=None,
+            )
+        except Exception as exc:
+            logger.exception("Rewrite endpoint failed: %s", exc)
+            return RewriteResponse(
+                original_query=original_query, rewritten_query=original_query,
+                rewrite_enabled=bool(request.rewrite_enable),
+                rewrite_backend=GatewayConfig.resolve_rewrite_backend(request),
+                rewrite_time_ms=0, plan=None, error=str(exc),
+            )
+
+
+# ---------------------------------------------------------------------------
+# QueryPipeline — /api/v1/query orchestration
+# ---------------------------------------------------------------------------
+
+
+class QueryPipeline:
+    """
+    Orchestrates the /query endpoint:
+      1) Clarification     → early return if ambiguous
+      2) Rewrite           → normalize + memory merge + rewrite
+      3) Intent split      → optional sub-question splitting
+      4) Build plan        → execution plan + field validation
+      5) Route             → determine workflow / route metadata
+      6) Execute           → Dispatcher runs worker agents
+      7) Merge + respond   → aggregate results, persist, return
+    """
+
+    @classmethod
+    def run(cls, request: QueryRequest, user_payload: dict | None, memory: Any) -> QueryResponse:
+        request_id = str(uuid.uuid4())
+        original_query = (request.query or "").strip()
+        uid = AuthGuard.resolve_user_id(request, user_payload)
+        rewritten_query = original_query
+        rewrite_time_ms = 0
+        route_source = "unknown"
+        route_backend: str | None = None
+        route_llm_confidence: float | None = None
+        routing_confidence = 0.0
+        workflow = (request.workflow or "auto").strip().lower() or "auto"
+        route_input_query = rewritten_query
+
+        # Shared kwargs for _log_and_persist
+        _lp: dict = dict(
+            user_id=uid, session_id=request.session_id,
+            request_id=request_id, original_query=original_query,
+        )
+
+        GatewayEventLogger.log_runtime(
+            event_name="gateway_query_request", stage="query",
+            message="query endpoint request started", status="started",
+            request_id=request_id, session_id=request.session_id,
+            user_id=uid, workflow=request.workflow or "auto", query_raw=original_query,
+        )
+        MemoryEventWriter.append_event(
+            memory, user_id=uid, session_id=request.session_id,
+            request_id=request_id, event_type="user_query",
+            event_content={"query": original_query, "workflow": request.workflow or "auto"},
+            status="ok",
+        )
+
+        try:
+            # 1. Clarification
+            ctx, clar_raw = _run_clarification(original_query, request.session_id, memory)
+            if clar_raw:
+                q = clar_raw.get("clarification_question") or ""
+                _log_and_persist(
+                    memory, event_type="query_clarification",
+                    content={"query": original_query, "clarification_question": q},
+                    answer=q, workflow="clarification", **_lp,
+                )
+                GatewayEventLogger.log_interaction(
+                    event_name="gateway_query_clarification", status="success",
+                    request_id=request_id, session_id=request.session_id,
+                    user_id=uid, workflow="clarification", query_raw=original_query,
+                    clarification_question=q, answer=q, latency_ms=0,
+                )
+                return QueryResponse(
+                    answer=q, workflow="clarification", routing_confidence=0.0,
+                    sources=[], request_id=request_id, error=None,
+                    debug={"original_query": original_query, "clarification_required": True},
+                    clarification_required=True, clarification_question=q,
+                    pending_query=original_query,
+                    clarification_backend=clar_raw.get("clarification_backend"),
+                )
+
+            # 2. Rewrite
+            rewritten_query, rewrite_time_ms = _run_rewrite(request, uid, ctx, memory)
+            MemoryEventWriter.append_event(
+                memory, user_id=uid, session_id=request.session_id,
+                request_id=request_id, event_type="query_rewriting",
+                event_content={"original_query": original_query, "rewritten_query": rewritten_query},
+                status="ok",
+            )
+
+            # 3. Intent classification
+            intents = _split_intents(rewritten_query)
+            MemoryEventWriter.append_event(
+                memory, user_id=uid, session_id=request.session_id,
+                request_id=request_id, event_type="intent_classification",
+                event_content={"rewritten_query": rewritten_query, "intents": intents or []},
+                status="ok",
+            )
+
+            # 4. Empty guard
+            if not (rewritten_query or "").strip():
+                ans = "Please provide a non-empty query."
+                _log_and_persist(
+                    memory, event_type="llm_answer",
+                    content={"answer": ans, "workflow": "general"},
+                    status="failed", note="empty rewritten query",
+                    answer=ans, workflow="general", **_lp,
+                )
+                return QueryResponse(
+                    answer=ans, workflow="general", routing_confidence=0.0,
+                    sources=[], request_id=request_id, error=None,
+                    debug={"original_query": original_query, "rewritten_query": "",
+                           "clarification_required": False},
+                )
+
+            # 5. Build execution plan
+            plan_result = build_execution_plan(
+                request, rewritten_query, intents=intents, conversation_context=ctx,
+            )
+            if isinstance(plan_result, tuple):
+                execution_plan, field_clar = plan_result
+            else:
+                execution_plan, field_clar = plan_result, None
+
+            if field_clar:
+                _log_and_persist(
+                    memory, event_type="query_clarification",
+                    content={"query": original_query, "clarification_question": field_clar},
+                    note="missing required fields",
+                    answer=field_clar, workflow="clarification", **_lp,
+                )
+                return QueryResponse(
+                    answer=field_clar, workflow="clarification",
+                    routing_confidence=0.0, sources=[], request_id=request_id, error=None,
+                    debug={"original_query": original_query, "clarification_required": True},
+                    clarification_required=True, clarification_question=field_clar,
+                    pending_query=original_query,
+                )
+
+            route_input_query = PlanHelper.extract_route_input_query(execution_plan, original_query)
+
+            # 6. Rewrite-only mode shortcut
+            if GatewayConfig.is_rewrite_only_mode():
+                _log_and_persist(
+                    memory, event_type="llm_answer",
+                    content={"answer": rewritten_query, "workflow": "rewrite_only"},
+                    note="rewrite-only mode",
+                    answer=rewritten_query, workflow="rewrite_only", **_lp,
+                )
+                return QueryResponse(
+                    answer=rewritten_query, workflow="rewrite_only",
+                    routing_confidence=1.0, sources=[], request_id=request_id, error=None,
+                    debug=DebugTraceBuilder.build(
+                        original_query=original_query, rewritten_query=rewritten_query,
+                        rewrite_time_ms=rewrite_time_ms, request=request,
+                        route_input_query=route_input_query, route_source="rewrite_only",
+                    ),
+                    plan=execution_plan, task_results=[], merged_answer="",
+                )
+
+            # 7. Route metadata
+            planned_task_count = sum(len(g.tasks) for g in execution_plan.task_groups)
+            if planned_task_count > 1:
+                route_source, routing_confidence = "planner", 1.0
+                workflow = PlanHelper.derive_workflow(execution_plan, [], fallback=workflow)
+            else:
+                (_, _, _, _, workflow, routing_confidence, route_source,
+                 route_backend, route_llm_confidence) = rewrite_and_route(
+                    request, enable_routing=True,
+                    route_query=route_input_query, rewritten_query=rewritten_query,
+                )
+                if execution_plan.task_groups and execution_plan.task_groups[0].tasks:
+                    execution_plan.task_groups[0].tasks[0].workflow = workflow
+
+            # 8. Dispatcher: execute + merge
+            task_results = DispatcherExecutor.execute_plan(execution_plan, request)
+            merged_answer = PlanHelper.merge_task_answers(execution_plan, task_results)
+            workflow = PlanHelper.derive_workflow(execution_plan, task_results, fallback=workflow)
+
+            aggregated_sources: List[Dict[str, Any]] = []
+            for r in task_results:
+                if r.status == "completed":
+                    aggregated_sources.extend(r.sources)
+            failed = [r for r in task_results if r.status == "failed"]
+            top_error: str | None = None
+            if failed and not merged_answer:
+                top_error = failed[0].error or "All planned tasks failed."
+            elif failed:
+                top_error = f"{len(failed)} planned task(s) failed."
+
+            meta = format_route_metadata(route_source, route_backend, route_llm_confidence)
+            debug_trace = DebugTraceBuilder.build(
+                original_query=original_query, rewritten_query=rewritten_query,
+                rewrite_time_ms=rewrite_time_ms, request=request,
+                route_input_query=route_input_query, route_source=route_source,
+                route_backend=route_backend, route_llm_confidence=route_llm_confidence,
+            )
+
+            # 9a. All tasks failed
+            if top_error and not merged_answer:
+                _log_and_persist(
+                    memory, event_type="llm_answer",
+                    content={"answer": "", "workflow": workflow, "error": top_error},
+                    status="failed", note="planned tasks failed",
+                    answer=top_error or "error", workflow=workflow, **_lp,
+                )
+                GatewayEventLogger.log_error(
+                    event_name="gateway_query_failed",
+                    request_id=request_id, session_id=request.session_id,
+                    user_id=uid, workflow=workflow,
+                    query_raw=original_query, query_rewritten=rewritten_query,
+                    error_type="PlannedTaskFailure",
+                    error_message=top_error or "All planned tasks failed.",
+                    metadata={"failed_tasks": [t.task_id for t in failed]},
+                )
+                logger.warning(
+                    "Planned execution failed for request %s (workflow=%s): %s %s",
+                    request_id, workflow, top_error, meta,
+                )
+                return QueryResponse(
+                    answer="", workflow=workflow, routing_confidence=routing_confidence,
+                    sources=aggregated_sources, request_id=request_id, error=top_error,
+                    debug=debug_trace, plan=execution_plan,
+                    task_results=task_results, merged_answer="",
+                )
+
+            # 9b. Success
+            if memory and uid and merged_answer and workflow not in ("clarification", "rewrite_only"):
+                _log_and_persist(
+                    memory, event_type="llm_answer",
+                    content={"answer": merged_answer, "workflow": workflow},
+                    answer=merged_answer, workflow=workflow, **_lp,
+                )
+            logger.info(
+                "Gateway handled request %s with workflow=%s (confidence=%.2f) %s",
+                request_id, workflow, routing_confidence, meta,
+            )
+            GatewayEventLogger.log_interaction(
+                event_name="gateway_query_success", status="success",
+                request_id=request_id, session_id=request.session_id,
+                user_id=uid, workflow=workflow,
+                query_raw=original_query, query_rewritten=rewritten_query,
+                answer=merged_answer, latency_ms=rewrite_time_ms,
+            )
+            return QueryResponse(
+                answer=merged_answer, workflow=workflow,
+                routing_confidence=routing_confidence,
+                sources=aggregated_sources, request_id=request_id,
+                error=top_error, debug=debug_trace, plan=execution_plan,
+                task_results=task_results, merged_answer=merged_answer,
+            )
+
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            logger.exception("Gateway query handler failed: %s", exc)
+            GatewayEventLogger.log_error(
+                event_name="gateway_query_exception",
+                request_id=request_id, session_id=request.session_id,
+                user_id=uid, workflow=workflow,
+                query_raw=original_query, query_rewritten=rewritten_query,
+                error_type=type(exc).__name__, error_message=str(exc),
+                metadata={"route_source": route_source},
+            )
+            if memory and uid:
+                _log_and_persist(
+                    memory, event_type="llm_answer",
+                    content={"answer": "", "workflow": "error", "error": str(exc)},
+                    status="failed", note=type(exc).__name__,
+                    answer=str(exc), workflow="error", **_lp,
+                )
+            return QueryResponse(
+                answer="", workflow=workflow, routing_confidence=routing_confidence,
+                sources=[], request_id=request_id, error=str(exc),
+                debug=DebugTraceBuilder.build(
+                    original_query=original_query, rewritten_query=rewritten_query,
+                    rewrite_time_ms=rewrite_time_ms, request=request,
+                    route_input_query=route_input_query, route_source=route_source,
+                    route_backend=route_backend, route_llm_confidence=route_llm_confidence,
+                ),
+            )
+
+
+# ---------------------------------------------------------------------------
+# Route handlers
+# ---------------------------------------------------------------------------
 
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    """
-    Simple health check endpoint.
-
-    Returns:
-        JSON payload with status field.
-    """
+    """Simple health check endpoint."""
     return {"status": "ok"}
 
 
 @app.get("/api/v1/session/{session_id}")
 async def get_session_history(session_id: str, last_n: int = 10) -> dict[str, Any]:
-    """
-    Return last N turns for a session (for UI or debugging).
-
-    Requires gateway memory (Redis) to be enabled.
-    """
+    """Return last N turns for a session (for UI or debugging)."""
     return ConversationHistoryHandler.get_session_history(
-        gateway_memory,
-        session_id,
-        min(last_n, 50),
+        gateway_memory, session_id, min(last_n, 50),
     )
 
 
-@app.post(
-    "/api/v1/rewrite",
-    response_model=RewriteResponse,
-    summary="Route LLM only (no execution)",
-)
+@app.post("/api/v1/rewrite", response_model=RewriteResponse, summary="Route LLM only (no execution)")
 async def rewrite(
     request: QueryRequest,
-    _user: dict | None = Depends(_get_optional_user_if_required),
+    _user: dict | None = Depends(_get_optional_user),
 ) -> RewriteResponse:
-    """
-    Run Route LLM pipeline only: clarification, rewriting, intent classification.
-    No execution plan building (Dispatcher's job) or downstream worker execution.
-
-    Route LLM steps: 1) Clarification, 2) Rewriting (normalize, memory merge,
-    rewrite with context), 3) Intent classification.
-    """
-    request_id = str(uuid.uuid4())
-    original_query = (request.query or "").strip()
-    effective_user_id = AuthGuard.resolve_user_id(request, _user)
-    clarification_context: str | None = None
-    GatewayEventLogger.log_runtime(
-        event_name="gateway_rewrite_request",
-        stage="rewrite",
-        message="rewrite endpoint request started",
-        status="started",
-        request_id=request_id,
-        session_id=request.session_id,
-        user_id=effective_user_id,
-        workflow=request.workflow or "auto",
-        query_raw=original_query,
-    )
-
-    # Clarification (required): return early if query is ambiguous
-    clarification_status: str = "Skip"
-    clarification_backend: str | None = None
-    try:
-        if GatewayConfig.clarification_enabled():
-            clarification_context = load_clarification_context(gateway_memory, request.session_id)
-            clarification_raw = check_ambiguity(original_query, conversation_context=clarification_context)
-            clarification_backend = clarification_raw.get("clarification_backend")
-            if clarification_raw.get("needs_clarification"):
-                clarification_question = clarification_raw.get("clarification_question") or ""
-                GatewayEventLogger.log_interaction(
-                    event_name="gateway_rewrite_clarification",
-                    status="success",
-                    request_id=request_id,
-                    session_id=request.session_id,
-                    user_id=effective_user_id,
-                    workflow="clarification",
-                    query_raw=original_query,
-                    clarification_question=clarification_question,
-                    answer=clarification_question,
-                    latency_ms=0,
-                )
-                # NOTE: /rewrite is a preview endpoint — do NOT save to Redis here.
-                # The /query endpoint is responsible for all conversation logging.
-                return RewriteResponse(
-                    original_query=original_query,
-                    rewritten_query=original_query,
-                    rewrite_enabled=bool(request.rewrite_enable),
-                    rewrite_backend=GatewayConfig.resolve_rewrite_backend(request),
-                    rewrite_time_ms=0,
-                    plan=None,
-                    clarification_required=True,
-                    clarification_question=clarification_question,
-                    pending_query=original_query,
-                    clarification_status="Required",
-                    clarification_backend=clarification_backend,
-                )
-
-        # Ensure router receives user_id for memory merge (from JWT or request body)
-        req_for_rewrite = request.model_copy(update={"user_id": effective_user_id}) if effective_user_id else request
-        rewrite_started = time.perf_counter()
-        rewritten_query, _, memory_rounds, memory_text_length, _, _, _, _, _ = rewrite_and_route(
-            req_for_rewrite,
-            gateway_memory=gateway_memory,
-            conversation_context=clarification_context,
-            enable_routing=False,
-        )
-        # Hard guard: rewrite stage must return a single line; intent splitting happens later.
-        rewritten_query = re.sub(r"\s+", " ", (rewritten_query or "")).strip()
-        rewrite_time_ms = int((time.perf_counter() - rewrite_started) * 1000)
-        rewritten_query_length = len(rewritten_query or "")
-
-        intents, intent_details, workflows = IntentDetailsBuilder.build_intent_details(
-            rewritten_query
-        )
-
-        # NOTE: /rewrite is a preview endpoint — do NOT save to Redis here.
-        # The /query endpoint is responsible for all conversation logging.
-
-        # Rewrite stage outputs one sentence only; do not show as bullet list (splitting is intent-classification step).
-        rewritten_query_display = None
-        GatewayEventLogger.log_interaction(
-            event_name="gateway_rewrite_preview",
-            status="success",
-            request_id=request_id,
-            session_id=request.session_id,
-            user_id=effective_user_id,
-            workflow="rewrite_only_preview",
-            query_raw=original_query,
-            query_rewritten=rewritten_query,
-            intent_list=intents or [],
-            intent_details=intent_details or [],
-            answer=rewritten_query,
-            latency_ms=rewrite_time_ms,
-        )
-        if GatewayConfig.clarification_enabled():
-            clarification_status = "Complete"
-        return RewriteResponse(
-            original_query=original_query,
-            rewritten_query=rewritten_query,
-            rewrite_enabled=bool(request.rewrite_enable),
-            rewrite_backend=GatewayConfig.resolve_rewrite_backend(request),
-            rewrite_time_ms=rewrite_time_ms,
-            plan=None,
-            clarification_status=clarification_status,
-            clarification_backend=clarification_backend,
-            memory_rounds=memory_rounds,
-            memory_text_length=memory_text_length,
-            rewritten_query_length=rewritten_query_length,
-            intents=intents if intents else None,
-            intent_details=intent_details if intent_details else None,
-            workflows=workflows if workflows else None,
-            rewritten_query_display=rewritten_query_display,
-        )
-
-    except Exception as exc:
-        logger.exception("Rewrite endpoint failed: %s", exc)
-        return RewriteResponse(
-            original_query=original_query,
-            rewritten_query=original_query,
-            rewrite_enabled=bool(request.rewrite_enable),
-            rewrite_backend=GatewayConfig.resolve_rewrite_backend(request),
-            rewrite_time_ms=0,
-            plan=None,
-            error=str(exc),
-        )
+    """Run Route LLM pipeline only: clarification, rewriting, intent classification."""
+    return RewritePipeline.run(request, _user, gateway_memory)
 
 
-@app.post(
-    "/api/v1/query",
-    response_model=QueryResponse,
-    summary="Submit unified gateway query",
-)
+@app.post("/api/v1/query", response_model=QueryResponse, summary="Submit unified gateway query")
 async def query(
     request: QueryRequest,
-    _user: dict | None = Depends(_get_optional_user_if_required),
+    _user: dict | None = Depends(_get_optional_user),
 ) -> QueryResponse:
-    """
-    Handle unified gateway query: Route LLM (planning) + Dispatcher (execution).
-
-    Steps:
-        1) Route LLM: clarification, rewriting (normalize, memory merge, rewrite), intent classification.
-        2) Dispatcher: build execution plan, execute tasks in parallel, invoke worker agents.
-        3) Merge task results and return QueryResponse.
-
-    Args:
-        request: Parsed QueryRequest from the client.
-
-    Returns:
-        QueryResponse with answer, plan, task_results, merged_answer.
-    """
-    request_id = str(uuid.uuid4())
-    original_query = (request.query or "").strip()
-    effective_user_id = AuthGuard.resolve_user_id(request, _user)
-    clarification_context: str | None = None
-    rewritten_query = original_query
-    rewrite_time_ms = 0
-    route_source = "unknown"
-    route_backend = None
-    route_llm_confidence = None
-    routing_confidence = 0.0
-    workflow = (request.workflow or "auto").strip().lower() or "auto"
-    route_input_query = rewritten_query
-    GatewayEventLogger.log_runtime(
-        event_name="gateway_query_request",
-        stage="query",
-        message="query endpoint request started",
-        status="started",
-        request_id=request_id,
-        session_id=request.session_id,
-        user_id=effective_user_id,
-        workflow=request.workflow or "auto",
-        query_raw=original_query,
-    )
-    MemoryEventWriter.append_event(
-        gateway_memory,
-        user_id=effective_user_id,
-        session_id=request.session_id,
-        request_id=request_id,
-        event_type="user_query",
-        event_content={"query": original_query, "workflow": request.workflow or "auto"},
-        status="ok",
-    )
-
-    try:
-        # Clarification check (required, before rewrite): return early if query is ambiguous
-        if GatewayConfig.clarification_enabled():
-            clarification_context = load_clarification_context(gateway_memory, request.session_id)
-            clarification_raw = check_ambiguity(original_query, conversation_context=clarification_context)
-            if clarification_raw.get("needs_clarification"):
-                clarification_question = clarification_raw.get("clarification_question") or ""
-                MemoryEventWriter.append_event(
-                    gateway_memory,
-                    user_id=effective_user_id,
-                    session_id=request.session_id,
-                    request_id=request_id,
-                    event_type="query_clarification",
-                    event_content={"query": original_query, "clarification_question": clarification_question},
-                    status="ok",
-                )
-                GatewayEventLogger.log_interaction(
-                    event_name="gateway_query_clarification",
-                    status="success",
-                    request_id=request_id,
-                    session_id=request.session_id,
-                    user_id=effective_user_id,
-                    workflow="clarification",
-                    query_raw=original_query,
-                    clarification_question=clarification_question,
-                    answer=clarification_question,
-                    latency_ms=0,
-                )
-                if gateway_memory and effective_user_id:
-                    TurnSummaryPersistence.persist_turn(
-                        gateway_memory,
-                        user_id=effective_user_id,
-                        session_id=request.session_id or "",
-                        request_id=request_id,
-                        query=original_query,
-                        answer=clarification_question,
-                        workflow="clarification",
-                    )
-                return QueryResponse(
-                    answer=clarification_question,
-                    workflow="clarification",
-                    routing_confidence=0.0,
-                    sources=[],
-                    request_id=request_id,
-                    error=None,
-                    debug={
-                        "original_query": original_query,
-                        "clarification_required": True,
-                    },
-                    clarification_required=True,
-                    clarification_question=clarification_question,
-                    pending_query=original_query,
-                    clarification_backend=clarification_raw.get("clarification_backend"),
-                )
-
-        # Route LLM: rewrite -> rewritten_query; then intent splitting when enabled.
-        req_for_rewrite = request.model_copy(update={"user_id": effective_user_id}) if effective_user_id else request
-        rewrite_started = time.perf_counter()
-        rewritten_query, _, _, _, _, _, _, _, _ = rewrite_and_route(
-            req_for_rewrite,
-            gateway_memory=gateway_memory,
-            conversation_context=clarification_context,
-            enable_routing=False,
-        )
-        rewritten_query = re.sub(r"\s+", " ", (rewritten_query or "")).strip()
-        rewrite_time_ms = int((time.perf_counter() - rewrite_started) * 1000)
-        MemoryEventWriter.append_event(
-            gateway_memory,
-            user_id=effective_user_id,
-            session_id=request.session_id,
-            request_id=request_id,
-            event_type="query_rewriting",
-            event_content={"original_query": original_query, "rewritten_query": rewritten_query},
-            status="ok",
-        )
-
-        # Intent classification (plan: split then dual retrieval per clause).
-        # When enabled, split rewritten query into sub-questions and pass to dispatcher.
-        intents = None
-        if rewritten_query and rewritten_query.strip():
-            if os.getenv("GATEWAY_INTENT_CLASSIFICATION_ENABLED", "").lower() in ("1", "true", "yes", "on"):
-                try:
-                    from ..route_llm.classification import split_intents
-                    intents = split_intents(rewritten_query)
-                except Exception as exc:
-                    logger.warning("Intent split failed (non-fatal): %s", exc)
-        MemoryEventWriter.append_event(
-            gateway_memory,
-            user_id=effective_user_id,
-            session_id=request.session_id,
-            request_id=request_id,
-            event_type="intent_classification",
-            event_content={"rewritten_query": rewritten_query, "intents": intents or []},
-            status="ok",
-        )
-
-        # Skip downstream when normalized query is empty.
-        if not rewritten_query or not rewritten_query.strip():
-            empty_answer = "Please provide a non-empty query."
-            MemoryEventWriter.append_event(
-                gateway_memory,
-                user_id=effective_user_id,
-                session_id=request.session_id,
-                request_id=request_id,
-                event_type="llm_answer",
-                event_content={"answer": empty_answer, "workflow": "general"},
-                status="failed",
-                note="empty rewritten query",
-            )
-            if gateway_memory and effective_user_id:
-                TurnSummaryPersistence.persist_turn(
-                    gateway_memory,
-                    user_id=effective_user_id,
-                    session_id=request.session_id or "",
-                    request_id=request_id,
-                    query=original_query,
-                    answer=empty_answer,
-                    workflow="general",
-                )
-            return QueryResponse(
-                answer=empty_answer,
-                workflow="general",
-                routing_confidence=0.0,
-                sources=[],
-                request_id=request_id,
-                error=None,
-                debug={
-                    "original_query": original_query,
-                    "rewritten_query": "",
-                    "clarification_required": False,
-                },
-            )
-
-        plan_result = build_execution_plan(
-            request, rewritten_query, intents=intents, conversation_context=clarification_context
-        )
-        if isinstance(plan_result, tuple):
-            execution_plan, field_clarification = plan_result
-        else:
-            execution_plan, field_clarification = plan_result, None
-
-        # Phase 5: per-intent required field validation — return clarification if fields missing.
-        if field_clarification:
-            MemoryEventWriter.append_event(
-                gateway_memory,
-                user_id=effective_user_id,
-                session_id=request.session_id,
-                request_id=request_id,
-                event_type="query_clarification",
-                event_content={"query": original_query, "clarification_question": field_clarification},
-                status="ok",
-                note="missing required fields",
-            )
-            if gateway_memory and effective_user_id:
-                TurnSummaryPersistence.persist_turn(
-                    gateway_memory,
-                    user_id=effective_user_id,
-                    session_id=request.session_id or "",
-                    request_id=request_id,
-                    query=original_query,
-                    answer=field_clarification,
-                    workflow="clarification",
-                )
-            return QueryResponse(
-                answer=field_clarification,
-                workflow="clarification",
-                routing_confidence=0.0,
-                sources=[],
-                request_id=request_id,
-                error=None,
-                debug={"original_query": original_query, "clarification_required": True},
-                clarification_required=True,
-                clarification_question=field_clarification,
-                pending_query=original_query,
-            )
-
-        route_input_query = PlanHelper.extract_route_input_query(execution_plan, original_query)
-
-        if GatewayConfig.is_rewrite_only_mode():
-            MemoryEventWriter.append_event(
-                gateway_memory,
-                user_id=effective_user_id,
-                session_id=request.session_id,
-                request_id=request_id,
-                event_type="llm_answer",
-                event_content={"answer": rewritten_query, "workflow": "rewrite_only"},
-                status="ok",
-                note="rewrite-only mode",
-            )
-            if gateway_memory and effective_user_id:
-                TurnSummaryPersistence.persist_turn(
-                    gateway_memory,
-                    user_id=effective_user_id,
-                    session_id=request.session_id or "",
-                    request_id=request_id,
-                    query=original_query,
-                    answer=rewritten_query,
-                    workflow="rewrite_only",
-                )
-            debug_trace = DebugTraceBuilder.build_debug_trace(
-                original_query=original_query,
-                rewritten_query=rewritten_query,
-                rewrite_time_ms=rewrite_time_ms,
-                request=request,
-                route_input_query=route_input_query,
-                route_source="rewrite_only",
-                route_backend=None,
-                route_llm_confidence=None,
-            )
-            return QueryResponse(
-                answer=rewritten_query,
-                workflow="rewrite_only",
-                routing_confidence=1.0,
-                sources=[],
-                request_id=request_id,
-                error=None,
-                debug=debug_trace,
-                plan=execution_plan,
-                task_results=[],
-                merged_answer="",
-            )
-
-        # Route metadata for logging (single-task path uses route_workflow)
-        planned_task_count = sum(len(group.tasks) for group in execution_plan.task_groups)
-        if planned_task_count > 1:
-            route_source = "planner"
-            routing_confidence = 1.0
-            workflow = PlanHelper.derive_workflow(execution_plan, [], fallback=workflow)
-            route_backend = None
-            route_llm_confidence = None
-        else:
-            (
-                _,
-                _,
-                _,
-                _,
-                workflow,
-                routing_confidence,
-                route_source,
-                route_backend,
-                route_llm_confidence,
-            ) = rewrite_and_route(
-                request,
-                enable_routing=True,
-                route_query=route_input_query,
-                rewritten_query=rewritten_query,
-            )
-            # Keep workflow aligned with planned task when single task exists.
-            if execution_plan.task_groups and execution_plan.task_groups[0].tasks:
-                execution_plan.task_groups[0].tasks[0].workflow = workflow
-
-        # Dispatcher (Execution): execute tasks in parallel, invoke worker agents
-        task_results = DispatcherExecutor.execute_plan(execution_plan, request)
-        merged_answer = PlanHelper.merge_task_answers(execution_plan, task_results)
-        workflow = PlanHelper.derive_workflow(execution_plan, task_results, fallback=workflow)
-        aggregated_sources: List[Dict[str, Any]] = []
-        for result in task_results:
-            if result.status == "completed":
-                aggregated_sources.extend(result.sources)
-        failed_tasks = [result for result in task_results if result.status == "failed"]
-        top_error = None
-        if failed_tasks and not merged_answer:
-            top_error = failed_tasks[0].error or "All planned tasks failed."
-        elif failed_tasks:
-            top_error = f"{len(failed_tasks)} planned task(s) failed."
-
-        meta = format_route_metadata(route_source, route_backend, route_llm_confidence)
-        debug_trace = DebugTraceBuilder.build_debug_trace(
-            original_query=original_query,
-            rewritten_query=rewritten_query,
-            rewrite_time_ms=rewrite_time_ms,
-            request=request,
-            route_input_query=route_input_query,
-            route_source=route_source,
-            route_backend=route_backend,
-            route_llm_confidence=route_llm_confidence,
-        )
-
-        if top_error and not merged_answer:
-            MemoryEventWriter.append_event(
-                gateway_memory,
-                user_id=effective_user_id,
-                session_id=request.session_id,
-                request_id=request_id,
-                event_type="llm_answer",
-                event_content={"answer": "", "workflow": workflow, "error": top_error},
-                status="failed",
-                note="planned tasks failed",
-            )
-            GatewayEventLogger.log_error(
-                event_name="gateway_query_failed",
-                request_id=request_id,
-                session_id=request.session_id,
-                user_id=effective_user_id,
-                workflow=workflow,
-                query_raw=original_query,
-                query_rewritten=rewritten_query,
-                error_type="PlannedTaskFailure",
-                error_message=top_error or "All planned tasks failed.",
-                metadata={"failed_tasks": [t.task_id for t in failed_tasks]},
-            )
-            if gateway_memory and effective_user_id:
-                TurnSummaryPersistence.persist_turn(
-                    gateway_memory,
-                    user_id=effective_user_id,
-                    session_id=request.session_id or "",
-                    request_id=request_id,
-                    query=original_query,
-                    answer=top_error or "error",
-                    workflow=workflow,
-                )
-            logger.warning(
-                "Planned execution failed for request %s (workflow=%s): %s %s",
-                request_id,
-                workflow,
-                top_error,
-                meta,
-            )
-            return QueryResponse(
-                answer="",
-                workflow=workflow,
-                routing_confidence=routing_confidence,
-                sources=aggregated_sources,
-                request_id=request_id,
-                error=top_error,
-                debug=debug_trace,
-                plan=execution_plan,
-                task_results=task_results,
-                merged_answer="",
-            )
-
-        response = QueryResponse(
-            answer=merged_answer,
-            workflow=workflow,
-            routing_confidence=routing_confidence,
-            sources=aggregated_sources,
-            request_id=request_id,
-            error=top_error,
-            debug=debug_trace,
-            plan=execution_plan,
-            task_results=task_results,
-            merged_answer=merged_answer,
-        )
-        # Save turn to short-term memory (user history) when applicable
-        if gateway_memory and effective_user_id and merged_answer and workflow not in ("clarification", "rewrite_only"):
-            MemoryEventWriter.append_event(
-                gateway_memory,
-                user_id=effective_user_id,
-                session_id=request.session_id,
-                request_id=request_id,
-                event_type="llm_answer",
-                event_content={"answer": merged_answer, "workflow": workflow},
-                status="ok",
-            )
-            TurnSummaryPersistence.persist_turn(
-                gateway_memory,
-                user_id=effective_user_id,
-                session_id=request.session_id or "",
-                request_id=request_id,
-                query=original_query,
-                answer=merged_answer,
-                workflow=workflow,
-            )
-        # main success log includes routing metadata
-        logger.info(
-            "Gateway handled request %s with workflow=%s (confidence=%.2f) %s",
-            request_id,
-            workflow,
-            routing_confidence,
-            meta,
-        )
-        GatewayEventLogger.log_interaction(
-            event_name="gateway_query_success",
-            status="success",
-            request_id=request_id,
-            session_id=request.session_id,
-            user_id=effective_user_id,
-            workflow=workflow,
-            query_raw=original_query,
-            query_rewritten=rewritten_query,
-            answer=merged_answer,
-            latency_ms=rewrite_time_ms,
-        )
-        return response
-    except Exception as exc:  # pragma: no cover - defensive fallback
-        # Defensive error handling so the API still returns a valid schema.
-        logger.exception("Gateway query handler failed: %s", exc)
-        GatewayEventLogger.log_error(
-            event_name="gateway_query_exception",
-            request_id=request_id,
-            session_id=request.session_id,
-            user_id=effective_user_id,
-            workflow=workflow,
-            query_raw=original_query,
-            query_rewritten=rewritten_query,
-            error_type=type(exc).__name__,
-            error_message=str(exc),
-            metadata={"route_source": route_source},
-        )
-        # Persist error turn to Redis so chat box content is complete
-        if gateway_memory and effective_user_id:
-            MemoryEventWriter.append_event(
-                gateway_memory,
-                user_id=effective_user_id,
-                session_id=request.session_id,
-                request_id=request_id,
-                event_type="llm_answer",
-                event_content={"answer": "", "workflow": "error", "error": str(exc)},
-                status="failed",
-                note=type(exc).__name__,
-            )
-            TurnSummaryPersistence.persist_turn(
-                gateway_memory,
-                user_id=effective_user_id,
-                session_id=request.session_id or "",
-                request_id=request_id,
-                query=original_query,
-                answer=str(exc),
-                workflow="error",
-            )
-        return QueryResponse(
-            answer="",
-            workflow=workflow,
-            routing_confidence=routing_confidence,
-            sources=[],
-            request_id=request_id,
-            error=str(exc),
-            debug=DebugTraceBuilder.build_debug_trace(
-                original_query=original_query,
-                rewritten_query=rewritten_query,
-                rewrite_time_ms=rewrite_time_ms,
-                request=request,
-                route_input_query=route_input_query,
-                route_source=route_source,
-                route_backend=route_backend,
-                route_llm_confidence=route_llm_confidence,
-            ),
-        )
+    """Route LLM (planning) + Dispatcher (execution) → QueryResponse."""
+    return QueryPipeline.run(request, _user, gateway_memory)
 
 
 __all__ = ["app"]
