@@ -29,7 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from ..dispatcher.dispatcher import build_execution_plan
 from ..logging_utils import format_route_metadata
 from ..route_llm.clarification import check_ambiguity
-from ..route_llm.rewriting.rewriters import route_workflow, rewrite_query
+from ..route_llm.rewriting.rewriters import rewrite_and_route
 from ..schemas import (
     QueryRequest,
     QueryResponse,
@@ -232,8 +232,11 @@ async def rewrite(
         # Ensure router receives user_id for memory merge (from JWT or request body)
         req_for_rewrite = request.model_copy(update={"user_id": effective_user_id}) if effective_user_id else request
         rewrite_started = time.perf_counter()
-        rewritten_query, _, memory_rounds, memory_text_length = rewrite_query(
-            req_for_rewrite, gateway_memory=gateway_memory, conversation_context=clarification_context
+        rewritten_query, _, memory_rounds, memory_text_length, _, _, _, _, _ = rewrite_and_route(
+            req_for_rewrite,
+            gateway_memory=gateway_memory,
+            conversation_context=clarification_context,
+            enable_routing=False,
         )
         # Hard guard: rewrite stage must return a single line; intent splitting happens later.
         rewritten_query = re.sub(r"\s+", " ", (rewritten_query or "")).strip()
@@ -410,8 +413,11 @@ async def query(
         # Route LLM: rewrite -> rewritten_query; then intent splitting when enabled.
         req_for_rewrite = request.model_copy(update={"user_id": effective_user_id}) if effective_user_id else request
         rewrite_started = time.perf_counter()
-        rewritten_query, _, _, _ = rewrite_query(
-            req_for_rewrite, gateway_memory=gateway_memory, conversation_context=clarification_context
+        rewritten_query, _, _, _, _, _, _, _, _ = rewrite_and_route(
+            req_for_rewrite,
+            gateway_memory=gateway_memory,
+            conversation_context=clarification_context,
+            enable_routing=False,
         )
         rewritten_query = re.sub(r"\s+", " ", (rewritten_query or "")).strip()
         rewrite_time_ms = int((time.perf_counter() - rewrite_started) * 1000)
@@ -581,12 +587,21 @@ async def query(
             route_llm_confidence = None
         else:
             (
+                _,
+                _,
+                _,
+                _,
                 workflow,
                 routing_confidence,
                 route_source,
                 route_backend,
                 route_llm_confidence,
-            ) = route_workflow(route_input_query, request)
+            ) = rewrite_and_route(
+                request,
+                enable_routing=True,
+                route_query=route_input_query,
+                rewritten_query=rewritten_query,
+            )
             # Keep workflow aligned with planned task when single task exists.
             if execution_plan.task_groups and execution_plan.task_groups[0].tasks:
                 execution_plan.task_groups[0].tasks[0].workflow = workflow

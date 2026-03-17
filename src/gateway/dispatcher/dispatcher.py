@@ -307,7 +307,7 @@ def build_execution_plan(
         (RewritePlan, clarification_question) — clarification_question is None when
         all required fields are present.
     """
-    from ..route_llm.rewriting.rewriters import route_workflow
+    from ..route_llm.rewriting.rewriters import _RewriteRouter
 
     explicit = (request.workflow or "auto").strip().lower() or "auto"
     normalized_query = normalize_query(request.query or "")
@@ -352,7 +352,7 @@ def build_execution_plan(
     if multi_task_plan is not None:
         return multi_task_plan, None
 
-    workflow, _, _, _, _ = route_workflow(
+    workflow, _, _, _, _ = _RewriteRouter.route_workflow(
         (rewritten_query or normalized_query).strip(), request
     )
     task_query = (rewritten_query or normalized_query).strip() or normalized_query

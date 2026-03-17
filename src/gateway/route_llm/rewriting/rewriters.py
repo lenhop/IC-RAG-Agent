@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any, List, Optional, Tuple
+from typing import Any, Optional, Tuple
 
 from ...schemas import QueryRequest
 from ...prompt_loader import load_prompt
@@ -29,9 +29,7 @@ from src.logger import get_logger_facade
 from src.llm.call_deepseek import DeepSeekChat
 from src.llm.call_ollama import OllamaClient
 from ..routing_heuristics import (
-    apply_docs_preference as _apply_docs_preference,
     normalize_query,
-    route_workflow_heuristic as _route_workflow_heuristic,
 )
 
 logger = logging.getLogger(__name__)
@@ -163,6 +161,21 @@ class _RewriteLLM:
     REWRITE_PROMPT = load_prompt("rewriting/rewrite_prompt")
 
     @classmethod
+    def _render_rewrite_prompt(
+        cls,
+        query: str,
+        conversation_context: Optional[str] = None,
+    ) -> str:
+        """将 rewrite_prompt.md 中的 {history}/{query} 占位符替换为实际值。"""
+        history_value = (conversation_context or "").strip()
+        query_value = (query or "").strip()
+        return (
+            cls.REWRITE_PROMPT
+            .replace("{history}", history_value)
+            .replace("{query}", query_value)
+        )
+
+    @classmethod
     def rewrite_with_context(
         cls,
         query: str,
@@ -181,21 +194,16 @@ class _RewriteLLM:
         effective_backend = RouterEnvConfig.get_rewrite_backend(backend)
         logger.info("Rewrite with context: backend=%s query_len=%d", effective_backend, len(query.strip()))
 
-        if conversation_context and conversation_context.strip():
-            prompt_prefix = (
-                f"Conversation context (recent turns):\n{conversation_context.strip()}\n\n"
-                f"Current query to rewrite: {query.strip()}\n\n"
-                "CRITICAL: Output ONLY the rewritten query. Do NOT repeat the context, "
-                "'user:', 'assistant:', or any trace (Normalize, Rewrite Backend, etc.)."
-            )
-        else:
-            prompt_prefix = query.strip()
+        rendered_prompt = cls._render_rewrite_prompt(
+            query=query,
+            conversation_context=conversation_context,
+        )
 
         raw: str
         if effective_backend == "ollama":
-            raw = cls._call_ollama(prompt_prefix, query.strip(), model)
+            raw = cls._call_ollama(rendered_prompt, query.strip(), model)
         elif effective_backend == "deepseek":
-            raw = cls._call_deepseek(prompt_prefix, query.strip(), model)
+            raw = cls._call_deepseek(rendered_prompt, query.strip(), model)
         else:
             logger.error("rewrite_with_context: unknown backend %s", effective_backend)
             raise ValueError(f"Unknown rewrite backend {effective_backend}; must be 'ollama' or 'deepseek'")
@@ -206,6 +214,7 @@ class _RewriteLLM:
 
         if _gateway_logger:
             try:
+                # 记录单次 LLM 改写调用完成事件，便于按 backend 追踪效果与问题定位。
                 _gateway_logger.log_runtime(
                     event_name="rewriter_with_context_done",
                     stage="rewriter",
@@ -225,15 +234,14 @@ class _RewriteLLM:
     @classmethod
     def _call_ollama(
         cls,
-        prompt_content: str,
+        rendered_prompt: str,
         fallback_query: str,
         model: Optional[str] = None,
     ) -> str:
         """通过 OllamaClient 调用本地 Ollama 进行改写。"""
         logger.debug("Ollama rewrite via OllamaClient")
-        prompt = f"{cls.REWRITE_PROMPT}\n\nUser question: {prompt_content}"
         return OllamaClient().generate(
-            prompt,
+            rendered_prompt,
             model=model,
             empty_fallback=fallback_query,
         )
@@ -241,7 +249,7 @@ class _RewriteLLM:
     @classmethod
     def _call_deepseek(
         cls,
-        prompt_content: str,
+        rendered_prompt: str,
         fallback_query: str,
         model: Optional[str] = None,
     ) -> str:
@@ -249,8 +257,8 @@ class _RewriteLLM:
         logger.debug("DeepSeek rewrite via DeepSeekChat (stage=rewrite)")
         try:
             out = DeepSeekChat().complete(
-                cls.REWRITE_PROMPT,
-                prompt_content,
+                "You are a query rewriting engine. Follow the user prompt strictly.",
+                rendered_prompt,
                 model_override=model,
             )
             return out if out else fallback_query
@@ -260,87 +268,15 @@ class _RewriteLLM:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. 向后兼容公共 API（委托到内部类，捕获异常并 fallback）
-# ─────────────────────────────────────────────────────────────────────────────
-
-REWRITE_PROMPT = _RewriteLLM.REWRITE_PROMPT
-
-
-def rewrite_with_context(
-    query: str,
-    conversation_context: Optional[str] = None,
-    backend: str = "ollama",
-    model: Optional[str] = None,
-) -> str:
-    """带上下文的查询改写（公共 API）。失败时返回原始查询。"""
-    try:
-        return _RewriteLLM.rewrite_with_context(
-            query,
-            conversation_context=conversation_context,
-            backend=backend,
-            model=model,
-        )
-    except (RuntimeError, ValueError) as exc:
-        logger.warning("rewrite_with_context failed; returning original query: %s", exc)
-        return (query or "").strip() or ""
-
-
-def rewrite_with_ollama(query: str, model: Optional[str] = None) -> str:
-    """使用 Ollama 改写查询（向后兼容）。失败时返回原始查询。"""
-    if not query or not query.strip():
-        return query
-    prompt = f"{REWRITE_PROMPT}\n\nUser question: {query.strip()}"
-    try:
-        return _RewriteLLM._call_ollama(prompt, query.strip(), model)
-    except (RuntimeError, ValueError):
-        logger.warning("rewrite_with_ollama failed; returning original query")
-        return query.strip()
-
-
-def rewrite_with_deepseek(query: str, model: Optional[str] = None) -> str:
-    """使用 DeepSeek 改写查询（向后兼容）。失败时返回原始查询。"""
-    if not query or not query.strip():
-        return query
-    prompt = query.strip()
-    try:
-        return _RewriteLLM._call_deepseek(prompt, query.strip(), model)
-    except (RuntimeError, ValueError):
-        logger.warning("rewrite_with_deepseek failed; returning original query")
-        return query.strip()
-
-
-# 测试兼容别名
-_enforce_rewrite_responsibility = RewriteResponseProcessor.enforce_rewrite_responsibility
-_strip_echoed_context_from_rewrite = RewriteResponseProcessor.strip_echoed_context
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 4. RouterEnvConfig — 路由/改写环境变量配置
+# 3. RouterEnvConfig — 路由/改写环境变量配置
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class RouterEnvConfig:
     """路由与改写相关的环境变量读取。
 
-    集中管理 GATEWAY_ROUTE_LLM_ENABLED、GATEWAY_ROUTE_LLM_THRESHOLD、
-    GATEWAY_REWRITE_MEMORY_ROUNDS、GATEWAY_REWRITE_BACKEND、GATEWAY_ROUTE_BACKEND。
+    集中管理 GATEWAY_REWRITE_MEMORY_ROUNDS、GATEWAY_REWRITE_BACKEND。
     """
-
-    @staticmethod
-    def route_llm_enabled() -> bool:
-        """读取 GATEWAY_ROUTE_LLM_ENABLED，判断是否启用 LLM 路由。"""
-        return os.getenv("GATEWAY_ROUTE_LLM_ENABLED", "false").strip().lower() in (
-            "1", "true", "yes", "on",
-        )
-
-    @staticmethod
-    def route_llm_threshold() -> float:
-        """读取 GATEWAY_ROUTE_LLM_THRESHOLD（LLM 路由置信度阈值，默认 0.8）。"""
-        try:
-            return float(os.getenv("GATEWAY_ROUTE_LLM_THRESHOLD", "0.8"))
-        except (ValueError, TypeError):
-            logger.warning("GATEWAY_ROUTE_LLM_THRESHOLD invalid; using 0.8")
-            return 0.8
 
     @staticmethod
     def get_memory_rounds() -> int:
@@ -359,25 +295,17 @@ class RouterEnvConfig:
             return backend
         return (os.getenv("GATEWAY_REWRITE_BACKEND", "ollama") or "ollama").strip().lower()
 
-    @staticmethod
-    def get_route_backend(request: QueryRequest) -> str:
-        """解析路由后端：优先用请求参数，否则读 GATEWAY_ROUTE_BACKEND（默认 ollama）。"""
-        backend = (getattr(request, "route_backend", None) or "").strip().lower()
-        if backend:
-            return backend
-        return (os.getenv("GATEWAY_ROUTE_BACKEND", "ollama") or "ollama").strip().lower()
-
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5. _RewriteRouter — 改写流水线编排 + Workflow 路由（内部类）
+# 4. _RewriteRouter — 改写流水线编排 + Workflow 路由（内部类）
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 class _RewriteRouter:
     """改写流水线编排与 workflow 路由。
 
-    - rewrite_query: normalize → 加载会话历史 → rewrite_with_context → 可选意图分类
-    - route_workflow: 手动指定 > LLM 路由 > 启发式路由
+    - rewrite_query: normalize → 加载会话历史 → _RewriteLLM.rewrite_with_context
+    - route_workflow: 纯 LLM 路由（通过 route_with_llm 实现）
     """
 
     @classmethod
@@ -386,14 +314,18 @@ class _RewriteRouter:
         request: QueryRequest,
         gateway_memory: Optional[Any] = None,
         conversation_context: Optional[str] = None,
-    ) -> Tuple[str, Optional[List[str]], int, int]:
+    ) -> Tuple[str, None, int, int]:
         """执行完整的查询改写流水线。
 
-        返回: (改写后查询, 意图列表, 使用的记忆轮数, 记忆文本长度)
+        要求: request.session_id 必须存在且非空，否则抛出 ValueError。
+
+        返回: (改写后查询, None, 使用的记忆轮数, 记忆文本长度)
         """
+        # 先对原始查询做轻量规范化，统一后续改写输入。
         normalized = normalize_query(request.query or "")
         if _gateway_logger:
             try:
+                # 记录 rewrite 流水线开始，方便观察请求是否进入改写阶段。
                 _gateway_logger.log_runtime(
                     event_name="router_rewrite_start",
                     stage="router_rewrite",
@@ -408,10 +340,12 @@ class _RewriteRouter:
             except Exception:
                 pass
 
+        # 空查询直接短路，避免无意义的上下文加载和 LLM 调用。
         if not normalized or not normalized.strip():
             logger.debug("rewrite_query: empty query, early exit")
             return ("", None, 0, 0)
 
+        # 调用方显式关闭改写时，仅返回规范化结果。
         if not request.rewrite_enable:
             logger.debug("rewrite_query: rewrite disabled, returning normalized")
             return (normalized, None, 0, 0)
@@ -419,24 +353,27 @@ class _RewriteRouter:
         backend = RouterEnvConfig.get_rewrite_backend(request.rewrite_backend)
         logger.info("rewrite_query: backend=%s session=%s", backend, request.session_id)
 
-        # 加载会话历史作为改写上下文
+        # 改写阶段强依赖 session_id；缺失时直接报错，避免产生无会话上下文的半有效请求。
         memory_rounds_used = 0
         memory_text_length = 0
         memory_context: Optional[str] = None
         last_n = RouterEnvConfig.get_memory_rounds()
         sid = (request.session_id or "").strip()
-        if sid:
-            res = ConversationHistoryHandler.get_session_history(
-                gateway_memory, sid, last_n=last_n
-            )
-            history = res.get("history", [])
-        else:
-            history = []
+        if not sid:
+            logger.error("rewrite_query: session_id is required")
+            raise ValueError("session_id is required for rewrite_query")
+
+        # 读取最近 N 轮会话历史，为代词解析和上下文补全提供依据。
+        res = ConversationHistoryHandler.get_session_history(
+            gateway_memory, sid, last_n=last_n
+        )
+        history = res.get("history", [])
         if history:
             memory_context = ConversationHistoryHandler.format_history_for_llm_markdown(history)
             memory_rounds_used = len(history)
             logger.debug("rewrite_query: loaded %d memory rounds", memory_rounds_used)
 
+        # 将外部传入上下文与 Redis 中读取到的会话历史合并成单一改写上下文。
         conversation_context = ConversationHistoryHandler.merge_context_strings(
             conversation_context, memory_context
         )
@@ -447,30 +384,16 @@ class _RewriteRouter:
                     conversation_context
                 )
 
-        # 调用 LLM 改写
-        optimized_query = rewrite_with_context(
+        # 调用改写器生成最终查询；此阶段只做改写，不做意图拆分。
+        optimized_query = _RewriteLLM.rewrite_with_context(
             normalized,
             conversation_context=conversation_context,
             backend=backend,
         )
 
-        # 可选：改写阶段意图分类（当前默认关闭）
-        intents: Optional[List[str]] = None
-        if intent_classification_enabled():
-            try:
-                intents_payload = rewrite_intents_only(optimized_query)
-                if isinstance(intents_payload, dict):
-                    intents_raw = intents_payload.get("intents")
-                else:
-                    intents_raw = intents_payload
-                if isinstance(intents_raw, list):
-                    intents = [str(item).strip() for item in intents_raw if str(item).strip()] or None
-            except Exception as exc:
-                logger.warning("rewrite_query: intent classification failed: %s", exc)
-                intents = None
-
         if _gateway_logger:
             try:
+                # 记录 rewrite 流水线完成，并附带记忆使用情况供排障和效果分析。
                 _gateway_logger.log_runtime(
                     event_name="router_rewrite_done",
                     stage="router_rewrite",
@@ -490,8 +413,9 @@ class _RewriteRouter:
             except Exception:
                 pass
 
+        # 返回改写结果以及记忆使用情况，供上层日志和调试面板使用。
         logger.debug("rewrite_query: done, query_len=%d", len(optimized_query))
-        return (optimized_query, intents, memory_rounds_used, memory_text_length)
+        return (optimized_query, None, memory_rounds_used, memory_text_length)
 
     @classmethod
     def route_workflow(
@@ -499,73 +423,100 @@ class _RewriteRouter:
         query: str,
         request: QueryRequest,
     ) -> tuple[str, float, str, str | None, float | None]:
-        """选择 workflow 及路由置信度。
+        """通过 LLM 选择 workflow 及置信度。
 
-        优先级：手动指定 > LLM 路由（需启用且置信度达标）> 启发式规则。
         返回: (workflow, confidence, method, backend, llm_confidence)
         """
-        explicit = (request.workflow or "auto").strip().lower()
-        if explicit != "auto":
-            logger.debug("route_workflow: manual workflow=%s", explicit)
-            return explicit, 1.0, "manual", None, None
+        backend = (getattr(request, "route_backend", None) or "").strip().lower() or \
+            (os.getenv("GATEWAY_ROUTE_BACKEND", "ollama") or "ollama").strip().lower()
 
-        backend = RouterEnvConfig.get_route_backend(request)
-        if _route_llm_enabled():
-            from src.gateway import route_llm as route_pkg
-
-            llm_wf, llm_conf = route_pkg.route_with_llm(query or "", backend)
-            llm_wf = _apply_docs_preference(query or "", llm_wf)
-            if llm_conf >= RouterEnvConfig.route_llm_threshold():
-                logger.debug("route_workflow: llm workflow=%s conf=%.2f", llm_wf, llm_conf)
-                return llm_wf, llm_conf, "llm", backend, llm_conf
-
-        wf, conf = _route_workflow_heuristic(query or "")
-        wf = _apply_docs_preference(query or "", wf)
-        logger.debug("route_workflow: heuristic workflow=%s conf=%.2f", wf, conf)
-        return wf, conf, "heuristic", None, None
-
-    @staticmethod
-    def _intent_classification_enabled() -> bool:
-        """改写阶段的意图分类是否启用（当前硬编码 False，意图分类在 classification 子包中执行）。"""
-        return False
-
-    @staticmethod
-    def _rewrite_intents_only(query: str):
-        """对改写后的查询进行意图分类（预留接口，当前默认关闭）。"""
-        try:
-            from ..classification import split_intents
-            intents = split_intents(query)
-            if intents:
-                return {"intents": intents}
-        except Exception as exc:
-            logger.debug("rewrite_intents_only failed: %s", exc)
-            return None
-        return None
+        from src.gateway import route_llm as route_pkg
+        llm_wf, llm_conf = route_pkg.route_with_llm(query or "", backend)
+        logger.debug("route_workflow: llm workflow=%s conf=%.2f", llm_wf, llm_conf)
+        return llm_wf, llm_conf, "llm", backend, llm_conf
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. 公共 API — 改写流水线 + 路由（委托到内部类）
+# 5. 公共 API — 改写 + 路由统一入口
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def rewrite_query(
+def rewrite_and_route(
     request: QueryRequest,
     gateway_memory: Optional[Any] = None,
     conversation_context: Optional[str] = None,
-) -> Tuple[str, Optional[List[str]], int, int]:
-    """执行查询改写流水线（公共入口）。"""
-    return _RewriteRouter.rewrite_query(
+    route_query: Optional[str] = None,
+    enable_routing: bool = True,
+    rewritten_query: Optional[str] = None,
+    memory_rounds: int = 0,
+    memory_text_length: int = 0,
+) -> tuple[str, None, int, int, str | None, float | None, str | None, str | None, float | None]:
+    """统一入口：rewrite + optional route。
+
+    调用约定：
+      1) 默认先执行 rewrite，再按需执行 route；
+      2) 若调用方已提供 rewritten_query，则跳过 rewrite（沿用传入值）；
+      3) 若 enable_routing=False，仅返回 rewrite 相关结果。
+
+    返回:
+      (
+        rewritten_query,
+        None,
+        memory_rounds,
+        memory_text_length,
+        workflow,
+        routing_confidence,
+        route_source,
+        route_backend,
+        route_llm_confidence,
+      )
+    """
+    # 保留调用方可能已预计算的改写结果与记忆统计，避免重复改写。
+    current_rewritten = rewritten_query
+    rounds_used = memory_rounds
+    text_length = memory_text_length
+
+    # 仅在未提供 rewritten_query 时触发完整 rewrite 流水线。
+    if current_rewritten is None:
+        current_rewritten, _, rounds_used, text_length = _RewriteRouter.rewrite_query(
+            request,
+            gateway_memory=gateway_memory,
+            conversation_context=conversation_context,
+        )
+
+    # rewrite-only 模式：路由字段统一置空，保持返回结构稳定。
+    if not enable_routing:
+        return (
+            current_rewritten,
+            None,
+            rounds_used,
+            text_length,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+
+    # 路由输入优先级：显式 route_query > 改写结果 > 空串。
+    route_input = (route_query or current_rewritten or "").strip()
+    workflow, routing_confidence, route_source, route_backend, route_llm_confidence = _RewriteRouter.route_workflow(
+        route_input,
         request,
-        gateway_memory=gateway_memory,
-        conversation_context=conversation_context,
     )
 
-
-def route_workflow(
-    query: str, request: QueryRequest
-) -> tuple[str, float, str, str | None, float | None]:
-    """选择 workflow 及路由置信度（公共入口）。"""
-    return _RewriteRouter.route_workflow(query, request)
+    # 返回统一的 rewrite+route 元组，供 API 层按位解包使用。
+    return (
+        current_rewritten,
+        None,
+        rounds_used,
+        text_length,
+        workflow,
+        routing_confidence,
+        route_source,
+        route_backend,
+        route_llm_confidence,
+    )
 
 
 def route_with_llm(query: str, backend: str = "ollama") -> tuple[str, float]:
@@ -574,30 +525,7 @@ def route_with_llm(query: str, backend: str = "ollama") -> tuple[str, float]:
     return "general", 0.0
 
 
-def intent_classification_enabled() -> bool:
-    """改写阶段的意图分类是否启用。"""
-    return _RewriteRouter._intent_classification_enabled()
-
-
-def rewrite_intents_only(query: str):
-    """对改写后的查询进行意图分类。"""
-    return _RewriteRouter._rewrite_intents_only(query)
-
-
-def _route_llm_enabled() -> bool:
-    """LLM 路由是否启用。"""
-    return RouterEnvConfig.route_llm_enabled()
-
-
 __all__ = [
-    "REWRITE_PROMPT",
-    "rewrite_with_context",
-    "rewrite_with_ollama",
-    "rewrite_with_deepseek",
-    "rewrite_query",
-    "route_workflow",
     "route_with_llm",
-    "intent_classification_enabled",
-    "rewrite_intents_only",
-    "_route_llm_enabled",
+    "rewrite_and_route",
 ]
