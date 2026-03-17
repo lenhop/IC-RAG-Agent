@@ -28,9 +28,6 @@ from ...message import ConversationHistoryHandler
 from src.logger import get_logger_facade
 from src.llm.call_deepseek import DeepSeekChat
 from src.llm.call_ollama import OllamaClient
-from ..routing_heuristics import (
-    normalize_query,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +36,11 @@ try:
     _gateway_logger = get_logger_facade()
 except Exception:
     _gateway_logger = None
+
+
+def normalize_query(text: str) -> str:
+    """Trim and collapse whitespace. Always applied before any routing."""
+    return re.sub(r"\s+", " ", (text or "").strip())
 
 
 # ─────────────────────────────────────────────────────────────────────────────

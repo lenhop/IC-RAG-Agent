@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Tuple
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from ..dispatcher.dispatcher import build_execution_plan
+from ..dispatcher import build_execution_plan, DispatcherExecutor
 from ..logging_utils import format_route_metadata
 from ..route_llm.clarification import check_ambiguity
 from ..route_llm.rewriting.rewriters import rewrite_and_route
@@ -40,7 +40,6 @@ from ..schemas import (
 from .auth import AuthGuard
 from .auth_routes import router as auth_router
 from .debug_trace import DebugTraceBuilder
-from .dispatcher import DispatcherExecutor
 from .gateway_config import GatewayConfig
 from .gateway_logger import GatewayEventLogger
 from .intent_rewrite import IntentDetailsBuilder

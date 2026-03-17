@@ -1,13 +1,15 @@
-"""Dispatcher package: planning and backend services."""
+"""Dispatcher package: planning, execution, and backend services."""
 
 from .dispatcher import (
+    DispatcherExecutor,
     _correct_plan_workflows,
-    _vector_classification_enabled,
+    _intent_classification_enabled,
     build_execution_plan,
 )
 
 __all__ = [
     "build_execution_plan",
+    "DispatcherExecutor",
     "_correct_plan_workflows",
-    "_vector_classification_enabled",
+    "_intent_classification_enabled",
 ]

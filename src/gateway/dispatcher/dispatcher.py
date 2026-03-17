@@ -1,31 +1,42 @@
 """
 Dispatcher (Project Manager): builds execution plans from intents and orchestrates execution.
 
-Receives intents from Route LLM (Decision Maker), maps them to workflows via heuristics
-or vector intent classification (Phase 6), builds task_groups, and applies plan correction.
-The api module uses this to obtain RewritePlan before executing tasks.
+Receives intents from Route LLM (Decision Maker), maps them to workflows via
+LLM intent classification (classification module), builds task_groups, and
+applies plan correction. The api module uses this to obtain RewritePlan before
+executing tasks.
 
 Phase 5: Per-intent required field validation — after classification, validates that
 each sub-query contains the fields required by its intent (order_id, asin_or_sku, etc.).
 Returns a clarification question if any are missing.
 
-Phase 6: Vector intent classification — uses all-minilm + Chroma intent_registry to
-classify each sub-query before falling back to keyword heuristics.
+Phase 6: LLM prompt-based intent classification — uses sequential prompt detection
+(SP-API → UDS → Amazon Business → General) to classify each sub-query.
 """
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import os
-from typing import Dict, List, Optional, Tuple
+import re
+import time
+from typing import Any, Dict, List, Optional, Tuple
 
-from ..route_llm.routing_heuristics import (
-    apply_docs_preference,
-    normalize_query,
-    route_workflow_heuristic,
-    split_multi_intent_clauses,
+from ..route_llm.classification import (
+    classify_intent,
+    classify_intents_batch,
+    split_intents,
+    validate_intents,
 )
-from ..schemas import QueryRequest, RewritePlan, TaskGroup, TaskItem
+from ..schemas import QueryRequest, RewritePlan, TaskExecutionResult, TaskGroup, TaskItem
+from .services import (
+    call_amazon_docs,
+    call_general,
+    call_ic_docs,
+    call_sp_api,
+    call_uds,
+)
 from src.logger import get_logger_facade
 
 logger = logging.getLogger(__name__)
@@ -36,10 +47,15 @@ except Exception:
     _gateway_logger = None
 
 
-def _vector_classification_enabled() -> bool:
-    """Return True when gateway vector intent classification is enabled."""
+def _intent_classification_enabled() -> bool:
+    """Return True when gateway LLM intent classification is enabled."""
     v = os.getenv("GATEWAY_VECTOR_INTENT_ENABLED", "false").strip().lower()
     return v in ("1", "true", "yes", "on")
+
+
+def _normalize_query(text: str) -> str:
+    """Trim and collapse whitespace."""
+    return re.sub(r"\s+", " ", (text or "").strip())
 
 
 def _classify_query_to_workflow(
@@ -47,30 +63,25 @@ def _classify_query_to_workflow(
     conversation_context: Optional[str] = None,
 ) -> Tuple[str, str]:
     """
-    Classify a single query to (workflow, intent_name) using vector classification
-    when enabled, falling back to keyword heuristics.
+    Classify a single query to (workflow, intent_name).
 
-    Returns:
-        (workflow, intent_name) — intent_name is empty string for heuristic path.
+    When intent classification is enabled, delegates to the classification
+    public API; otherwise returns ("general", "").
     """
-    if _vector_classification_enabled():
+    if _intent_classification_enabled():
         try:
-            from ..route_llm.classification.intent_classifier import classify_intent
             result = classify_intent(query, conversation_context=conversation_context)
             if result is not None:
                 logger.debug(
-                    "Vector intent: query='%s' -> intent=%s workflow=%s (dist=%.3f, conf=%s, src=%s)",
+                    "LLM intent: query='%s' -> intent=%s workflow=%s (conf=%s, src=%s)",
                     query[:60], result.intent_name, result.workflow,
-                    result.distance, result.confidence, result.source,
+                    result.confidence, result.source,
                 )
                 return result.workflow, result.intent_name
         except Exception as exc:
-            logger.warning("Vector intent classification failed, falling back to heuristic: %s", exc)
+            logger.warning("LLM intent classification failed, falling back to general: %s", exc)
 
-    # Heuristic fallback
-    wf, _ = route_workflow_heuristic(query)
-    wf = apply_docs_preference(query, wf)
-    return wf, ""
+    return "general", ""
 
 
 def _build_plan_from_extracted_intents(
@@ -78,54 +89,68 @@ def _build_plan_from_extracted_intents(
     conversation_context: Optional[str] = None,
 ) -> Tuple[RewritePlan, List[Dict]]:
     """
-    Build execution plan from extracted_intents.
+    Build execution plan from extracted intents.
 
-    Phase 6: Routes each intent via vector classification (when enabled) or heuristic.
-    Phase 5: Returns intent metadata list for required-field validation by caller.
+    Delegates the intent loop to classify_intents_batch() in the classification
+    public API (per flowchart: the loop belongs inside the Intent Classification
+    boundary). Falls back to "general" workflow when classification fails.
 
     Returns:
-        (RewritePlan, intents_with_meta) where intents_with_meta is a list of dicts
-        with query, intent_name, required_fields, clarification_template.
+        (RewritePlan, intents_with_meta) — intents_with_meta is the list used
+        by Phase 5 required-field validation.
     """
     tasks: List[TaskItem] = []
     intents_with_meta: List[Dict] = []
 
-    for idx, intent in enumerate(intents, start=1):
-        q = (intent or "").strip()
-        if not q:
-            continue
+    # ── Batch classification via public API（流程图中 loop 在 classification 内部） ──
+    try:
+        batch_results = classify_intents_batch(intents, conversation_context)
+    except Exception as exc:
+        logger.warning("Batch classification failed, falling back to general: %s", exc)
+        batch_results = None
 
-        wf, intent_name = _classify_query_to_workflow(q, conversation_context)
+    if batch_results is not None:
+        for idx, item in enumerate(batch_results, start=1):
+            q = item["query"]
+            wf = item["workflow"]
+            intent_name = item["intent_name"]
 
-        # Collect metadata for Phase 5 field validation.
-        required_fields: List[str] = []
-        clarification_template: str = ""
-        if intent_name:
-            try:
-                from ..route_llm.classification.intent_registry import get_intent_metadata
-                meta = get_intent_metadata()
-                intent_info = meta.get(intent_name, {})
-                required_fields = intent_info.get("required_fields") or []
-                clarification_template = intent_info.get("clarification_template") or ""
-            except Exception as exc:
-                logger.debug("Could not load intent metadata for %s: %s", intent_name, exc)
-
-        intents_with_meta.append({
-            "query": q,
-            "intent_name": intent_name,
-            "required_fields": required_fields,
-            "clarification_template": clarification_template,
-        })
-
-        tasks.append(
-            TaskItem(
-                task_id=f"t{idx}",
-                workflow=wf,
-                query=q,
-                depends_on=[],
-                reason=f"intent_classified:{intent_name}" if intent_name else "extracted_intents_heuristic",
+            intents_with_meta.append({
+                "query": q,
+                "intent_name": intent_name,
+                "required_fields": item.get("required_fields") or [],
+                "clarification_template": item.get("clarification_template") or "",
+            })
+            tasks.append(
+                TaskItem(
+                    task_id=f"t{idx}",
+                    workflow=wf,
+                    query=q,
+                    depends_on=[],
+                    reason=f"intent_classified:{intent_name}" if intent_name else "classified_fallback",
+                )
             )
-        )
+    else:
+        # Classification unavailable — assign "general" to each intent
+        for idx, intent in enumerate(intents, start=1):
+            q = (intent or "").strip()
+            if not q:
+                continue
+            intents_with_meta.append({
+                "query": q,
+                "intent_name": "",
+                "required_fields": [],
+                "clarification_template": "",
+            })
+            tasks.append(
+                TaskItem(
+                    task_id=f"t{idx}",
+                    workflow="general",
+                    query=q,
+                    depends_on=[],
+                    reason="classification_unavailable_fallback",
+                )
+            )
 
     if not tasks:
         fallback_q = (intents[0] if intents else "unable to extract intents").strip() or "unable to extract intents"
@@ -152,23 +177,22 @@ def _build_plan_from_extracted_intents(
 
 def _build_multi_task_plan_from_query(query: str) -> Optional[RewritePlan]:
     """
-    Build a heuristic multi-task plan from comma/semicolon separated mixed query.
+    Build a multi-task plan by splitting and classifying a mixed query.
     Used as a robust fallback when planner JSON is unavailable.
     """
-    clauses = split_multi_intent_clauses(query)
+    clauses = split_intents(query)
     if len(clauses) < 2:
         return None
     tasks: List[TaskItem] = []
     for idx, clause in enumerate(clauses, start=1):
-        workflow, _ = route_workflow_heuristic(clause)
-        workflow = apply_docs_preference(clause, workflow)
+        result = classify_intent(clause)
         tasks.append(
             TaskItem(
                 task_id=f"t{idx}",
-                workflow=workflow,
+                workflow=result.workflow,
                 query=clause,
                 depends_on=[],
-                reason="heuristic_multi_intent_fallback",
+                reason="multi_intent_fallback",
             )
         )
     return RewritePlan(
@@ -216,18 +240,17 @@ def _expand_merged_tasks(plan: RewritePlan) -> RewritePlan:
             q = (task.query or "").strip()
             if not q:
                 continue
-            clauses = split_multi_intent_clauses(q)
+            clauses = split_intents(q)
             if len(clauses) < 2:
                 expanded_tasks.append(task)
                 next_id += 1
                 continue
             for clause in clauses:
-                wf, _ = route_workflow_heuristic(clause)
-                wf = apply_docs_preference(clause, wf)
+                result = classify_intent(clause)
                 expanded_tasks.append(
                     TaskItem(
                         task_id=f"t{next_id}",
-                        workflow=wf,
+                        workflow=result.workflow,
                         query=clause,
                         depends_on=task.depends_on or [],
                         reason=(task.reason or "") + "_expanded" if task.reason else "merged_split",
@@ -257,28 +280,12 @@ def _expand_merged_tasks(plan: RewritePlan) -> RewritePlan:
 
 def _correct_plan_workflows(plan: RewritePlan) -> RewritePlan:
     """
-    Apply heuristic-based workflow correction to fix LLM misclassifications.
-    When the heuristic returns a different workflow with confidence >= 0.9,
-    override the task's workflow to correct obvious routing errors.
+    Post-classification plan correction hook.
+
+    Previously applied keyword-heuristic overrides. Now that LLM prompt-based
+    classification is the single authority (with "general" as built-in fallback),
+    this function is a no-op pass-through. Kept for interface stability.
     """
-    HEURISTIC_OVERRIDE_CONF = 0.9
-    for group in plan.task_groups or []:
-        for task in group.tasks or []:
-            q = (task.query or "").strip()
-            if not q:
-                continue
-            h_wf, h_conf = route_workflow_heuristic(q)
-            h_wf = apply_docs_preference(q, h_wf)
-            current = (task.workflow or "").strip().lower()
-            if h_wf != current and h_conf >= HEURISTIC_OVERRIDE_CONF:
-                logger.debug(
-                    "Plan correction: task %s workflow %s -> %s (heuristic conf=%.2f)",
-                    task.task_id,
-                    current,
-                    h_wf,
-                    h_conf,
-                )
-                task.workflow = h_wf
     return plan
 
 
@@ -291,8 +298,8 @@ def build_execution_plan(
     """
     Build a validated execution plan for query orchestration.
 
-    Phase 6: Routes each intent via vector classification (when GATEWAY_VECTOR_INTENT_ENABLED=true)
-    before falling back to keyword heuristics.
+    Phase 6: Routes each intent via LLM prompt-based classification. Falls back
+    to "general" workflow when classification is unavailable.
 
     Phase 5: After classification, validates required fields per intent. Returns a
     clarification question string when any sub-query is missing required fields.
@@ -301,7 +308,7 @@ def build_execution_plan(
         request: Parsed QueryRequest.
         rewritten_query: Optimized retrieval query from Route LLM.
         intents: Optional list of sub-queries from intent classification.
-        conversation_context: Optional conversation history for vector classification context.
+        conversation_context: Optional conversation history for classification context.
 
     Returns:
         (RewritePlan, clarification_question) — clarification_question is None when
@@ -310,7 +317,7 @@ def build_execution_plan(
     from ..route_llm.rewriting.rewriters import _RewriteRouter
 
     explicit = (request.workflow or "auto").strip().lower() or "auto"
-    normalized_query = normalize_query(request.query or "")
+    normalized_query = _normalize_query(request.query or "")
     if _gateway_logger:
         try:
             _gateway_logger.log_runtime(
@@ -341,7 +348,6 @@ def build_execution_plan(
         clarification_question: Optional[str] = None
         if intents_with_meta:
             try:
-                from ..route_llm.classification.intent_validator import validate_intents
                 clarification_question = validate_intents(intents_with_meta, conversation_context)
             except Exception as exc:
                 logger.warning("Intent field validation failed (non-fatal): %s", exc)
@@ -376,8 +382,134 @@ def build_execution_plan(
     return final_plan, None
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 执行层 — DispatcherExecutor
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class DispatcherExecutor:
+    """
+    Execute workflow backends and task plans.
+
+    call_workflow_backend: invoke one worker (RAG/UDS/SP-API etc).
+    execute_task / execute_task_group / execute_plan: run plan and return results.
+    """
+
+    @classmethod
+    def call_workflow_backend(
+        cls, workflow: str, query_text: str, session_id: str | None
+    ) -> Dict[str, Any]:
+        """Invoke one worker agent (RAG/UDS/SP-API) and return normalized dict."""
+        workflow_lower = (workflow or "general").strip().lower()
+        if workflow_lower == "general":
+            return call_general(query_text, session_id)
+        if workflow_lower == "amazon_docs":
+            return call_amazon_docs(query_text, session_id)
+        if workflow_lower == "ic_docs":
+            return call_ic_docs(query_text, session_id)
+        if workflow_lower == "sp_api":
+            return call_sp_api(query_text, session_id)
+        if workflow_lower == "uds":
+            return call_uds(query_text, session_id)
+        logger.warning("Unknown workflow '%s', falling back to general", workflow)
+        return call_general(query_text, session_id)
+
+    @classmethod
+    def execute_task(cls, task: TaskItem, request: QueryRequest) -> TaskExecutionResult:
+        """Execute a single task and return structured result."""
+        started = time.perf_counter()
+        task_query = (task.query or "").strip()
+        if not task_query:
+            return TaskExecutionResult(
+                task_id=task.task_id,
+                workflow=task.workflow,
+                query=task_query,
+                status="skipped",
+                answer="",
+                sources=[],
+                error="Empty task query",
+                duration_ms=0,
+            )
+        backend_result = cls.call_workflow_backend(
+            task.workflow, task_query, request.session_id
+        )
+        duration_ms = int((time.perf_counter() - started) * 1000)
+        error_msg = backend_result.get("error")
+        if error_msg:
+            return TaskExecutionResult(
+                task_id=task.task_id,
+                workflow=task.workflow,
+                query=task_query,
+                status="failed",
+                answer="",
+                sources=backend_result.get("sources", []),
+                error=str(error_msg),
+                duration_ms=duration_ms,
+            )
+        return TaskExecutionResult(
+            task_id=task.task_id,
+            workflow=task.workflow,
+            query=task_query,
+            status="completed",
+            answer=str(backend_result.get("answer", "")),
+            sources=backend_result.get("sources", []),
+            error=None,
+            duration_ms=duration_ms,
+        )
+
+    @classmethod
+    def execute_task_group(
+        cls, group: TaskGroup, request: QueryRequest
+    ) -> List[TaskExecutionResult]:
+        """Execute one task group; tasks in parallel when group.parallel is True."""
+        if not group.tasks:
+            return []
+        if not group.parallel or len(group.tasks) == 1:
+            return [cls.execute_task(task, request) for task in group.tasks]
+        results: List[TaskExecutionResult] = []
+        max_workers = min(4, len(group.tasks))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {
+                executor.submit(cls.execute_task, task, request): task.task_id
+                for task in group.tasks
+            }
+            for future in concurrent.futures.as_completed(future_map):
+                try:
+                    results.append(future.result())
+                except Exception as exc:
+                    task_id = future_map[future]
+                    logger.exception(
+                        "Task execution failed for task_id=%s: %s", task_id, exc
+                    )
+                    results.append(
+                        TaskExecutionResult(
+                            task_id=task_id,
+                            workflow="general",
+                            query="",
+                            status="failed",
+                            answer="",
+                            sources=[],
+                            error=str(exc),
+                            duration_ms=0,
+                        )
+                    )
+        by_task_id = {r.task_id: r for r in results}
+        return [by_task_id[t.task_id] for t in group.tasks if t.task_id in by_task_id]
+
+    @classmethod
+    def execute_plan(
+        cls, plan: RewritePlan, request: QueryRequest
+    ) -> List[TaskExecutionResult]:
+        """Execute full plan; groups sequential, tasks within group in parallel."""
+        all_results: List[TaskExecutionResult] = []
+        for group in plan.task_groups:
+            all_results.extend(cls.execute_task_group(group, request))
+        return all_results
+
+
 __all__ = [
     "build_execution_plan",
+    "DispatcherExecutor",
     "_correct_plan_workflows",
-    "_vector_classification_enabled",
+    "_intent_classification_enabled",
 ]
