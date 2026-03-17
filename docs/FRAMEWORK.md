@@ -42,7 +42,7 @@ The gateway code lives under `src/gateway/` in five logical groups plus shared m
 
 | Group | Path | Responsibility |
 |-------|------|----------------|
-| **API and auth** | `api_and_auth/` | FastAPI app (`api.py`), JWT auth routes (`auth_routes.py`). Entry: `src.gateway.api_and_auth.api:app` (see `scripts/run_gateway.py`). |
+| **API and auth** | `api_and_auth/` | FastAPI app (`api.py`), JWT auth + routes (`auth.py`), config + logger (`config.py`), view helpers (`view_helpers.py`). Entry: `src.gateway.api_and_auth.api:app` (see `scripts/run_gateway.py`). |
 | **Route LLM** | `route_llm/` | Clarification (`clarification/`), rewriting + routing entry (`rewriting/router.py`, `rewriting/rewriters.py`), intent classification (`classification/`). |
 | **Dispatcher** | `dispatcher/` | Execution plan build, worker invocation, merge (`dispatcher.py`, `services.py`). |
 | **Memory** | `memory/` | Short-term Redis + event envelope + optional CH dual-write (`short_term.py`); ClickHouse client for message events (`long_term.py`). |

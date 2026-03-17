@@ -37,19 +37,15 @@ from ..schemas import (
     RewriteResponse,
     TaskExecutionResult,
 )
-from .auth import AuthGuard
-from .auth_routes import router as auth_router
-from .debug_trace import DebugTraceBuilder
-from .gateway_config import GatewayConfig
-from .gateway_logger import GatewayEventLogger
-from .intent_rewrite import IntentDetailsBuilder
+from .auth import AuthGuard, router as auth_router
+from .config import GatewayConfig, GatewayEventLogger
+from .view_helpers import DebugTraceBuilder, IntentDetailsBuilder, PlanHelper
 from ..message import (
     get_gateway_memory,
     ConversationHistoryHandler,
     MemoryEventWriter,
     TurnSummaryPersistence,
 )
-from .plan_helper import PlanHelper
 from src.logger import get_logger_facade
 
 logger = logging.getLogger(__name__)
