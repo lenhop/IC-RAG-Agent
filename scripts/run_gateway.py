@@ -14,6 +14,7 @@ Requires: pip install fastapi uvicorn python-dotenv
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -28,6 +29,10 @@ try:
     load_dotenv(PROJECT_ROOT / ".env")
 except ImportError:
     pass
+
+# Ensure gateway and route_llm loggers output [Perf] and other INFO to stderr
+# (project_stack.sh redirects stderr to gateway.log)
+logging.getLogger("src.gateway").setLevel(logging.INFO)
 
 # Config from env
 GATEWAY_HOST = os.getenv("GATEWAY_HOST", "0.0.0.0")

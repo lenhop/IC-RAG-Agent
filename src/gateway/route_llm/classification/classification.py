@@ -46,6 +46,7 @@ import json
 import logging
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -108,6 +109,8 @@ class IntentResult:
         source: 匹配来源（'llm', 'fallback'）。
         required_fields: 该意图需要的必填字段列表。
         clarification_template: 缺少必填字段时的追问模板。
+        intent_elapsed_ms: 该意图分类总耗时（毫秒），用于 UI/log 展示。
+        step_timings: 每个 detection step 的耗时列表，每项 {step, workflow, ms}。
     """
 
     intent_name: str
@@ -116,6 +119,8 @@ class IntentResult:
     source: str = "llm"
     required_fields: List[str] = field(default_factory=list)
     clarification_template: str = ""
+    intent_elapsed_ms: Optional[int] = None
+    step_timings: Optional[List[Dict[str, Any]]] = None
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +185,7 @@ class _IntentSplitter:
             try:
                 text = DeepSeekChat().complete(
                     system_prompt="You are an intent splitter. Output ONLY valid JSON.",
-                    user_message=prompt,
+                    user_content=prompt,
                     max_tokens=512,
                 )
             except Exception as exc:
@@ -303,21 +308,27 @@ class _LLMIntentDetector:
             )
 
         stripped = query.strip()
+        step_timings: List[Dict[str, Any]] = []
+        total_elapsed_ms = 0
 
         # ── 按流程图顺序逐步检测 ──
         for step in _DETECTION_STEPS:
             try:
-                # 依次调用 SP-API / UDS / Amazon 检测步骤：
-                #   - 加载对应 prompt 模板，注入 {history} 和 {query}
-                #   - 调用 LLM，解析 JSON 响应
-                #   - 返回 IntentResult（匹配）或 None（不匹配，继续下一步）
-                result = cls._run_detection_step(
+                result, step_ms = cls._run_detection_step(
                     query=stripped,
                     prompt_name=step["prompt_name"],
                     target_workflow=step["workflow"],
                     conversation_context=conversation_context,
                 )
+                step_timings.append({
+                    "step": step["prompt_name"],
+                    "workflow": step["workflow"],
+                    "ms": step_ms,
+                })
+                total_elapsed_ms += step_ms
                 if result is not None:
+                    result.intent_elapsed_ms = total_elapsed_ms
+                    result.step_timings = step_timings
                     cls._log_detection_result(stripped, result)
                     return result
             except Exception as exc:
@@ -334,6 +345,8 @@ class _LLMIntentDetector:
             workflow="general",
             confidence="low",
             source="llm",
+            intent_elapsed_ms=total_elapsed_ms,
+            step_timings=step_timings if step_timings else None,
         )
         cls._log_detection_result(stripped, general_result)
         return general_result
@@ -345,7 +358,7 @@ class _LLMIntentDetector:
         prompt_name: str,
         target_workflow: str,
         conversation_context: Optional[str] = None,
-    ) -> Optional[IntentResult]:
+    ) -> Tuple[Optional[IntentResult], int]:
         """执行单个检测步骤：加载 prompt → 替换 {history}/{query} → 调用 LLM → 解析结果。
 
         Args:
@@ -355,7 +368,7 @@ class _LLMIntentDetector:
             conversation_context: 可选的对话历史文本，注入到 prompt {history} 占位符。
 
         Returns:
-            IntentResult if matched, None if not matched.
+            (IntentResult if matched else None, step_elapsed_ms)
         """
         prompt_template = load_prompt(prompt_name)
         history_text = (conversation_context or "").strip() or "(no conversation history)"
@@ -369,14 +382,24 @@ class _LLMIntentDetector:
             prompt_text = prompt_text.replace("{examples}", _load_amazon_intent_examples())
 
         # ── 调用 LLM ──
+        step_start = time.perf_counter()
         response_text = cls._call_llm(prompt_text)
+        step_elapsed_ms = int((time.perf_counter() - step_start) * 1000)
+        query_preview = (query[:50] + "…") if len(query) > 50 else query
+        logger.info(
+            "[Perf] intent_classification step %s (workflow=%s) query=%r: %d ms",
+            prompt_name,
+            target_workflow,
+            query_preview,
+            step_elapsed_ms,
+        )
         if not response_text:
-            return None
+            return None, step_elapsed_ms
 
         # ── 解析 JSON 响应 ──
         parsed = cls._parse_llm_response(response_text)
         if parsed is None:
-            return None
+            return None, step_elapsed_ms
 
         match_value = parsed.get("match")
         # Support legacy {"result": "Yes"} format from prompts not yet updated
@@ -384,7 +407,7 @@ class _LLMIntentDetector:
             result_str = str(parsed.get("result", "")).strip().lower()
             match_value = result_str in ("yes", "true", "1")
         if not match_value:
-            return None
+            return None, step_elapsed_ms
 
         # ── 匹配成功：提取 confidence（intent_name 由 target_workflow 决定）──
         intent_name = target_workflow
@@ -395,7 +418,7 @@ class _LLMIntentDetector:
             workflow=target_workflow,
             confidence=confidence,
             source="llm",
-        )
+        ), step_elapsed_ms
 
     @classmethod
     def _call_llm(cls, prompt: str) -> str:
@@ -406,7 +429,7 @@ class _LLMIntentDetector:
             try:
                 return DeepSeekChat().complete(
                     system_prompt="You are an intent classifier. Output ONLY valid JSON.",
-                    user_message=prompt,
+                    user_content=prompt,
                     max_tokens=256,
                 )
             except Exception as exc:
@@ -633,15 +656,25 @@ def classify_intents_batch(
     """
     results: List[Dict[str, Any]] = []
 
-    for intent in intents:
+    for i, intent in enumerate(intents):
         q = (intent or "").strip()
         if not q:
             continue
 
         # ── 按流程图顺序检测意图（附带对话历史）──
+        intent_start = time.perf_counter()
         classification = _LLMIntentDetector.detect(q, conversation_context=conversation_context)
+        intent_elapsed_ms = int((time.perf_counter() - intent_start) * 1000)
+        q_preview = (q[:60] + "…") if len(q) > 60 else q
+        logger.info(
+            "[Perf] intent_classification intent[%d] %r -> %s: %d ms",
+            i,
+            q_preview,
+            classification.workflow,
+            intent_elapsed_ms,
+        )
 
-        results.append({
+        item: Dict[str, Any] = {
             "query": q,
             "workflow": classification.workflow,
             "intent_name": classification.intent_name,
@@ -649,7 +682,12 @@ def classify_intents_batch(
             "source": classification.source,
             "required_fields": classification.required_fields,
             "clarification_template": classification.clarification_template,
-        })
+        }
+        if classification.intent_elapsed_ms is not None:
+            item["intent_elapsed_ms"] = classification.intent_elapsed_ms
+        if classification.step_timings:
+            item["step_timings"] = classification.step_timings
+        results.append(item)
 
     return results
 

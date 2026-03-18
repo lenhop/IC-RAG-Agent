@@ -65,7 +65,11 @@ class GatewayClient:
             self._base_url = str(base_url).rstrip("/")
         else:
             self._base_url = (os.environ.get("GATEWAY_API_URL", "") or "").rstrip("/")
-        self._timeout = timeout
+        # Client timeout: env GATEWAY_CLIENT_TIMEOUT overrides default (e.g. 600 for long queries)
+        try:
+            self._timeout = int(os.environ.get("GATEWAY_CLIENT_TIMEOUT", str(timeout)))
+        except (TypeError, ValueError):
+            self._timeout = timeout
         self._mock_mode = self._is_mock_mode()
 
     def _is_mock_mode(self) -> bool:

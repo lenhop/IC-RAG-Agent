@@ -258,11 +258,11 @@ class RewriteResponse(BaseModel):
         default=None,
         description="Intent classification list: split sub-questions from rewritten query (for UI bullet list).",
     )
-    intent_details: Optional[List[Dict[str, str]]] = Field(
+    intent_details: Optional[List[Dict[str, Any]]] = Field(
         default=None,
         description=(
             "Per sub-intent classification details. "
-            "Each item: {intent, workflow, keyword, vector}. "
+            "Each item: {intent, workflow, keyword?, vector?, intent_elapsed_ms?, step_timings?}. "
             "workflow is the final per-intent classification result."
         ),
     )
@@ -273,6 +273,16 @@ class RewriteResponse(BaseModel):
     rewritten_query_display: Optional[str] = Field(
         default=None,
         description="Bullet-point formatted rewritten query for UI display. Use when present.",
+    )
+    clarification_time_ms: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Clarification step elapsed time in milliseconds (for UI/log use time).",
+    )
+    classification_time_ms: Optional[int] = Field(
+        default=None,
+        ge=0,
+        description="Intent classification step elapsed time in milliseconds (for UI/log use time).",
     )
     error: Optional[str] = Field(
         default=None,

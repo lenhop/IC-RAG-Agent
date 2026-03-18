@@ -140,24 +140,26 @@ def _format_intent_classification_lines(
             vector_wf = (detail.get("vector") or "").strip()
             confidence = (detail.get("confidence") or "").strip()
             source = (detail.get("source") or "").strip()
+            intent_ms = detail.get("intent_elapsed_ms")
+            step_timings = detail.get("step_timings") or []
             lines.append(f"<p style=\"margin: 4px 0 2px 0;\">{intent_text}</p>")
+            extra_parts: List[str] = [f"Workflow: {final_wf}"]
+            if intent_ms is not None:
+                extra_parts.append(f"Use time: {intent_ms} ms")
+            if step_timings:
+                step_strs = [f"{s.get('workflow', '?')}: {s.get('ms', 0)} ms" for s in step_timings]
+                extra_parts.append(f"LLM calls: {len(step_timings)} ({', '.join(step_strs)})")
             if keyword_wf or vector_wf:
-                lines.append(
-                    f"<div style=\"margin: 2px 0 8px 0; padding: 6px 10px; background-color: #e5e7eb; border-radius: 6px; color: #4b5563;\">"
-                    f"Keyword: {keyword_wf or '—'}, Vector: {vector_wf or '—'}, Final: {final_wf}"
-                    "</div>"
-                )
-            else:
-                extra_parts: List[str] = [f"Workflow: {final_wf}"]
-                if confidence:
-                    extra_parts.append(f"Confidence: {confidence}")
-                if source:
-                    extra_parts.append(f"Source: {source}")
-                lines.append(
-                    f"<div style=\"margin: 2px 0 8px 0; padding: 6px 10px; background-color: #e5e7eb; border-radius: 6px; color: #4b5563;\">"
-                    + ", ".join(extra_parts)
-                    + "</div>"
-                )
+                extra_parts.insert(0, f"Keyword: {keyword_wf or '—'}, Vector: {vector_wf or '—'}")
+            if confidence:
+                extra_parts.append(f"Confidence: {confidence}")
+            if source:
+                extra_parts.append(f"Source: {source}")
+            lines.append(
+                f"<div style=\"margin: 2px 0 8px 0; padding: 6px 10px; background-color: #e5e7eb; border-radius: 6px; color: #4b5563;\">"
+                + ", ".join(extra_parts)
+                + "</div>"
+            )
     else:
         lines.append("<ul style=\"margin: 0; padding-left: 20px;\">")
         for item in intents_list:
@@ -172,6 +174,13 @@ def _format_intent_classification_lines(
         lines.append(f"<li><strong>Intent classification result:</strong> {workflows_str}</li>")
     if classification_time_ms is not None:
         lines.append(f"<li><strong>Classification time:</strong> {classification_time_ms} ms</li>")
+    if intent_details_list:
+        total_calls = sum(
+            len(d.get("step_timings") or [])
+            for d in intent_details_list
+        )
+        if total_calls > 0:
+            lines.append(f"<li><strong>Classification LLM calls:</strong> {total_calls}</li>")
     lines.append("</ul>")
     return lines
 
@@ -468,12 +477,18 @@ def _chat_handler(
                 "",
                 "<div style=\"border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px 12px; margin: 8px 0;\">",
             ]
+            classification_ms = rewrite_result.get("classification_time_ms")
+            if classification_ms is not None:
+                try:
+                    classification_ms = int(classification_ms)
+                except (TypeError, ValueError):
+                    classification_ms = None
             lines_parts.extend(
                 _format_intent_classification_lines(
                     intent_details_list=intent_details_list,
                     intents_list=intents_list,
                     workflows_list=workflows_list,
-                    classification_time_ms=int(rewrite_ms) if rewrite_ms is not None else None,
+                    classification_time_ms=classification_ms,
                 )
             )
             lines_parts.append("</div>")

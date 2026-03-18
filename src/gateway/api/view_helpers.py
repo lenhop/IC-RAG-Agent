@@ -25,10 +25,10 @@ logger = logging.getLogger(__name__)
 
 class IntentDetailsBuilder:
     """
-    Build intent list, intent_details (per-intent workflow), and workflows list.
+    Build intent list, intent_details (per-intent workflow + timing), and workflows list.
 
-    Used by the rewrite endpoint to show UI preview. Uses LLM prompt-based
-    classification (classification module) for all intent detection.
+    Used by the rewrite endpoint to show UI preview. Uses classify_intents_batch
+    for unified classification with per-intent and per-step timing.
     """
 
     @classmethod
@@ -38,37 +38,44 @@ class IntentDetailsBuilder:
         """
         Build (intents, intent_details, workflows) from rewritten query.
 
-        Runs split_intents; classifies each intent via classify_intent().
-        Falls back to "general" workflow when classification is unavailable.
+        Runs split_intents; classifies via classify_intents_batch (includes
+        intent_elapsed_ms and step_timings for UI/log). Falls back to "general"
+        when classification fails.
         """
         intents: Optional[List[str]] = None
-        intent_details: List[Dict[str, str]] = []
+        intent_details: List[Dict[str, Any]] = []
         workflows: List[str] = []
         if not (rewritten_query or "").strip():
             return intents, intent_details, workflows
         try:
             from ..route_llm.classification import (
-                classify_intent,
+                classify_intents_batch,
                 split_intents,
             )
             intents = split_intents(rewritten_query)
             if intents:
-                for intent in intents:
-                    q = (intent or "").strip()
+                batch_results = classify_intents_batch(intents)
+                for r in batch_results:
+                    q = (r.get("query") or "").strip()
                     if not q:
                         continue
-                    result = classify_intent(q)
-                    wf = result.workflow if result else "general"
-                    intent_details.append({"intent": q, "workflow": wf})
+                    wf = (r.get("workflow") or "general").strip() or "general"
+                    detail: Dict[str, Any] = {"intent": q, "workflow": wf}
+                    if r.get("intent_elapsed_ms") is not None:
+                        detail["intent_elapsed_ms"] = r["intent_elapsed_ms"]
+                    if r.get("step_timings"):
+                        detail["step_timings"] = r["step_timings"]
+                    intent_details.append(detail)
                     if wf and wf not in workflows:
                         workflows.append(wf)
             if not workflows and (intents or []):
                 q = (intents[0] if intents else rewritten_query or "").strip()
                 if q:
-                    result = classify_intent(q)
-                    wf = result.workflow if result else "general"
-                    if wf:
-                        workflows = [wf]
+                    batch_results = classify_intents_batch([q])
+                    if batch_results:
+                        wf = (batch_results[0].get("workflow") or "general").strip() or "general"
+                        if wf:
+                            workflows = [wf]
         except Exception as exc:
             logger.warning("Intent split or classification failed (rewrite response): %s", exc)
             q = (rewritten_query or "").strip()
