@@ -132,18 +132,32 @@ def _format_intent_classification_lines(
     lines.append("<p style=\"margin: 4px 0;\"><strong>Intent classification list:</strong></p>")
     if intent_details_list:
         for detail in intent_details_list:
-            intent_text = (detail.get("intent") or "").strip()
+            intent_text = (detail.get("intent") or detail.get("query") or "").strip()
             if not intent_text:
                 continue
             final_wf = (detail.get("workflow") or "general").strip() or "general"
-            keyword_wf = (detail.get("keyword") or "—").strip()
-            vector_wf = (detail.get("vector") or "—").strip()
+            keyword_wf = (detail.get("keyword") or "").strip()
+            vector_wf = (detail.get("vector") or "").strip()
+            confidence = (detail.get("confidence") or "").strip()
+            source = (detail.get("source") or "").strip()
             lines.append(f"<p style=\"margin: 4px 0 2px 0;\">{intent_text}</p>")
-            lines.append(
-                f"<div style=\"margin: 2px 0 8px 0; padding: 6px 10px; background-color: #e5e7eb; border-radius: 6px; color: #4b5563;\">"
-                f"Keyword: {keyword_wf}, Vector: {vector_wf}, Final: {final_wf}"
-                "</div>"
-            )
+            if keyword_wf or vector_wf:
+                lines.append(
+                    f"<div style=\"margin: 2px 0 8px 0; padding: 6px 10px; background-color: #e5e7eb; border-radius: 6px; color: #4b5563;\">"
+                    f"Keyword: {keyword_wf or '—'}, Vector: {vector_wf or '—'}, Final: {final_wf}"
+                    "</div>"
+                )
+            else:
+                extra_parts: List[str] = [f"Workflow: {final_wf}"]
+                if confidence:
+                    extra_parts.append(f"Confidence: {confidence}")
+                if source:
+                    extra_parts.append(f"Source: {source}")
+                lines.append(
+                    f"<div style=\"margin: 2px 0 8px 0; padding: 6px 10px; background-color: #e5e7eb; border-radius: 6px; color: #4b5563;\">"
+                    + ", ".join(extra_parts)
+                    + "</div>"
+                )
     else:
         lines.append("<ul style=\"margin: 0; padding-left: 20px;\">")
         for item in intents_list:
@@ -603,43 +617,8 @@ CHAT_DIALOG_CSS = """
 #ic_signout_row button { max-width: 120px !important; }
 """
 
-# JavaScript to auto-scroll chat to bottom when new messages arrive or on submit
-CHAT_AUTOSCROLL_JS = """
-(function() {
-    function scrollChatToBottom() {
-        var selectors = ['#ic_chatbot', '[aria-label="chatbot conversation"]', '.gr-chat .scroll-hide', '#ic_chat_column [class*="scroll"]'];
-        selectors.forEach(function(sel) {
-            var el = document.querySelector(sel);
-            if (el) {
-                el.scrollTop = el.scrollHeight;
-                var children = el.querySelectorAll('[style*="overflow"]');
-                for (var i = 0; i < children.length; i++) {
-                    children[i].scrollTop = children[i].scrollHeight;
-                }
-            }
-        });
-    }
-    function attachObserver() {
-        var root = document.getElementById('ic_chatbot') || document.getElementById('ic_chat_column') || document.querySelector('.gr-chat');
-        if (root && !root._icScrollObserved) {
-            root._icScrollObserved = true;
-            var obs = new MutationObserver(scrollChatToBottom);
-            obs.observe(root, { childList: true, subtree: true });
-            scrollChatToBottom();
-        }
-    }
-    function init() {
-        attachObserver();
-        setTimeout(attachObserver, 800);
-        setTimeout(attachObserver, 2000);
-    }
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
-    } else {
-        init();
-    }
-})();
-"""
+# Keep JS hook as no-op to preserve launch signature without forcing scroll.
+CHAT_AUTOSCROLL_JS = ""
 
 
 def create_demo() -> gr.Blocks:
@@ -726,7 +705,7 @@ def create_demo() -> gr.Blocks:
                             user_info_state,
                         ],
                         fill_height=True,
-                        autoscroll=True,
+                        autoscroll=False,
                     )
 
         def on_signin(su: str, sp: str, session_id: str):

@@ -136,14 +136,18 @@ service_start_cmd() {
       local rag_url="${RAG_API_URL:-http://127.0.0.1:8002}"
       local uds_url="${UDS_API_URL:-http://127.0.0.1:8001}"
       local sp_url="${SP_API_URL:-http://127.0.0.1:8003}"
+      local rewrite_backend="${GATEWAY_REWRITE_BACKEND:-ollama}"
+      local clarification_backend="${GATEWAY_CLARIFICATION_BACKEND:-${rewrite_backend}}"
+      local intent_split_backend="${GATEWAY_INTENT_SPLIT_BACKEND:-${rewrite_backend}}"
+      local intent_detect_backend="${GATEWAY_INTENT_DETECT_BACKEND:-${rewrite_backend}}"
       local ollama_url="${GATEWAY_REWRITE_OLLAMA_URL:-http://localhost:11434/api/generate}"
       local ollama_model="${GATEWAY_REWRITE_OLLAMA_MODEL:-qwen3:1.7b}"
       local route_url="${GATEWAY_ROUTE_LLM_OLLAMA_URL:-http://localhost:11434}"
       local route_model="${GATEWAY_ROUTE_LLM_OLLAMA_MODEL:-qwen3:1.7b}"
       if [[ "${REWRITE_ONLY_MODE}" == "true" ]]; then
-        echo "RAG_API_URL=${rag_url} UDS_API_URL=${uds_url} SP_API_URL=${sp_url} GATEWAY_REWRITE_ONLY_MODE=true GATEWAY_REWRITE_PLANNER_ENABLED=true GATEWAY_CLARIFICATION_ENABLED=true GATEWAY_REWRITE_BACKEND=ollama GATEWAY_REWRITE_OLLAMA_URL=${ollama_url} GATEWAY_REWRITE_OLLAMA_MODEL=${ollama_model} GATEWAY_ROUTE_LLM_OLLAMA_URL=${route_url} GATEWAY_ROUTE_LLM_OLLAMA_MODEL=${route_model} GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
+        echo "RAG_API_URL=${rag_url} UDS_API_URL=${uds_url} SP_API_URL=${sp_url} GATEWAY_REWRITE_ONLY_MODE=true GATEWAY_REWRITE_PLANNER_ENABLED=true GATEWAY_CLARIFICATION_ENABLED=true GATEWAY_REWRITE_BACKEND=${rewrite_backend} GATEWAY_CLARIFICATION_BACKEND=${clarification_backend} GATEWAY_INTENT_SPLIT_BACKEND=${intent_split_backend} GATEWAY_INTENT_DETECT_BACKEND=${intent_detect_backend} GATEWAY_REWRITE_OLLAMA_URL=${ollama_url} GATEWAY_REWRITE_OLLAMA_MODEL=${ollama_model} GATEWAY_ROUTE_LLM_OLLAMA_URL=${route_url} GATEWAY_ROUTE_LLM_OLLAMA_MODEL=${route_model} GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
       else
-        echo "RAG_API_URL=${rag_url} UDS_API_URL=${uds_url} SP_API_URL=${sp_url} GATEWAY_REWRITE_PLANNER_ENABLED=true GATEWAY_CLARIFICATION_ENABLED=true GATEWAY_REWRITE_BACKEND=ollama GATEWAY_REWRITE_OLLAMA_URL=${ollama_url} GATEWAY_REWRITE_OLLAMA_MODEL=${ollama_model} GATEWAY_ROUTE_LLM_OLLAMA_URL=${route_url} GATEWAY_ROUTE_LLM_OLLAMA_MODEL=${route_model} GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
+        echo "RAG_API_URL=${rag_url} UDS_API_URL=${uds_url} SP_API_URL=${sp_url} GATEWAY_REWRITE_PLANNER_ENABLED=true GATEWAY_CLARIFICATION_ENABLED=true GATEWAY_REWRITE_BACKEND=${rewrite_backend} GATEWAY_CLARIFICATION_BACKEND=${clarification_backend} GATEWAY_INTENT_SPLIT_BACKEND=${intent_split_backend} GATEWAY_INTENT_DETECT_BACKEND=${intent_detect_backend} GATEWAY_REWRITE_OLLAMA_URL=${ollama_url} GATEWAY_REWRITE_OLLAMA_MODEL=${ollama_model} GATEWAY_ROUTE_LLM_OLLAMA_URL=${route_url} GATEWAY_ROUTE_LLM_OLLAMA_MODEL=${route_model} GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
       fi
       ;;
     uds)
@@ -158,9 +162,10 @@ service_start_cmd() {
       ;;
     ui)
       local no_login_env=""
+      local ui_rewrite_backend="${UNIFIED_CHAT_REWRITE_BACKEND:-${GATEWAY_REWRITE_BACKEND:-ollama}}"
       [[ "${NO_LOGIN}" == "true" ]] && no_login_env="UNIFIED_CHAT_SKIP_LOGIN=true "
       if [[ "${REWRITE_ONLY_MODE}" == "true" ]]; then
-        echo "GATEWAY_API_URL=http://127.0.0.1:8000 GATEWAY_MOCK=false ${no_login_env}UNIFIED_CHAT_REWRITE_ONLY_MODE=true UNIFIED_CHAT_REWRITE_ENABLE=true UNIFIED_CHAT_REWRITE_BACKEND=ollama UNIFIED_CHAT_GRADIO_PORT=7862 ${PYTHON_BIN} scripts/run_unified_chat.py"
+        echo "GATEWAY_API_URL=http://127.0.0.1:8000 GATEWAY_MOCK=false ${no_login_env}UNIFIED_CHAT_REWRITE_ONLY_MODE=true UNIFIED_CHAT_REWRITE_ENABLE=true UNIFIED_CHAT_REWRITE_BACKEND=${ui_rewrite_backend} UNIFIED_CHAT_GRADIO_PORT=7862 ${PYTHON_BIN} scripts/run_unified_chat.py"
       else
         echo "GATEWAY_API_URL=http://127.0.0.1:8000 GATEWAY_MOCK=false ${no_login_env}UNIFIED_CHAT_GRADIO_PORT=7862 ${PYTHON_BIN} scripts/run_unified_chat.py"
       fi
