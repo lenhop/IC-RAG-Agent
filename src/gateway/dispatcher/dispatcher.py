@@ -24,7 +24,6 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..route_llm.classification import (
-    classify_intent,
     classify_intents_batch,
     split_intents,
     validate_intents,
@@ -56,32 +55,6 @@ def _intent_classification_enabled() -> bool:
 def _normalize_query(text: str) -> str:
     """Trim and collapse whitespace."""
     return re.sub(r"\s+", " ", (text or "").strip())
-
-
-def _classify_query_to_workflow(
-    query: str,
-    conversation_context: Optional[str] = None,
-) -> Tuple[str, str]:
-    """
-    Classify a single query to (workflow, intent_name).
-
-    When intent classification is enabled, delegates to the classification
-    public API; otherwise returns ("general", "").
-    """
-    if _intent_classification_enabled():
-        try:
-            result = classify_intent(query, conversation_context=conversation_context)
-            if result is not None:
-                logger.debug(
-                    "LLM intent: query='%s' -> intent=%s workflow=%s (conf=%s, src=%s)",
-                    query[:60], result.intent_name, result.workflow,
-                    result.confidence, result.source,
-                )
-                return result.workflow, result.intent_name
-        except Exception as exc:
-            logger.warning("LLM intent classification failed, falling back to general: %s", exc)
-
-    return "general", ""
 
 
 def _build_plan_from_extracted_intents(
@@ -186,13 +159,22 @@ def _build_multi_task_plan_from_query(query: str) -> Optional[RewritePlan]:
     clauses = split_intents(query)
     if len(clauses) < 2:
         return None
+
+    batch_results: list[dict[str, Any]] | None = None
+    try:
+        batch_results = classify_intents_batch(clauses)
+    except Exception as exc:
+        logger.warning("Batch classification failed in multi-task fallback: %s", exc)
+
     tasks: List[TaskItem] = []
     for idx, clause in enumerate(clauses, start=1):
-        result = classify_intent(clause)
+        workflow = "general"
+        if batch_results and idx - 1 < len(batch_results):
+            workflow = (batch_results[idx - 1].get("workflow") or "general").strip() or "general"
         tasks.append(
             TaskItem(
                 task_id=f"t{idx}",
-                workflow=result.workflow,
+                workflow=workflow,
                 query=clause,
                 depends_on=[],
                 reason="multi_intent_fallback",
@@ -248,12 +230,21 @@ def _expand_merged_tasks(plan: RewritePlan) -> RewritePlan:
                 expanded_tasks.append(task)
                 next_id += 1
                 continue
-            for clause in clauses:
-                result = classify_intent(clause)
+
+            batch_results: list[dict[str, Any]] | None = None
+            try:
+                batch_results = classify_intents_batch(clauses)
+            except Exception as exc:
+                logger.warning("Batch classification failed in merged-task expansion: %s", exc)
+
+            for idx, clause in enumerate(clauses):
+                workflow = "general"
+                if batch_results and idx < len(batch_results):
+                    workflow = (batch_results[idx].get("workflow") or "general").strip() or "general"
                 expanded_tasks.append(
                     TaskItem(
                         task_id=f"t{next_id}",
-                        workflow=result.workflow,
+                        workflow=workflow,
                         query=clause,
                         depends_on=task.depends_on or [],
                         reason=(task.reason or "") + "_expanded" if task.reason else "merged_split",

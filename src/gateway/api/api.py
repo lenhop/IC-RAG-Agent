@@ -185,7 +185,7 @@ def _prepare_intent_classification(
     try:
         from ..route_llm.classification import classify_intents_batch, split_intents
 
-        intents = split_intents(rewritten_query)
+        intents = split_intents(rewritten_query, conversation_context)
         if not intents:
             return None, None
 
@@ -306,7 +306,10 @@ class QueryPipeline:
     Orchestrates the /query endpoint:
       1) Clarification     → early return if ambiguous
       2) Rewrite           → normalize + memory merge + rewrite
-      3) Intent split      → optional sub-question splitting
+      3) Intent split + batch classify → split query via split_intents(),
+                             then run classify_intents_batch() once (loop is
+                             internal to the classification module); result
+                             is (intents, classified_intents) passed downstream
       4) Build plan        → execution plan + field validation
       5) Route             → determine workflow / route metadata
       6) Execute           → Dispatcher runs worker agents

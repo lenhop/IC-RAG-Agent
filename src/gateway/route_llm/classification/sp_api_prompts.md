@@ -34,7 +34,6 @@ Your ONLY task is to determine if the user query belongs to "SPI-API" intent.
 - Check the latest status of order 114-1122334-4455888
 - Check the latest data for order 114-1122334-4455899
 
-
 ### Product/Listing Type
 - 帮我看 ASIN B08XXXXXX 当前最新状态
 - 获取 SKU ABC-123 的最新商品状态
@@ -49,16 +48,26 @@ Your ONLY task is to determine if the user query belongs to "SPI-API" intent.
 - Check the latest status of Listing 78901234
 - Check the latest data for ASIN B09YYYYY
 
+## CONVERSATION HISTORY
+{history}
+
+## CURRENT INTENT CLAUSE
+{query}
+
+## INSTRUCTION (MANDATORY)
+Apply the STRICT RULES above to the CURRENT INTENT CLAUSE.
+Use CONVERSATION HISTORY only to resolve references (e.g. "it", "that order" → concrete order ID).
+The classification decision must be based solely on the CURRENT INTENT CLAUSE.
+
 ## OUTPUT FORMAT (MANDATORY)
-Output ONLY **Yes** or **No**, like below:
+Output ONLY valid JSON, no extra text.
+
+If IS a SPI-API intent:
 ```json
-{"result": "Yes"}
+{"result": "Yes", "match": true, "confidence": "high"}
 ```
-- Yes = the query is SPI-API intent
-- No = the query is NOT SPI-API intent
 
 If NOT a SPI-API intent:
-
 ```json
-{"result": "No"}
+{"result": "No", "match": false}
 ```

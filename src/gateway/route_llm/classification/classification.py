@@ -28,7 +28,7 @@ Approach:
 
 Internal classes (not exported):
   _RuntimeConfig     — 运行时配置（LLM 后端选择等）
-  _IntentSplitter    — LLM / 启发式多意图拆分
+  _IntentSplitter    — LLM 多意图拆分（失败时原路返回 query）
   _LLMIntentDetector — 基于 prompt + LLM 的串行意图检测器
   _IntentValidator   — 必填字段校验 & 追问生成
 
@@ -47,6 +47,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ...prompt_loader import load_prompt
@@ -60,6 +61,35 @@ try:
     _gateway_logger = get_logger_facade()
 except Exception:
     _gateway_logger = None
+
+
+# ---------------------------------------------------------------------------
+# Amazon intent examples loader（从 CSV 文件动态加载，缓存在模块级别）
+# ---------------------------------------------------------------------------
+
+_amazon_examples_cache: str | None = None
+
+
+def _load_amazon_intent_examples() -> str:
+    """从 amazon_intents.csv 加载关键词列表，返回 markdown bullet 列表字符串。
+
+    首行为 header（跳过），每行一个关键词，缓存在模块级变量避免重复读取。
+    """
+    global _amazon_examples_cache
+    if _amazon_examples_cache is not None:
+        return _amazon_examples_cache
+
+    csv_path = Path(__file__).parent / "amazon_intents.csv"
+    try:
+        lines = csv_path.read_text(encoding="utf-8").splitlines()
+        # 首行为 header，跳过；过滤空行
+        keywords = [line.strip() for line in lines[1:] if line.strip()]
+        _amazon_examples_cache = "\n".join(f"- {kw}" for kw in keywords)
+    except Exception as exc:
+        logger.warning("Failed to load amazon_intents.csv: %s; using empty examples", exc)
+        _amazon_examples_cache = "(no examples available)"
+
+    return _amazon_examples_cache
 
 
 # ---------------------------------------------------------------------------
@@ -118,25 +148,29 @@ class _RuntimeConfig:
 
 
 class _IntentSplitter:
-    """多意图拆分器：先尝试 LLM 拆分，失败时回退到启发式规则。"""
-
-    _SPLIT_COMMA_QUESTION = re.compile(
-        r",\s+(?=what|how|get|show|list|compare|when|which|where|who|why|tell|give|check|find|return|describe|explain)",
-        flags=re.I,
-    )
+    """多意图拆分器：使用 LLM 拆分，失败时原路返回原始 query（不做启发式切分）。"""
 
     @classmethod
-    def split(cls, query: str) -> List[str]:
+    def split(cls, query: str, conversation_context: Optional[str] = None) -> List[str]:
         """拆分用户查询为多个独立子问题。
 
-        1. 先用 LLM（Ollama 或 DeepSeek）解析
-        2. 失败则回退到启发式规则拆分
+        仅使用 LLM（Ollama 或 DeepSeek）解析；若 LLM 调用失败或返回无效结果，
+        则不切分，直接返回 [原始 query]。
+
+        Args:
+            query: 经过 rewrite 的用户查询文本。
+            conversation_context: 可选的对话历史，注入到 prompt {history} 占位符。
         """
         if not query or not query.strip():
             return []
 
         prompt_template = load_prompt("classification/intent_split_query")
-        user_line = f"Input: {query.strip()}"
+        history_text = (conversation_context or "").strip() or "(no conversation history)"
+        prompt = (
+            prompt_template
+            .replace("{history}", history_text)
+            .replace("{rewritten_query}", query.strip())
+        )
         text = ""
 
         if (
@@ -145,93 +179,38 @@ class _IntentSplitter:
         ):
             try:
                 text = DeepSeekChat().complete(
-                    prompt_template,
-                    user_line,
+                    system_prompt="You are an intent splitter. Output ONLY valid JSON.",
+                    user_message=prompt,
                     max_tokens=512,
                 )
             except Exception as exc:
-                logger.warning("Intent split DeepSeek failed: %s; heuristic fallback", exc)
-                return cls._fallback_split(query)
+                logger.warning("Intent split DeepSeek failed: %s; returning original query", exc)
+                return [query.strip()]
         else:
-            prompt = f"{prompt_template}\n\n{user_line}"
             try:
                 text = OllamaClient().generate(prompt, empty_fallback="")
             except Exception as exc:
-                logger.warning("Intent split LLM call failed: %s; trying heuristic fallback", exc)
-                return cls._fallback_split(query)
+                logger.warning("Intent split LLM call failed: %s; returning original query", exc)
+                return [query.strip()]
 
         if not text:
-            return cls._fallback_split(query)
+            return [query.strip()]
 
         raw = cls._strip_markdown_fences(text)
         parsed = cls._parse_json_response(raw)
         if parsed is None:
-            return cls._fallback_split(query)
+            return [query.strip()]
 
         intents = parsed.get("intents")
         if not isinstance(intents, list) or not intents:
-            return cls._fallback_split(query)
+            return [query.strip()]
 
         result = cls._dedupe_intents(intents)
         if not result:
-            return cls._fallback_split(query)
-
-        # 若 LLM 只返回 1 项但查询含逗号/and，尝试启发式补充
-        if len(result) == 1 and ("," in query or " and " in query.lower()):
-            heuristic = cls._heuristic_split_multi_intent(query)
-            if len(heuristic) >= 2:
-                logger.info(
-                    "Intent split: LLM returned 1 item; using heuristic split (%d clauses)",
-                    len(heuristic),
-                )
-                return heuristic
+            return [query.strip()]
 
         cls._log_split_result(query, result)
         return result
-
-    # ── 启发式拆分 ──
-
-    @classmethod
-    def _heuristic_split_multi_intent(cls, query: str) -> List[str]:
-        if not query or not query.strip():
-            return []
-
-        parts = cls._SPLIT_COMMA_QUESTION.split(query.strip())
-        expanded: List[str] = []
-        for part in parts:
-            part = part.strip()
-            if not part:
-                continue
-            sub_parts = re.split(
-                r"\s+and\s+(?=what|how|get|show|list|compare|when|which|where|who|why|tell|give|check|find|return|describe|explain)",
-                part,
-                flags=re.I,
-            )
-            for sub_part in sub_parts:
-                cleaned = sub_part.strip().rstrip(",").strip()
-                if cleaned and len(cleaned) > 2:
-                    expanded.append(cleaned)
-
-        result: List[str] = []
-        for segment in expanded:
-            if segment.isdigit() and len(segment) == 4 and result:
-                result[-1] = f"{result[-1]}, {segment}"
-            else:
-                result.append(segment)
-        return result
-
-    @classmethod
-    def _fallback_split(cls, query: str) -> List[str]:
-        stripped = (query or "").strip()
-        if not stripped:
-            return []
-        if "," in stripped or " and " in stripped.lower():
-            heuristic = cls._heuristic_split_multi_intent(stripped)
-            if len(heuristic) >= 2:
-                return heuristic
-        return [stripped]
-
-    # ── JSON 解析工具 ──
 
     @staticmethod
     def _strip_markdown_fences(text: str) -> str:
@@ -305,11 +284,12 @@ class _LLMIntentDetector:
     """
 
     @classmethod
-    def detect(cls, query: str) -> IntentResult:
+    def detect(cls, query: str, conversation_context: Optional[str] = None) -> IntentResult:
         """对单条查询按流程图顺序检测意图类型。
 
         Args:
             query: 待分类的子查询。
+            conversation_context: 可选的对话历史，注入到 prompt {history} 占位符。
 
         Returns:
             IntentResult，包含 workflow 和 intent_name。
@@ -327,10 +307,15 @@ class _LLMIntentDetector:
         # ── 按流程图顺序逐步检测 ──
         for step in _DETECTION_STEPS:
             try:
+                # 依次调用 SP-API / UDS / Amazon 检测步骤：
+                #   - 加载对应 prompt 模板，注入 {history} 和 {query}
+                #   - 调用 LLM，解析 JSON 响应
+                #   - 返回 IntentResult（匹配）或 None（不匹配，继续下一步）
                 result = cls._run_detection_step(
                     query=stripped,
                     prompt_name=step["prompt_name"],
                     target_workflow=step["workflow"],
+                    conversation_context=conversation_context,
                 )
                 if result is not None:
                     cls._log_detection_result(stripped, result)
@@ -359,19 +344,29 @@ class _LLMIntentDetector:
         query: str,
         prompt_name: str,
         target_workflow: str,
+        conversation_context: Optional[str] = None,
     ) -> Optional[IntentResult]:
-        """执行单个检测步骤：加载 prompt → 替换 {query} → 调用 LLM → 解析结果。
+        """执行单个检测步骤：加载 prompt → 替换 {history}/{query} → 调用 LLM → 解析结果。
 
         Args:
-            query: 用户查询。
+            query: 单条 intent clause（split_intents 切分后的子句）。
             prompt_name: prompt 文件路径（如 'classification/sp_api_prompts'）。
             target_workflow: 匹配成功时的 workflow 名称。
+            conversation_context: 可选的对话历史文本，注入到 prompt {history} 占位符。
 
         Returns:
             IntentResult if matched, None if not matched.
         """
         prompt_template = load_prompt(prompt_name)
-        prompt_text = prompt_template.replace("{query}", query)
+        history_text = (conversation_context or "").strip() or "(no conversation history)"
+        prompt_text = (
+            prompt_template
+            .replace("{history}", history_text)
+            .replace("{query}", query)
+        )
+        # amazon_docs prompt 含 {examples} 占位符，从 CSV 动态注入
+        if "{examples}" in prompt_text:
+            prompt_text = prompt_text.replace("{examples}", _load_amazon_intent_examples())
 
         # ── 调用 LLM ──
         response_text = cls._call_llm(prompt_text)
@@ -384,11 +379,15 @@ class _LLMIntentDetector:
             return None
 
         match_value = parsed.get("match")
-        if match_value is not True:
+        # Support legacy {"result": "Yes"} format from prompts not yet updated
+        if match_value is None:
+            result_str = str(parsed.get("result", "")).strip().lower()
+            match_value = result_str in ("yes", "true", "1")
+        if not match_value:
             return None
 
-        # ── 匹配成功：提取 intent_name 和 confidence ──
-        intent_name = parsed.get("intent_name", target_workflow) or target_workflow
+        # ── 匹配成功：提取 confidence（intent_name 由 target_workflow 决定）──
+        intent_name = target_workflow
         confidence = parsed.get("confidence", "medium") or "medium"
 
         return IntentResult(
@@ -574,16 +573,17 @@ class _IntentValidator:
 # ---------------------------------------------------------------------------
 
 
-def split_intents(query: str) -> List[str]:
+def split_intents(query: str, conversation_context: Optional[str] = None) -> List[str]:
     """将重写后的查询拆分为单意图子问题列表。
 
     Args:
         query: 经过 query rewrite 的用户查询文本。
+        conversation_context: 可选的对话历史，注入到 prompt {history} 占位符。
 
     Returns:
-        拆分后的子问题列表；若无法拆分则返回原始查询的单元素列表。
+        拆分后的子问题列表；若 LLM 调用失败则返回原始查询的单元素列表。
     """
-    return _IntentSplitter.split(query)
+    return _IntentSplitter.split(query, conversation_context=conversation_context)
 
 
 def classify_intent(
@@ -600,12 +600,12 @@ def classify_intent(
 
     Args:
         query: 单条待分类查询。
-        conversation_context: 可选的对话上下文（当前保留，未传入 LLM）。
+        conversation_context: 可选的对话历史，注入到每个检测步骤的 prompt {history} 占位符。
 
     Returns:
         IntentResult，包含 workflow, intent_name, confidence, source。
     """
-    return _LLMIntentDetector.detect(query)
+    return _LLMIntentDetector.detect(query, conversation_context=conversation_context)
 
 
 def classify_intents_batch(
@@ -638,8 +638,8 @@ def classify_intents_batch(
         if not q:
             continue
 
-        # ── 按流程图顺序检测意图 ──
-        classification = _LLMIntentDetector.detect(q)
+        # ── 按流程图顺序检测意图（附带对话历史）──
+        classification = _LLMIntentDetector.detect(q, conversation_context=conversation_context)
 
         results.append({
             "query": q,

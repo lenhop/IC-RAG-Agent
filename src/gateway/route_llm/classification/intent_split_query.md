@@ -4,6 +4,18 @@ Split the user query into distinct, independent sub-questions for intent classif
 
 Output ONLY valid JSON. No extra text, no explanation, no markdown.
 
+## CONVERSATION HISTORY
+{history}
+
+## REWRITTEN QUERY
+{rewritten_query}
+
+## INSTRUCTION
+Using the REWRITTEN QUERY as the primary input, split it into distinct, independent
+sub-questions. Use CONVERSATION HISTORY only to resolve references (e.g. "it",
+"that order", "the same product") to their concrete values.
+The split result must be based on the REWRITTEN QUERY.
+
 ## Output format
 
 ```json
