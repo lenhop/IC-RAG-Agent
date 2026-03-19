@@ -1,8 +1,25 @@
 """
-Keyword retrieval for intent classification (Layer 1).
+Keyword Retrieval — Public API Module (公共接口模块)
 
-Matches query against rules/keywords for strong-rule intents (e.g. SP-API, UDS).
-Encapsulates config loading, rule compilation, and match execution in one class.
+Architecture (强制):
+  keyword_retrieval.py = 公共接口模块（Layer 1 唯一入口），负责关键字/正则意图匹配
+  __init__.py         = 包入口，从本模块 re-export 公共 API
+
+  下游模块（gateway、classification 等）应通过本模块或 src.retrieval 包导入，
+  禁止直接依赖内部实现（_ 前缀方法与模块级 _* 常量）。
+
+Workflow:
+  Query → 加载/编译规则 → match(query) → 首个命中返回 KeywordMatchResult，否则 None
+
+Internal (not exported):
+  _SRC_ROOT, _DEFAULT_RULES_PATH     — 规则路径常量
+  _load_and_compile_rules            — 加载并编译规则
+  _default_sp_api_uds_rules          — 内置 SP-API/UDS 规则（正则）
+
+Public API (exported via __init__.py):
+  KeywordMatchResult                  — 匹配结果数据类（workflow, intent_name, confidence, source）
+  KeywordRetrieval                    — 主类；match(query) → Optional[KeywordMatchResult]
+  keyword_retrieve(query)             — 一次性便捷函数（测试/脚本用）
 """
 
 from __future__ import annotations
@@ -17,9 +34,16 @@ _SRC_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_RULES_PATH = _SRC_ROOT / "gateway" / "route_llm" / "classification"
 
 
+# ---------------------------------------------------------------------------
+# Public API — 公共接口（唯一对外入口，由 __init__.py re-export）
+#
+# 下游业务模块（gateway、classification、dispatcher 等）必须通过这些类/函数访问
+# Layer 1 关键字检索能力。
+# ---------------------------------------------------------------------------
+
 @dataclass
 class KeywordMatchResult:
-    """Result of a single keyword/regex match."""
+    """Result of a single keyword/regex match (part of public API)."""
 
     workflow: str
     intent_name: str
@@ -30,6 +54,8 @@ class KeywordMatchResult:
 class KeywordRetrieval:
     """
     Keyword and regex-based intent matcher for strong-rule workflows (SP-API, UDS).
+
+    Primary public entry point: ``match(query)``.
 
     Loads rules from config, compiles patterns, and returns the first matching
     workflow + intent. Used as Layer 1 before vector retrieval and LLM.
@@ -92,7 +118,8 @@ class KeywordRetrieval:
         return None
 
 
-# Convenience: module-level instance for tests
 def keyword_retrieve(query: str) -> Optional[KeywordMatchResult]:
-    """One-shot keyword retrieval using default config."""
+    """
+    Optional one-shot helper (tests / scripts). Prefer ``KeywordRetrieval`` for DI and tests.
+    """
     return KeywordRetrieval().match(query)

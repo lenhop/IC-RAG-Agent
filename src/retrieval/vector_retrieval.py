@@ -1,9 +1,26 @@
 """
-Vector retrieval for intent classification (Layer 2).
+Vector Retrieval — Public API Module (公共接口模块)
 
-Uses existing Chroma DB at data/chroma_db/intent_registry to retrieve
-top-K similar intents by embedding the query. Encapsulates connection,
-embed, and threshold filtering in one class.
+Architecture (强制):
+  vector_retrieval.py = 公共接口模块（Layer 2 唯一入口），负责 Chroma 向量检索
+  __init__.py         = 包入口，从本模块 re-export 公共 API
+
+  下游模块（gateway、classification 等）应通过本模块或 src.retrieval 包导入，
+  禁止直接依赖内部实现（_ensure_client、_embed_* 等）。
+
+Workflow:
+  Query → 连接 Chroma(intent_registry) → embed(query) → TopK 相似检索 → 阈值过滤 → List[VectorCandidate]
+
+Internal (not exported):
+  _PROJECT_ROOT, _DEFAULT_CHROMA_PATH, _DEFAULT_COLLECTION, _DEFAULT_TOP_K, _DEFAULT_THRESHOLD
+  _ensure_client      — 懒加载 Chroma 客户端与 collection
+  _embed_query        — 单条 query 向量化
+  _embed_via_ollama   — 调用 Ollama /api/embed
+
+Public API (exported via __init__.py):
+  VectorCandidate      — 单条检索结果（text, intent, workflow, score, metadata）
+  VectorRetrieval      — 主类；retrieve(query, top_k=..., score_threshold=...) → List[VectorCandidate]
+  vector_retrieve(...) — 一次性便捷函数（测试/脚本用）
 """
 
 from __future__ import annotations
@@ -21,9 +38,16 @@ _DEFAULT_TOP_K = 5
 _DEFAULT_THRESHOLD = 0.0  # No filtering by default; caller can set higher
 
 
+# ---------------------------------------------------------------------------
+# Public API — 公共接口（唯一对外入口，由 __init__.py re-export）
+#
+# 下游业务模块（gateway、classification、dispatcher 等）必须通过这些类/函数访问
+# Layer 2 向量检索能力。
+# ---------------------------------------------------------------------------
+
 @dataclass
 class VectorCandidate:
-    """Single candidate from vector retrieval."""
+    """Single candidate from vector retrieval (part of public API)."""
 
     text: str
     intent: str
@@ -35,6 +59,8 @@ class VectorCandidate:
 class VectorRetrieval:
     """
     Chroma-based vector retrieval over intent_registry.
+
+    Primary public entry point: ``retrieve(query, ...)``.
 
     Connects to local Chroma at chroma_path, embeds query (via backend from env),
     runs similarity search, and returns top-K candidates above threshold.
@@ -161,6 +187,8 @@ def vector_retrieve(
     chroma_path: Optional[Path] = None,
     top_k: int = _DEFAULT_TOP_K,
 ) -> List[VectorCandidate]:
-    """One-shot vector retrieval using default Chroma path."""
+    """
+    Optional one-shot helper (tests / scripts). Prefer ``VectorRetrieval`` for DI and tests.
+    """
     retriever = VectorRetrieval(chroma_path=chroma_path, top_k=top_k)
     return retriever.retrieve(query)

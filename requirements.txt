@@ -49,7 +49,8 @@ pydantic>=2.0.0
 PyYAML>=6.0.0
 plotly>=5.0.0
 pandas>=2.0.0
-numpy>=1.24.0
+# PyTorch/transformers require NumPy 1.x; NumPy 2.x causes gateway import crash
+numpy>=1.24.0,<2
 kaleido>=0.2.0
 
 # UDS Data Analysis
