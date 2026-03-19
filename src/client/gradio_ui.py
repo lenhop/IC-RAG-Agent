@@ -392,6 +392,8 @@ def _chat_handler(
     rewrite_ms: Optional[int] = None
     rewrite_backend_value = "none"
     rewrite_message: Optional[str] = None
+    # Sum of clarification + rewrite + classification (ms) for UI trace after full query.
+    route_llm_total_ms: Optional[int] = None
 
     # In rewrite-only test mode, always run rewrite (recommended for this mode).
     effective_rewrite_enable = rewrite_enable or REWRITE_ONLY_TEST_MODE
@@ -492,6 +494,40 @@ def _chat_handler(
                 )
             )
             lines_parts.append("</div>")
+            # Aggregate Route LLM wall time: treat missing segments as 0 so total still displays.
+            clar_ms_int = 0
+            if clarification_time_raw is not None:
+                try:
+                    clar_ms_int = int(clarification_time_raw)
+                except (TypeError, ValueError):
+                    clar_ms_int = 0
+            rewrite_ms_int = 0
+            if rewrite_ms is not None:
+                try:
+                    rewrite_ms_int = int(rewrite_ms)
+                except (TypeError, ValueError):
+                    rewrite_ms_int = 0
+            class_ms_int = 0
+            if classification_ms is not None:
+                try:
+                    class_ms_int = int(classification_ms)
+                except (TypeError, ValueError):
+                    class_ms_int = 0
+            route_llm_total_ms = clar_ms_int + rewrite_ms_int + class_ms_int
+            lines_parts.extend(
+                [
+                    "",
+                    "<div style=\"border: 1px solid #d1d5db; border-radius: 10px; padding: 10px 12px; margin: 8px 0; background-color: #f9fafb;\">",
+                    "<h4 style=\"margin: 0 0 8px 0;\">4. Route LLM total time</h4>",
+                    "<ul style=\"margin: 0; padding-left: 20px;\">",
+                    f"<li>Clarification: {clar_ms_int} ms</li>",
+                    f"<li>Rewritten: {rewrite_ms_int} ms</li>",
+                    f"<li>Classification: {class_ms_int} ms</li>",
+                    f"<li><strong>Total (1+2+3): {route_llm_total_ms} ms</strong></li>",
+                    "</ul>",
+                    "</div>",
+                ]
+            )
             rewrite_message = "\n".join(lines_parts)
             # Include execution plan when available (planner mode)
             plan = rewrite_result.get("plan")
@@ -599,6 +635,10 @@ def _chat_handler(
         f"- Rewrite: `{rewrite_backend_value}` in `{rewrite_ms if rewrite_ms is not None else 0} ms`",
         f"- Route Source: `{route_source}` | Confidence: `{route_conf}`",
     ]
+    if route_llm_total_ms is not None:
+        trace_lines.append(
+            f"- Route LLM total (Clarification + Rewritten + Classification): `{route_llm_total_ms} ms`"
+        )
     yield f"{answer}\n" + "\n".join(trace_lines)
 
 

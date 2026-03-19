@@ -25,13 +25,18 @@ Public API (exported via __init__.py):
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 # Default rule source (can be overridden by env or constructor)
 _SRC_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_RULES_PATH = _SRC_ROOT / "gateway" / "route_llm" / "classification"
+_AMAZON_INTENTS_CSV = _DEFAULT_RULES_PATH / "amazon_intents.csv"
+
+# Workflow order for parallel detection: sp_api -> uds -> amazon_docs
+_WORKFLOW_ORDER = ("sp_api", "uds", "amazon_docs")
 
 
 # ---------------------------------------------------------------------------
@@ -71,28 +76,100 @@ class KeywordRetrieval:
         """
         self._rules_path = rules_path or _DEFAULT_RULES_PATH
         self._compiled: List[tuple] = []  # (pattern, workflow, intent_name)
+        self._amazon_keywords_cache: Optional[List[str]] = None
         self._load_and_compile_rules()
 
     def _load_and_compile_rules(self) -> None:
         """Load rule config and compile regex/keyword lists. Ensures logic cohesion."""
-        # Placeholder: no external file dependency by default; add CSV/YAML later.
-        self._compiled = self._default_sp_api_uds_rules()
+        all_rules: List[tuple] = []
+        for wf in _WORKFLOW_ORDER:
+            all_rules.extend(self._get_rules_for_workflow(wf))
+        self._compiled = all_rules
 
-    def _default_sp_api_uds_rules(self) -> List[tuple]:
-        """Default in-code rules for SP-API and UDS (order: SP-API first, then UDS)."""
-        rules: List[tuple] = []
-        # SP-API: order ID pattern + "latest/current" intent
-        order_id_re = re.compile(r"\d{3}-\d{7}-\d{7}", re.IGNORECASE)
-        latest_re = re.compile(r"\b(latest|current|real-time|最新|当前)\b", re.IGNORECASE)
-        # UDS: order/product/inventory without "latest"
-        uds_order_re = re.compile(r"\b(order|orders|订单)\b", re.IGNORECASE)
-        uds_inv_re = re.compile(r"\b(inventory|stock|库存)\b", re.IGNORECASE)
-        # Store as (pattern_or_func, workflow, intent_name); simplified as (re.Pattern, str, str)
-        rules.append((order_id_re, "sp_api", "get_order_status"))
-        rules.append((latest_re, "sp_api", "realtime_check"))
-        rules.append((uds_order_re, "uds", "order_history"))
-        rules.append((uds_inv_re, "uds", "inventory"))
-        return rules
+    def _get_rules_for_workflow(self, workflow: str) -> List[tuple]:
+        """Return rules for a single workflow. Used by detect_parallel for per-workflow checks."""
+        if workflow == "sp_api":
+            order_id_re = re.compile(r"\d{3}-\d{7}-\d{7}", re.IGNORECASE)
+            latest_re = re.compile(r"\b(latest|current|real-time|最新|当前)\b", re.IGNORECASE)
+            return [
+                (order_id_re, "sp_api", "get_order_status"),
+                (latest_re, "sp_api", "realtime_check"),
+            ]
+        if workflow == "uds":
+            uds_order_re = re.compile(r"\b(order|orders|订单)\b", re.IGNORECASE)
+            uds_inv_re = re.compile(r"\b(inventory|stock|库存)\b", re.IGNORECASE)
+            return [
+                (uds_order_re, "uds", "order_history"),
+                (uds_inv_re, "uds", "inventory"),
+            ]
+        if workflow == "amazon_docs":
+            keywords = self._load_amazon_docs_keywords()
+            return [(kw, "amazon_docs", "amazon_business") for kw in keywords]
+        return []
+
+    def _load_amazon_docs_keywords(self) -> List[str]:
+        """Load Amazon Business keywords from amazon_intents.csv (skip header). Cached."""
+        if self._amazon_keywords_cache is not None:
+            return self._amazon_keywords_cache
+        if not _AMAZON_INTENTS_CSV.is_file():
+            self._amazon_keywords_cache = []
+            return []
+        try:
+            lines = _AMAZON_INTENTS_CSV.read_text(encoding="utf-8").splitlines()
+            # First line is header "keyword"
+            self._amazon_keywords_cache = [line.strip() for line in lines[1:] if line.strip()]
+            return self._amazon_keywords_cache
+        except Exception:
+            self._amazon_keywords_cache = []
+            return []
+
+    def _match_workflow(self, query: str, workflow: str) -> Optional[KeywordMatchResult]:
+        """Check if query matches rules for a single workflow. Used by detect_parallel."""
+        if not query or not query.strip():
+            return None
+        q = query.strip()
+        rules = self._get_rules_for_workflow(workflow)
+        for rule in rules:
+            pattern_or_str, wf, intent_name = rule
+            if isinstance(pattern_or_str, re.Pattern):
+                if pattern_or_str.search(q):
+                    return KeywordMatchResult(
+                        workflow=wf,
+                        intent_name=intent_name,
+                        confidence="high",
+                        source="keyword",
+                    )
+            elif isinstance(pattern_or_str, str):
+                if pattern_or_str.lower() in q.lower():
+                    return KeywordMatchResult(
+                        workflow=wf,
+                        intent_name=intent_name,
+                        confidence="high",
+                        source="keyword",
+                    )
+        return None
+
+    def detect_parallel(self, query: str) -> Optional[KeywordMatchResult]:
+        """
+        Run parallel detection for sp_api, uds, amazon_docs. Return first non-None in order.
+
+        Used by ClassificationImplementMethod.keyword_classification_method.
+        """
+        if not query or not query.strip():
+            return None
+        step_results: Dict[str, Optional[KeywordMatchResult]] = {}
+
+        def _run_step(wf: str) -> None:
+            step_results[wf] = self._match_workflow(query, wf)
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            list(executor.map(_run_step, _WORKFLOW_ORDER))
+
+        for wf in _WORKFLOW_ORDER:
+            r = step_results.get(wf)
+            if r is not None:
+                return r
+        return None
 
     def match(self, query: str) -> Optional[KeywordMatchResult]:
         """
@@ -107,8 +184,13 @@ class KeywordRetrieval:
         if not query or not query.strip():
             return None
         q = query.strip()
-        for pattern, workflow, intent_name in self._compiled:
-            if isinstance(pattern, re.Pattern) and pattern.search(q):
+        for pattern_or_str, workflow, intent_name in self._compiled:
+            matched = False
+            if isinstance(pattern_or_str, re.Pattern):
+                matched = bool(pattern_or_str.search(q))
+            elif isinstance(pattern_or_str, str):
+                matched = pattern_or_str.lower() in q.lower()
+            if matched:
                 return KeywordMatchResult(
                     workflow=workflow,
                     intent_name=intent_name,

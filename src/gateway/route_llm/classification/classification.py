@@ -28,9 +28,10 @@ Approach:
 
 Internal classes (not exported):
   _RuntimeConfig     — 运行时配置（LLM 后端选择等）
-  _IntentSplitter    — LLM 多意图拆分（失败时原路返回 query）
-  _LLMIntentDetector — 基于 prompt + LLM 的串行意图检测器
+  _LLMIntentDetector — 基于 prompt + LLM 的并行意图检测器（三 workflow）
   _IntentValidator   — 必填字段校验 & 追问生成
+
+Intent split 实现位于 implement_methods.IntentSplitMethod（由 split_intents 委托调用）。
 
 Public API (exported via __init__.py):
   split_intents(query)                          → List[str]
@@ -151,129 +152,6 @@ class _RuntimeConfig:
     def get_intent_detect_backend() -> str:
         """返回意图检测使用的 LLM 后端（'ollama' 或 'deepseek'）。"""
         return (os.getenv("GATEWAY_INTENT_DETECT_BACKEND") or "ollama").strip().lower()
-
-
-class _IntentSplitter:
-    """多意图拆分器：使用 LLM 拆分，失败时原路返回原始 query（不做启发式切分）。"""
-
-    @classmethod
-    def split(cls, query: str, conversation_context: Optional[str] = None) -> List[str]:
-        """拆分用户查询为多个独立子问题。
-
-        仅使用 LLM（Ollama 或 DeepSeek）解析；若 LLM 调用失败或返回无效结果，
-        则不切分，直接返回 [原始 query]。
-
-        Args:
-            query: 经过 rewrite 的用户查询文本。
-            conversation_context: 可选的对话历史，注入到 prompt {history} 占位符。
-        """
-        if not query or not query.strip():
-            return []
-
-        prompt_template = load_prompt("classification/intent_split_query")
-        history_text = (conversation_context or "").strip() or "(no conversation history)"
-        prompt = (
-            prompt_template
-            .replace("{history}", history_text)
-            .replace("{rewritten_query}", query.strip())
-        )
-        text = ""
-
-        if (
-            _RuntimeConfig.get_intent_split_backend() == "deepseek"
-            and (os.getenv("DEEPSEEK_API_KEY") or "").strip()
-        ):
-            try:
-                text = DeepSeekChat().complete(
-                    system_prompt="You are an intent splitter. Output ONLY valid JSON.",
-                    user_content=prompt,
-                    max_tokens=512,
-                )
-            except Exception as exc:
-                logger.warning("Intent split DeepSeek failed: %s; returning original query", exc)
-                return [query.strip()]
-        else:
-            try:
-                text = OllamaClient().generate(prompt, empty_fallback="")
-            except Exception as exc:
-                logger.warning("Intent split LLM call failed: %s; returning original query", exc)
-                return [query.strip()]
-
-        if not text:
-            return [query.strip()]
-
-        raw = cls._strip_markdown_fences(text)
-        parsed = cls._parse_json_response(raw)
-        if parsed is None:
-            return [query.strip()]
-
-        intents = parsed.get("intents")
-        if not isinstance(intents, list) or not intents:
-            return [query.strip()]
-
-        result = cls._dedupe_intents(intents)
-        if not result:
-            return [query.strip()]
-
-        cls._log_split_result(query, result)
-        return result
-
-    @staticmethod
-    def _strip_markdown_fences(text: str) -> str:
-        raw = text.strip()
-        if raw.startswith("```"):
-            lines = raw.splitlines()
-            if len(lines) >= 2 and lines[-1].strip() == "```":
-                return "\n".join(lines[1:-1]).strip()
-        return raw
-
-    @staticmethod
-    def _parse_json_response(raw: str) -> Optional[Dict[str, object]]:
-        try:
-            return json.loads(raw)
-        except ValueError:
-            start = raw.find("{")
-            end = raw.rfind("}")
-            if start >= 0 and end > start:
-                try:
-                    return json.loads(raw[start : end + 1])
-                except ValueError:
-                    logger.warning("Intent split JSON parse failed; heuristic fallback")
-                    return None
-            logger.warning("Intent split no JSON found; heuristic fallback")
-            return None
-
-    @staticmethod
-    def _dedupe_intents(intents: List[object]) -> List[str]:
-        seen: set[str] = set()
-        result: List[str] = []
-        for item in intents:
-            if not isinstance(item, str):
-                continue
-            cleaned = item.strip()
-            lowered = cleaned.lower()
-            if cleaned and lowered not in seen:
-                seen.add(lowered)
-                result.append(cleaned)
-        return result
-
-    @staticmethod
-    def _log_split_result(query: str, result: List[str]) -> None:
-        if not _gateway_logger:
-            return
-        try:
-            _gateway_logger.log_runtime(
-                event_name="intent_split_completed",
-                stage="intent_classification",
-                message="split_intents completed",
-                status="success",
-                workflow="intent_classification",
-                query_raw=query,
-                intent_list=result,
-                metadata={"intent_count": len(result)},
-            )
-        except Exception:
-            pass
 
 
 class _LLMIntentDetector:
@@ -611,6 +489,9 @@ class _IntentValidator:
 # 所有意图分类、拆分、验证能力。
 # ---------------------------------------------------------------------------
 
+# Lazy import to avoid circular dependency (implement_methods imports from this module)
+from .implement_methods import ClassificationImplementMethod, IntentSplitMethod
+
 
 def split_intents(query: str, conversation_context: Optional[str] = None) -> List[str]:
     """将重写后的查询拆分为单意图子问题列表。
@@ -622,7 +503,7 @@ def split_intents(query: str, conversation_context: Optional[str] = None) -> Lis
     Returns:
         拆分后的子问题列表；若 LLM 调用失败则返回原始查询的单元素列表。
     """
-    return _IntentSplitter.split(query, conversation_context=conversation_context)
+    return IntentSplitMethod.split(query, conversation_context=conversation_context)
 
 
 def classify_intent(
@@ -644,17 +525,22 @@ def classify_intent(
     Returns:
         IntentResult，包含 workflow, intent_name, confidence, source。
     """
-    return _LLMIntentDetector.detect(query, conversation_context=conversation_context)
+    return ClassificationImplementMethod().detect(
+        query, conversation_context=conversation_context
+    )
+
+
+# Framework: at most 3 intent clauses classified in parallel per batch.
+_INTENT_CLASSIFY_PARALLEL_CHUNK = 3
 
 
 def classify_intents_batch(
     intents: List[str],
     conversation_context: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """对拆分后的意图列表逐一分类，返回合并后的结果。
+    """对拆分后的意图列表分类，返回合并后的结果（顺序与输入中非空子句一致）。
 
-    完整实现流程图中 Intent Classification 框内的：
-      loop through intent list → SP-API / UDS / Amazon Business / General → Merge
+    每条子句内部：keyword → vector → LLM 串行短路；子句之间按批并行，每批最多 3 条。
 
     Args:
         intents: split_intents() 返回的子问题列表。
@@ -670,16 +556,20 @@ def classify_intents_batch(
         - required_fields: 空列表（当前无 registry 数据源）
         - clarification_template: 空字符串
     """
+    # (original_index, stripped_query) preserves order across parallel batches.
+    pairs: List[Tuple[int, str]] = [
+        (i, (intent or "").strip())
+        for i, intent in enumerate(intents)
+        if (intent or "").strip()
+    ]
     results: List[Dict[str, Any]] = []
 
-    for i, intent in enumerate(intents):
-        q = (intent or "").strip()
-        if not q:
-            continue
-
-        # ── 按流程图顺序检测意图（附带对话历史）──
+    def _classify_one(pair: Tuple[int, str]) -> Tuple[int, Dict[str, Any]]:
+        i, q = pair
         intent_start = time.perf_counter()
-        classification = _LLMIntentDetector.detect(q, conversation_context=conversation_context)
+        classification = ClassificationImplementMethod().detect(
+            q, conversation_context=conversation_context
+        )
         intent_elapsed_ms = int((time.perf_counter() - intent_start) * 1000)
         q_preview = (q[:60] + "…") if len(q) > 60 else q
         logger.info(
@@ -689,7 +579,6 @@ def classify_intents_batch(
             classification.workflow,
             intent_elapsed_ms,
         )
-
         item: Dict[str, Any] = {
             "query": q,
             "workflow": classification.workflow,
@@ -703,7 +592,21 @@ def classify_intents_batch(
             item["intent_elapsed_ms"] = classification.intent_elapsed_ms
         if classification.step_timings:
             item["step_timings"] = classification.step_timings
-        results.append(item)
+        return i, item
+
+    for batch_start in range(0, len(pairs), _INTENT_CLASSIFY_PARALLEL_CHUNK):
+        chunk = pairs[batch_start : batch_start + _INTENT_CLASSIFY_PARALLEL_CHUNK]
+        chunk_out: List[Tuple[int, Dict[str, Any]]] = []
+        with ThreadPoolExecutor(max_workers=_INTENT_CLASSIFY_PARALLEL_CHUNK) as executor:
+            futures = [executor.submit(_classify_one, p) for p in chunk]
+            for fut in futures:
+                try:
+                    chunk_out.append(fut.result())
+                except Exception as exc:
+                    logger.warning("Intent batch classify failed: %s", exc)
+        chunk_out.sort(key=lambda x: x[0])
+        for _, item in chunk_out:
+            results.append(item)
 
     return results
 
