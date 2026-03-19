@@ -47,6 +47,7 @@ import logging
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -276,21 +277,21 @@ class _IntentSplitter:
 
 
 class _LLMIntentDetector:
-    """基于 prompt + LLM 的串行意图检测器。
+    """基于 prompt + LLM 的并行意图检测器。
 
-    按照流程图顺序依次执行检测步骤：
+    按照流程图顺序并行执行三个检测步骤：
       1. SP-API Intent?   → sp_api_prompts.md
       2. UDS Intent?      → uds_prompts.md
       3. Amazon Business?  → amazon_prompts.md
       4. 全部不匹配      → general
 
-    每一步将关键词和示例句子写在 prompt 中，喂给 LLM 做 yes/no 判断。
-    一旦匹配即返回，不继续后续步骤。
+    三个步骤并行执行，完成后按 sp_api -> uds -> amazon_docs 顺序取第一个 Yes。
+    若全是 No，返回 general。
     """
 
     @classmethod
     def detect(cls, query: str, conversation_context: Optional[str] = None) -> IntentResult:
-        """对单条查询按流程图顺序检测意图类型。
+        """对单条查询并行检测意图类型，按 sp_api -> uds -> amazon_docs 取第一个 Yes。
 
         Args:
             query: 待分类的子查询。
@@ -309,35 +310,50 @@ class _LLMIntentDetector:
 
         stripped = query.strip()
         step_timings: List[Dict[str, Any]] = []
-        total_elapsed_ms = 0
+        step_results: List[Tuple[Optional[IntentResult], int]] = []
 
-        # ── 按流程图顺序逐步检测 ──
-        for step in _DETECTION_STEPS:
-            try:
-                result, step_ms = cls._run_detection_step(
+        # ── 并行执行三个检测步骤 ──
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = [
+                executor.submit(
+                    cls._run_detection_step,
                     query=stripped,
                     prompt_name=step["prompt_name"],
                     target_workflow=step["workflow"],
                     conversation_context=conversation_context,
                 )
-                step_timings.append({
-                    "step": step["prompt_name"],
-                    "workflow": step["workflow"],
-                    "ms": step_ms,
-                })
-                total_elapsed_ms += step_ms
-                if result is not None:
-                    result.intent_elapsed_ms = total_elapsed_ms
-                    result.step_timings = step_timings
-                    cls._log_detection_result(stripped, result)
-                    return result
-            except Exception as exc:
-                logger.warning(
-                    "Intent detection step '%s' failed: %s; continuing to next step",
-                    step["prompt_name"],
-                    exc,
-                )
-                continue
+                for step in _DETECTION_STEPS
+            ]
+            for step, future in zip(_DETECTION_STEPS, futures):
+                try:
+                    result, step_ms = future.result()
+                    step_timings.append({
+                        "step": step["prompt_name"],
+                        "workflow": step["workflow"],
+                        "ms": step_ms,
+                    })
+                    step_results.append((result, step_ms))
+                except Exception as exc:
+                    logger.warning(
+                        "Intent detection step '%s' failed: %s; treating as None",
+                        step["prompt_name"],
+                        exc,
+                    )
+                    step_timings.append({
+                        "step": step["prompt_name"],
+                        "workflow": step["workflow"],
+                        "ms": 0,
+                    })
+                    step_results.append((None, 0))
+
+        # ── 按 sp_api -> uds -> amazon_docs 取第一个 Yes ──
+        total_elapsed_ms = max((r[1] for r in step_results), default=0)
+        for result, _ in step_results:
+            if result is not None:
+                result.intent_elapsed_ms = total_elapsed_ms
+                result.step_timings = step_timings
+                cls._log_detection_result(stripped, result)
+                return result
 
         # ── 全部不匹配 → Mark as General ──
         general_result = IntentResult(
