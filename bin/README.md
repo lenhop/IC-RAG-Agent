@@ -45,7 +45,7 @@ This folder contains executable shell entrypoints for local runtime and operatio
 ## ChromaDB / Vector Registry
 
 - `load_vector_registry.sh`
-  - Loads `vector_intent_registry.csv` into **local** ChromaDB only (`VECTOR_CHROMA_PATH`). Requires Ollama for embeddings.
+  - Loads `vector_intent_registry.csv` (columns `text`, `intent`; optional `workflow`) into **local** ChromaDB only (`VECTOR_CHROMA_PATH`). Requires Ollama for embeddings.
   - Usage:
     - `./bin/load_vector_registry.sh`
     - `OLLAMA_BASE_URL=http://${CH_HOST}:11434 ./bin/load_vector_registry.sh` — use remote Ollama when local Ollama is not running

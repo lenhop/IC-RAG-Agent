@@ -2,11 +2,13 @@
 Intent classification implementation methods.
 
 Architecture:
-  IntentSplitMethod — LLM-based multi-intent split (moved from classification._IntentSplitter).
-  ClassificationImplementMethod — keyword then vector then LLM (serial short-circuit per framework).
+  IntentResult — classification result dataclass (re-exported via classification facade).
+  ClassificationIntentVectorStore — cached VectorRetrieval + parallel LLM intent detection (layer 3).
+  IntentSplitMethod — LLM multi-intent split.
+  ClassificationImplementMethod — keyword then vector then LLM (serial short-circuit).
 
-Internal (not exported):
-  Used by classification.py public API (split_intents, classify_intent, classify_intents_batch).
+This module does not import classification.py (avoids circular dependency); classification
+imports from here and re-exports public types and API wrappers.
 """
 
 from __future__ import annotations
@@ -15,16 +17,17 @@ import json
 import logging
 import os
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import ClassVar, Dict, List, Optional, Tuple
+from typing import Any, ClassVar, Dict, List, Optional, Tuple
 
 from ...prompt_loader import load_prompt
 from src.llm.call_deepseek import DeepSeekChat
 from src.llm.call_ollama import OllamaClient
 from src.retrieval.keyword_retrieval import KeywordRetrieval, LoadKeywordRule
 from src.retrieval.vector_retrieval import VectorRetrieval
-
-from .classification import IntentResult, _LLMIntentDetector
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +38,50 @@ try:
     _split_gateway_logger = get_logger_facade()
 except Exception:
     _split_gateway_logger = None
+
+
+# ---------------------------------------------------------------------------
+# Intent result model (LLM parallel detection lives on ClassificationIntentVectorStore)
+# ---------------------------------------------------------------------------
+
+_amazon_examples_cache: str | None = None
+
+
+def _load_amazon_intent_examples() -> str:
+    """Load amazon_intents.csv beside this package; return markdown bullet list for prompts."""
+    global _amazon_examples_cache
+    if _amazon_examples_cache is not None:
+        return _amazon_examples_cache
+
+    csv_path = Path(__file__).resolve().parent / "amazon_intents.csv"
+    try:
+        lines = csv_path.read_text(encoding="utf-8").splitlines()
+        keywords = [line.strip() for line in lines[1:] if line.strip()]
+        _amazon_examples_cache = "\n".join(f"- {kw}" for kw in keywords)
+    except Exception as exc:
+        logger.warning("Failed to load amazon_intents.csv: %s; using empty examples", exc)
+        _amazon_examples_cache = "(no examples available)"
+
+    return _amazon_examples_cache
+
+
+@dataclass
+class IntentResult:
+    """Intent classification result (keyword / vector / LLM layers)."""
+
+    intent_name: str
+    workflow: str
+    confidence: str = "medium"
+    source: str = "llm"
+    required_fields: List[str] = field(default_factory=list)
+    clarification_template: str = ""
+    intent_elapsed_ms: Optional[int] = None
+    step_timings: Optional[List[Dict[str, Any]]] = None
+
+
+def _intent_detect_backend() -> str:
+    """LLM backend for parallel intent detection steps (ollama or deepseek)."""
+    return (os.getenv("GATEWAY_INTENT_DETECT_BACKEND") or "ollama").strip().lower()
 
 
 def _intent_split_backend() -> str:
@@ -74,13 +121,22 @@ _DEFAULT_INTENT_REGISTRY_CHROMA = _IC_PROJECT_ROOT / "data" / "chroma_db" / "int
 
 class ClassificationIntentVectorStore:
     """
-    Builds VectorRetrieval for intent-registry Chroma once (class-level cache).
+    Intent-registry vector layer and parallel LLM intent detection (classification layer 3).
 
-    Resolves CHROMA_INTENT_REGISTRY_PATH, CHROMA_INTENT_REGISTRY_COLLECTION,
-    INTENT_REGISTRY_EMBED_BACKEND here — not inside vector_retrieval public API.
+    Caches VectorRetrieval for Chroma (path/collection/embed from env) and exposes
+    llm_detect() for sp_api / uds / amazon_docs parallel prompts (first match wins).
+    Naming reflects historical vector focus; LLM detection is co-located to avoid a
+    separate singleton for gateway wiring.
     """
 
     _vector_retrieval: ClassVar[Optional[VectorRetrieval]] = None
+
+    # Parallel LLM steps (first affirmative JSON wins); merged from former _LLMIntentDetector.
+    _LLM_DETECTION_STEPS: ClassVar[List[Dict[str, str]]] = [
+        {"prompt_name": "classification/sp_api_prompts", "workflow": "sp_api"},
+        {"prompt_name": "classification/uds_prompts", "workflow": "uds"},
+        {"prompt_name": "classification/amazon_prompts", "workflow": "amazon_docs"},
+    ]
 
     @classmethod
     def _resolve_chroma_path(cls) -> Path:
@@ -117,6 +173,210 @@ class ClassificationIntentVectorStore:
         if cls._vector_retrieval is None:
             raise RuntimeError("ClassificationIntentVectorStore failed to build VectorRetrieval")
         return cls._vector_retrieval
+
+    @classmethod
+    def llm_detect(
+        cls, query: str, conversation_context: Optional[str] = None
+    ) -> IntentResult:
+        """
+        Parallel prompt + LLM detector: sp_api, uds, amazon_docs; first Yes wins, else general.
+
+        Args:
+            query: User query text.
+            conversation_context: Optional history for prompt {history} placeholder.
+
+        Returns:
+            IntentResult with source llm or fallback general on empty query.
+        """
+        if not query or not query.strip():
+            return IntentResult(
+                intent_name="general",
+                workflow="general",
+                confidence="low",
+                source="fallback",
+            )
+
+        stripped = query.strip()
+        step_timings: List[Dict[str, Any]] = []
+        step_results: List[Tuple[Optional[IntentResult], int]] = []
+
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = [
+                executor.submit(
+                    cls._run_detection_step,
+                    query=stripped,
+                    prompt_name=step["prompt_name"],
+                    target_workflow=step["workflow"],
+                    conversation_context=conversation_context,
+                )
+                for step in cls._LLM_DETECTION_STEPS
+            ]
+            for step, future in zip(cls._LLM_DETECTION_STEPS, futures):
+                try:
+                    result, step_ms = future.result()
+                    step_timings.append(
+                        {
+                            "step": step["prompt_name"],
+                            "workflow": step["workflow"],
+                            "ms": step_ms,
+                        }
+                    )
+                    step_results.append((result, step_ms))
+                except Exception as exc:
+                    logger.warning(
+                        "Intent detection step '%s' failed: %s; treating as None",
+                        step["prompt_name"],
+                        exc,
+                    )
+                    step_timings.append(
+                        {
+                            "step": step["prompt_name"],
+                            "workflow": step["workflow"],
+                            "ms": 0,
+                        }
+                    )
+                    step_results.append((None, 0))
+
+        total_elapsed_ms = max((r[1] for r in step_results), default=0)
+        for result, _ in step_results:
+            if result is not None:
+                result.intent_elapsed_ms = total_elapsed_ms
+                result.step_timings = step_timings
+                cls._log_detection_result(stripped, result)
+                return result
+
+        general_result = IntentResult(
+            intent_name="general",
+            workflow="general",
+            confidence="low",
+            source="llm",
+            intent_elapsed_ms=total_elapsed_ms,
+            step_timings=step_timings if step_timings else None,
+        )
+        cls._log_detection_result(stripped, general_result)
+        return general_result
+
+    @classmethod
+    def _run_detection_step(
+        cls,
+        query: str,
+        prompt_name: str,
+        target_workflow: str,
+        conversation_context: Optional[str] = None,
+    ) -> Tuple[Optional[IntentResult], int]:
+        """Run one detection prompt; returns (IntentResult or None, elapsed ms)."""
+        prompt_template = load_prompt(prompt_name)
+        history_text = (conversation_context or "").strip() or "(no conversation history)"
+        prompt_text = prompt_template.replace("{history}", history_text).replace(
+            "{query}", query
+        )
+        if "{examples}" in prompt_text:
+            prompt_text = prompt_text.replace(
+                "{examples}", _load_amazon_intent_examples()
+            )
+
+        step_start = time.perf_counter()
+        response_text = cls._call_llm(prompt_text)
+        step_elapsed_ms = int((time.perf_counter() - step_start) * 1000)
+        query_preview = (query[:50] + "...") if len(query) > 50 else query
+        logger.info(
+            "[Perf] intent_classification step %s (workflow=%s) query=%r: %d ms",
+            prompt_name,
+            target_workflow,
+            query_preview,
+            step_elapsed_ms,
+        )
+        if not response_text:
+            return None, step_elapsed_ms
+
+        parsed = cls._parse_llm_response(response_text)
+        if parsed is None:
+            return None, step_elapsed_ms
+
+        match_value = parsed.get("match")
+        if match_value is None:
+            result_str = str(parsed.get("result", "")).strip().lower()
+            match_value = result_str in ("yes", "true", "1")
+        if not match_value:
+            return None, step_elapsed_ms
+
+        intent_name = target_workflow
+        confidence = parsed.get("confidence", "medium") or "medium"
+
+        return (
+            IntentResult(
+                intent_name=intent_name,
+                workflow=target_workflow,
+                confidence=confidence,
+                source="llm",
+            ),
+            step_elapsed_ms,
+        )
+
+    @classmethod
+    def _call_llm(cls, prompt: str) -> str:
+        """Route to DeepSeek or Ollama based on GATEWAY_INTENT_DETECT_BACKEND / keys."""
+        backend = _intent_detect_backend()
+
+        if backend == "deepseek" and (os.getenv("DEEPSEEK_API_KEY") or "").strip():
+            try:
+                return DeepSeekChat().complete(
+                    system_prompt="You are an intent classifier. Output ONLY valid JSON.",
+                    user_content=prompt,
+                    max_tokens=256,
+                )
+            except Exception as exc:
+                logger.warning("Intent detect DeepSeek failed: %s; trying Ollama", exc)
+
+        try:
+            return OllamaClient().generate(prompt, empty_fallback="")
+        except Exception as exc:
+            logger.warning("Intent detect Ollama failed: %s", exc)
+            return ""
+
+    @staticmethod
+    def _parse_llm_response(text: str) -> Optional[Dict[str, Any]]:
+        """Parse JSON from LLM output; strip markdown fences if present."""
+        raw = text.strip()
+        if raw.startswith("```"):
+            lines = raw.splitlines()
+            if len(lines) >= 2 and lines[-1].strip() == "```":
+                raw = "\n".join(lines[1:-1]).strip()
+
+        try:
+            return json.loads(raw)
+        except ValueError:
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start >= 0 and end > start:
+                try:
+                    return json.loads(raw[start : end + 1])
+                except ValueError:
+                    pass
+            logger.debug("Intent detect JSON parse failed: %s", raw[:200])
+            return None
+
+    @staticmethod
+    def _log_detection_result(query: str, result: IntentResult) -> None:
+        """Best-effort structured log for resolved intent (no raise on failure)."""
+        if not _split_gateway_logger:
+            return
+        try:
+            _split_gateway_logger.log_runtime(
+                event_name="intent_classification_resolved",
+                stage="intent_classification",
+                message="classify_intent resolved",
+                status="success",
+                workflow=result.workflow,
+                query_raw=query,
+                metadata={
+                    "intent_name": result.intent_name,
+                    "source": result.source,
+                    "confidence": result.confidence,
+                },
+            )
+        except Exception:
+            pass
 
 
 class ClassificationKeywordRuleStore:
@@ -298,11 +558,6 @@ class ClassificationImplementMethod:
     If all miss through LLM, workflow general (generic knowledge).
     """
 
-    @classmethod
-    def _get_keyword_retrieval(cls) -> KeywordRetrieval:
-        """Keyword rules loaded once in ClassificationKeywordRuleStore."""
-        return ClassificationKeywordRuleStore.get_keyword_retrieval()
-
     def keyword_classification_method(
         self, query: str, context: Optional[str]
     ) -> Optional[IntentResult]:
@@ -313,7 +568,9 @@ class ClassificationImplementMethod:
             return None
         if not query or not query.strip():
             return None
-        result = self._get_keyword_retrieval().match(query.strip())
+        result = ClassificationKeywordRuleStore.get_keyword_retrieval().match(
+            query.strip()
+        )
         if result is None:
             return None
         return IntentResult(
@@ -322,11 +579,6 @@ class ClassificationImplementMethod:
             confidence=result.confidence,
             source="keyword",
         )
-
-    @classmethod
-    def _get_vector_retrieval(cls) -> VectorRetrieval:
-        """Intent-registry store configured in ClassificationIntentVectorStore."""
-        return ClassificationIntentVectorStore.get_vector_retrieval()
 
     def vector_classification_method(
         self, query: str, context: Optional[str]
@@ -340,7 +592,7 @@ class ClassificationImplementMethod:
         if not query or not query.strip():
             return None
         try:
-            candidates = self._get_vector_retrieval().retrieve(
+            candidates = ClassificationIntentVectorStore.get_vector_retrieval().retrieve(
                 query.strip(),
                 top_k=1,
                 score_threshold=_vector_threshold(),
@@ -361,10 +613,12 @@ class ClassificationImplementMethod:
         self, query: str, context: Optional[str]
     ) -> IntentResult:
         """
-        Third layer: Prompt + LLM. Reuses _LLMIntentDetector.detect().
+        Third layer: Prompt + LLM via ClassificationIntentVectorStore.llm_detect().
         Returns general when sp_api/uds/amazon_docs all miss.
         """
-        return _LLMIntentDetector.detect(query, conversation_context=context)
+        return ClassificationIntentVectorStore.llm_detect(
+            query, conversation_context=context
+        )
 
     def detect(
         self, query: str, conversation_context: Optional[str] = None

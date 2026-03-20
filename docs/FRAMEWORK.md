@@ -398,7 +398,7 @@ flowchart TB
 
 | Block | Meaning |
 |-------|--------|
-| **Sources** | PDFs for RAG chunks; CSV rows (`text`, `intent`, `workflow`) for routing examples. |
+| **Sources** | PDFs for RAG chunks; intent registry CSV with columns `text`, `intent` (optional third `workflow`; if omitted, workflow stored as `intent`). |
 | **Embedding** | **Ollama only**, **`all-minilm:latest`** (local download); same model for document chunks and intent rows. |
 | **Chroma** | One SQLite + segment dir per persist path; collections are logical names inside each path. |
 | **Consumers** | RAG reads `documents`; gateway intent classifier reads `intent_registry` when vector path is on. |
@@ -457,10 +457,13 @@ src/rag/
   ingest_pipeline.py
   embeddings.py
 
+src/gateway/route_llm/classification/classification_data/
+  vector_intent_registry.csv   # default intent CSV in code (text, intent; optional workflow)
+
 data/
   documents/               # default DOC_LOAD_ROOT (PDFs)
   intent_classification/vector_retrieval/
-    vector_intent_registry.csv  # default intent CSV
+    vector_intent_registry.csv  # mirror copy (same 2-column schema)
   chroma_db/
     documents/               # created by document loader
     intent_registry/         # created by intent loader

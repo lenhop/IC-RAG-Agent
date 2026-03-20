@@ -3,7 +3,9 @@
 Load intent registry CSV into local ChromaDB (intent_registry collection).
 
 Behavior:
-- Source CSV: data/intent_classification/vector_retrieval/vector_intent_registry.csv
+- Source CSV: default .../classification_data/vector_intent_registry.csv (columns: text, intent;
+  optional workflow column — if absent, Chroma metadata workflow is set to intent)
+- Override with VECTOR_REGISTRY_CSV / --csv-path
 - Target: local PersistentClient at data/chroma_db/intent_registry
 - Truncate before load: always enabled
 """
@@ -18,8 +20,8 @@ from pathlib import Path
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_PROJECT_ROOT))
 
-from src.rag.chroma_loaders import bootstrap_project
-from src.rag.vector_registry_loader import load_vector_registry_local, resolve_registry_csv_path
+from src.chroma import load_vector_registry_local, resolve_registry_csv_path
+from src.utils import bootstrap_project
 
 PROJECT_ROOT = bootstrap_project()
 DEFAULT_CHROMA_PATH = Path(

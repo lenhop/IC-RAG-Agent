@@ -1,8 +1,9 @@
 """Gateway intent classification package.
 
 Architecture (强制):
-  classification.py — 公共接口模块（唯一统一公共接口，包含全部逻辑）
-  __init__.py       — 包入口（re-export 公共 API）
+  classification.py — 对外门面（公共函数 + 校验器；委托 implement_methods）
+  implement_methods.py — 实现层（IntentResult、拆分、keyword/vector/LLM 管线）
+  __init__.py         — 包入口（re-export 公共 API）
 
 所有下游模块必须通过包入口导入：
     from src.gateway.route_llm.classification import (
@@ -10,7 +11,7 @@ Architecture (强制):
         validate_intents, IntentResult,
     )
 
-禁止直接导入内部类。
+禁止直接导入 implement_methods 内部实现细节（优先使用包入口的公共 API）。
 """
 
 from .classification import (

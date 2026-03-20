@@ -22,7 +22,8 @@ from pathlib import Path
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_PROJECT_ROOT))
 
-from src.rag.chroma_loaders import bootstrap_project, load_documents_to_chroma, resolve_path
+from src.chroma import load_pdf_directory_to_chroma
+from src.utils import bootstrap_project, resolve_path
 
 PROJECT_ROOT = bootstrap_project()
 
@@ -86,12 +87,11 @@ def main() -> int:
     start_time = datetime.now()
     embed_extra = _embed_kwargs_for_model(args.embed_model)
     try:
-        stored = load_documents_to_chroma(
+        stored = load_pdf_directory_to_chroma(
             doc_root=args.doc_root,
             chroma_path=args.chroma_path,
             collection_name=args.collection,
             project_root=PROJECT_ROOT,
-            extensions=[".pdf"],
             chunk_size=args.chunk_size,
             chunk_overlap=args.chunk_overlap,
             min_chunk_length=args.min_chunk_length,

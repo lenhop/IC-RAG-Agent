@@ -1,0 +1,157 @@
+text,intent
+what is Amazon's referral fee structure,amazon_docs
+FBA storage fee policy,amazon_docs
+how are oversize fees calculated,amazon_docs
+Amazon fee schedule,amazon_docs
+what are the current FBA fees,amazon_docs
+referral fee percentage by category,amazon_docs
+long-term storage fee rules,amazon_docs
+FBA removal fee policy,amazon_docs
+how does Amazon calculate shipping fees,amazon_docs
+fee structure for media products,amazon_docs
+what fees apply to FBA sellers,amazon_docs
+storage fee changes for 2026,amazon_docs
+Amazon product compliance requirements,amazon_docs
+FBA inbound workflow and prep requirements,amazon_docs
+product safety documentation requirements,amazon_docs
+what does Amazon require for hazmat products,amazon_docs
+seller central guidelines,amazon_docs
+Amazon business rules for returns,amazon_docs
+product listing requirements,amazon_docs
+Amazon restricted products policy,amazon_docs
+FBA packaging requirements,amazon_docs
+Amazon seller performance metrics,amazon_docs
+account health guidelines,amazon_docs
+intellectual property policy,amazon_docs
+SP-API documentation,amazon_docs
+Amazon seller API docs,amazon_docs
+How many FBA services does Amazon offer and what are they,amazon_docs
+what are the key features in the profit analytics,amazon_docs
+When will the changes to removal and disposal order fees become effective,amazon_docs
+In what situation Amazon will charge FBA manual processing fee,amazon_docs
+What is the FBA manual processing fee during the November December peak season,amazon_docs
+How much is the FBA Label Service fee,amazon_docs
+what is the key changes for Standard-Size Fulfillment Fees in 2026,amazon_docs
+what is Amazon Lending,amazon_docs
+what are the Lightning Deal and Best Deal,amazon_docs
+How many types of promotions are there and what are they,amazon_docs
+what is Amazon global selling program,amazon_docs
+how does Amazon Warehousing and Distribution work,amazon_docs
+what is Multi-Channel Fulfillment MCF,amazon_docs
+what is Seller Fulfilled Prime,amazon_docs
+how does Subscribe and Save work,amazon_docs
+what is Amazon Vine program,amazon_docs
+how does automate pricing work on Amazon,amazon_docs
+what are FBA inbound performance requirements,amazon_docs
+how to handle dangerous goods on Amazon,amazon_docs
+what is the inventory placement service,amazon_docs
+what is RAG,general
+explain context window in LLMs,general
+what is vector embedding,general
+how does semantic search work,general
+explain the difference between FBA and FBM,general
+what is intent classification,general
+how do large language models work,general
+what is ChromaDB,general
+explain cosine similarity,general
+what is a transformer model,general
+how does tokenization work,general
+what is prompt engineering,general
+ASIN lookup B09GHI,sp_api
+buy box status for ASIN B08ABC,sp_api
+catalog information for my product,sp_api
+check delivery status,sp_api
+check if ASIN B07 has active listings,sp_api
+check if ASIN B07 has buy box,sp_api
+check if order has been fulfilled,sp_api
+check inventory for ASIN B07XYZ,sp_api
+check listing status,sp_api
+check order status for 112-1234567-8901234,sp_api
+check seller account health,sp_api
+check stock for my product,sp_api
+check warehouse stock levels,sp_api
+create a removal order for ASIN B07XYZ,sp_api
+FBA inventory level for SKU ABC123,sp_api
+FBA inventory status,sp_api
+financial settlement details,sp_api
+get catalog info for SKU ABC123,sp_api
+get order details,sp_api
+get product details from catalog,sp_api
+get shipping details for my order,sp_api
+has my order shipped yet,sp_api
+how many units of B08DEF are in FBA,sp_api
+how much inventory do I have,sp_api
+inventory age report,sp_api
+inventory health for ASIN B09GHI,sp_api
+inventory placement status,sp_api
+is ASIN B07ABC in stock at FBA,sp_api
+is my listing active,sp_api
+is my order delivered,sp_api
+look up order 114-1111111-2222222,sp_api
+order fulfillment status,sp_api
+order tracking information,sp_api
+product listing details for B08DEF,sp_api
+removal order status,sp_api
+request a detailed financial report,sp_api
+request a settlement report,sp_api
+request inventory placement for ASIN B07XYZ,sp_api
+seller account verification,sp_api
+show me my product listing,sp_api
+show me order information,sp_api
+stranded inventory check,sp_api
+track my shipment,sp_api
+verify my listing is live,sp_api
+verify my seller account status,sp_api
+what is the status of order 113-9876543-1234567,sp_api
+when will my order arrive,sp_api
+where is my order,sp_api
+get my settlement summary,uds
+show me FBA fees for last month,uds
+referral fee breakdown by category,uds
+total fees paid in Q1 2026,uds
+fee analysis for last 30 days,uds
+compare fees between Q1 and Q2,uds
+which products have the highest fees,uds
+FBA fee breakdown by ASIN,uds
+storage fee trend over last 6 months,uds
+oversize fee charges last quarter,uds
+fee summary for March 2026,uds
+how much did I pay in referral fees,uds
+fee comparison by product category,uds
+monthly fee report,uds
+financial summary for ASIN B07XYZ,uds
+get financial summary for last month,uds
+total sales last quarter,uds
+revenue trend by month,uds
+sales performance for March 2026,uds
+top 5 products by revenue,uds
+top 10 products by sales volume,uds
+compare sales Q1 vs Q2,uds
+daily sales for last 30 days,uds
+average order value last month,uds
+sales breakdown by category,uds
+which products sold the most,uds
+revenue by marketplace,uds
+sales growth trend,uds
+orders sold last week,uds
+historical sales data,uds
+top 20 products by refund rate,uds
+refund count by product,uds
+products by refund rate,uds
+which ClickHouse table stores referral fees,uds
+what columns does the orders table have,uds
+show me the UDS table schema,uds
+what data tables are available,uds
+which table has sales data,uds
+ClickHouse table structure,uds
+what dataset contains fee information,uds
+describe the settlement report table,uds
+UDS table for inventory data,uds
+column names in the orders table,uds
+what schema does the financial table use,uds
+list all ClickHouse tables,uds
+settlement report for last month,uds
+financial report for Q1 2026,uds
+show me the settlement breakdown,uds
+historical financial report,uds
+settlement data for March 2026,uds
