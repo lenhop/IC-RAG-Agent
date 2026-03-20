@@ -2,8 +2,8 @@
 """
 Test Redis connection for gateway short-term memory.
 
-Sends a test message to ECS Redis and verifies read-back.
-Uses GATEWAY_REDIS_URL from .env.
+Uses GATEWAY_REDIS_URL from .env (default redis://localhost:6379/0).
+Writes a short-lived list key, reads it back, then deletes it.
 
 Usage:
   python scripts/test_redis_connection.py

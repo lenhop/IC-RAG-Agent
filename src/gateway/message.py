@@ -46,8 +46,12 @@ def get_gateway_memory() -> Optional[GatewayConversationMemory]:
         return _gateway_memory
     try:
         import redis
+
+        # Single source of truth for conversation Redis (local or remote via .env).
+        # Default targets local Redis; override GATEWAY_REDIS_URL for ECS/Docker hostname.
         redis_url = os.getenv("GATEWAY_REDIS_URL", "redis://localhost:6379/0")
         _redis_client = redis.from_url(redis_url, decode_responses=True)
+        # Fail fast if broker is down; gateway continues with memory=None (no persistence).
         _redis_client.ping()
         _gateway_memory = GatewayConversationMemory(_redis_client)
         logger.info(
