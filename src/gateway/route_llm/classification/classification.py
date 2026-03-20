@@ -15,7 +15,7 @@ Internal (in this module, not exported):
   _IntentValidator — 必填字段校验与追问
 
 Implementation detail (implement_methods):
-  IntentResult；ClassificationIntentVectorStore.llm_detect — LLM 并行三 workflow；amazon_intents.csv 示例注入
+  IntentResult；ClassificationIntentVectorStore.llm_detect — LLM 并行三 workflow；classification_data/amazon_intents.csv 示例注入
 
 Public API (exported via __init__.py):
   split_intents, classify_intent, classify_intents_batch, validate_intents, IntentResult

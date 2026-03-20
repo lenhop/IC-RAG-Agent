@@ -44,16 +44,19 @@ except Exception:
 # Intent result model (LLM parallel detection lives on ClassificationIntentVectorStore)
 # ---------------------------------------------------------------------------
 
+# Shared data dir (keyword rules, amazon intent examples, vector_intent_registry copy, etc.)
+_CLASSIFICATION_DATA_DIR = Path(__file__).resolve().parent / "classification_data"
+
 _amazon_examples_cache: str | None = None
 
 
 def _load_amazon_intent_examples() -> str:
-    """Load amazon_intents.csv beside this package; return markdown bullet list for prompts."""
+    """Load classification_data/amazon_intents.csv; return markdown bullet list for prompts."""
     global _amazon_examples_cache
     if _amazon_examples_cache is not None:
         return _amazon_examples_cache
 
-    csv_path = Path(__file__).resolve().parent / "amazon_intents.csv"
+    csv_path = _CLASSIFICATION_DATA_DIR / "amazon_intents.csv"
     try:
         lines = csv_path.read_text(encoding="utf-8").splitlines()
         keywords = [line.strip() for line in lines[1:] if line.strip()]
@@ -101,10 +104,33 @@ def _use_vector() -> bool:
     return val in ("true", "1", "yes")
 
 
-def _vector_threshold() -> float:
-    """Minimum similarity score for vector match (default: 0.7)."""
+def _vector_top_k() -> int:
+    """
+    Chroma n_results for intent vector classification (env MAX_RETRIEVAL_DOCS).
+
+    Default 1 when unset so intent layer stays conservative; RAG may use the same
+    variable with its own default chain elsewhere.
+    """
     try:
-        return float(os.getenv("GATEWAY_VECTOR_INTENT_THRESHOLD") or "0.7")
+        raw = (os.getenv("MAX_RETRIEVAL_DOCS") or "1").strip()
+        return max(1, int(raw))
+    except ValueError:
+        return 1
+
+
+def _vector_threshold() -> float:
+    """
+    Minimum similarity score for intent vector match.
+
+    Reads SIMILARITY_THRESHOLD first, then GATEWAY_VECTOR_INTENT_THRESHOLD, else 0.7.
+    """
+    try:
+        raw = (
+            os.getenv("SIMILARITY_THRESHOLD")
+            or os.getenv("GATEWAY_VECTOR_INTENT_THRESHOLD")
+            or "0.7"
+        ).strip()
+        return float(raw)
     except ValueError:
         return 0.7
 
@@ -113,7 +139,6 @@ def _vector_threshold() -> float:
 # Classification keyword rules — load classification_data once via LoadKeywordRule
 # ---------------------------------------------------------------------------
 
-_CLASSIFICATION_DATA_DIR = Path(__file__).resolve().parent / "classification_data"
 # Project root: .../src/gateway/route_llm/classification/implement_methods.py -> parents[4]
 _IC_PROJECT_ROOT = Path(__file__).resolve().parents[4]
 _DEFAULT_INTENT_REGISTRY_CHROMA = _IC_PROJECT_ROOT / "data" / "chroma_db" / "intent_registry"
@@ -586,6 +611,9 @@ class ClassificationImplementMethod:
         """
         Second layer: Chroma vector similarity via ClassificationIntentVectorStore.
         Returns IntentResult if top candidate score >= threshold.
+
+        top_k from MAX_RETRIEVAL_DOCS (default 1); threshold from SIMILARITY_THRESHOLD,
+        then GATEWAY_VECTOR_INTENT_THRESHOLD, else 0.7.
         """
         if not _use_vector():
             return None
@@ -594,7 +622,7 @@ class ClassificationImplementMethod:
         try:
             candidates = ClassificationIntentVectorStore.get_vector_retrieval().retrieve(
                 query.strip(),
-                top_k=1,
+                top_k=_vector_top_k(),
                 score_threshold=_vector_threshold(),
             )
         except Exception:
