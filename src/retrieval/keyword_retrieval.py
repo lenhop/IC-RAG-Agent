@@ -1,50 +1,174 @@
 """
 Keyword Retrieval — Public API Module (公共接口模块)
 
-Architecture (强制):
-  keyword_retrieval.py = 公共接口模块（Layer 1 唯一入口），负责关键字/正则意图匹配
-  __init__.py         = 包入口，从本模块 re-export 公共 API
+Public API:
+  KeywordMatchResult   — 匹配结果数据类
+  KeywordRetrieval     — 三阶段匹配器（字典精确 → 短语包含 → 正则），由调用方注入规则行
+  LoadKeywordRule      — 从目录加载 dict / YAML / 正则 CSV 的公共类方法
+  keyword_retrieve     — 一次性便捷函数（注入规则行，无状态）
 
-  下游模块（gateway、classification 等）应通过本模块或 src.retrieval 包导入，
-  禁止直接依赖内部实现（_ 前缀方法与模块级 _* 常量）。
-
-Workflow:
-  Query → 加载/编译规则 → match(query) → 首个命中返回 KeywordMatchResult，否则 None
-
-Internal (not exported):
-  _SRC_ROOT, _DEFAULT_RULES_PATH     — 规则路径常量
-  _load_and_compile_rules            — 加载并编译规则
-  _default_sp_api_uds_rules          — 内置 SP-API/UDS 规则（正则）
-
-Public API (exported via __init__.py):
-  KeywordMatchResult                  — 匹配结果数据类（workflow, intent_name, confidence, source）
-  KeywordRetrieval                    — 主类；match(query) → Optional[KeywordMatchResult]
-  keyword_retrieve(query)             — 一次性便捷函数（测试/脚本用）
+Workflow (match order):
+  dict exact → for-loop phrase in query → regex
 """
 
 from __future__ import annotations
 
+import csv
+import logging
 import re
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional, Tuple
 
-# Default rule source (can be overridden by env or constructor)
-_SRC_ROOT = Path(__file__).resolve().parents[1]
-_DEFAULT_RULES_PATH = _SRC_ROOT / "gateway" / "route_llm" / "classification"
-_AMAZON_INTENTS_CSV = _DEFAULT_RULES_PATH / "amazon_intents.csv"
+try:
+    import yaml
+except ImportError:  # pragma: no cover
+    yaml = None  # type: ignore[assignment]
 
-# Workflow order for parallel detection: sp_api -> uds -> amazon_docs
-_WORKFLOW_ORDER = ("sp_api", "uds", "amazon_docs")
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Public API — 公共接口（唯一对外入口，由 __init__.py re-export）
-#
-# 下游业务模块（gateway、classification、dispatcher 等）必须通过这些类/函数访问
-# Layer 1 关键字检索能力。
+# Public API — rule loading (class methods)
 # ---------------------------------------------------------------------------
+
+
+class LoadKeywordRule:
+    """
+    Public loaders for keyword rule files under a single data directory.
+
+    Expected files (optional): dict_sentences.csv, frequent_variable_sentences.yml,
+    regular_rules.csv.
+    """
+
+    # YAML top-level keys in processing order; amazon_business maps to amazon_docs
+    FOR_LOOP_YAML_KEYS: Tuple[str, ...] = ("sp_api", "uds", "amazon_business")
+
+    @staticmethod
+    def _map_yaml_workflow_key(yaml_key: str) -> str:
+        """Map YAML workflow key to gateway workflow name."""
+        if yaml_key == "amazon_business":
+            return "amazon_docs"
+        return yaml_key
+
+    @classmethod
+    def load_dict_sentences_csv(cls, data_dir: Path) -> List[Tuple[str, str]]:
+        """
+        Load dict_sentences.csv: (canonical_query lower, workflow).
+
+        Args:
+            data_dir: Directory containing dict_sentences.csv.
+
+        Returns:
+            List of (canonical lower, workflow); empty if file missing or on read error.
+        """
+        path = data_dir / "dict_sentences.csv"
+        rows: List[Tuple[str, str]] = []
+        if not path.is_file():
+            return rows
+        try:
+            with path.open(encoding="utf-8", newline="") as f:
+                reader = csv.DictReader(f)
+                if not reader.fieldnames:
+                    return rows
+                for row in reader:
+                    try:
+                        c = (row.get("canonical_query") or "").strip()
+                        w = (row.get("workflow") or "").strip()
+                        if c and w:
+                            rows.append((c.lower(), w))
+                    except (TypeError, AttributeError):
+                        continue
+        except OSError as exc:
+            logger.debug("dict_sentences read failed: %s", exc)
+        return rows
+
+    @classmethod
+    def load_frequent_variable_yml(cls, data_dir: Path) -> List[Tuple[str, str, str]]:
+        """
+        Load frequent_variable_sentences.yml as flat (phrase_lower, workflow, intent_name).
+
+        Workflow order follows FOR_LOOP_YAML_KEYS; phrases sorted by length descending per key.
+
+        Args:
+            data_dir: Directory containing frequent_variable_sentences.yml.
+
+        Returns:
+            Flat phrase rows; empty if file missing, PyYAML absent, or parse error.
+        """
+        path = data_dir / "frequent_variable_sentences.yml"
+        result: List[Tuple[str, str, str]] = []
+        if not path.is_file():
+            return result
+        if yaml is None:
+            logger.warning("PyYAML not installed; skipping frequent_variable_sentences.yml")
+            return result
+        try:
+            data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.debug("YAML load failed for %s: %s", path, exc)
+            return result
+        if not isinstance(data, dict):
+            return result
+
+        for yaml_key in cls.FOR_LOOP_YAML_KEYS:
+            workflow = cls._map_yaml_workflow_key(yaml_key)
+            intent_name = workflow
+            phrases = data.get(yaml_key)
+            if not isinstance(phrases, list):
+                continue
+            cleaned: List[str] = []
+            for item in phrases:
+                if isinstance(item, str) and item.strip():
+                    cleaned.append(item.strip())
+            cleaned.sort(key=len, reverse=True)
+            for phrase in cleaned:
+                result.append((phrase.lower(), workflow, intent_name))
+
+        return result
+
+    @classmethod
+    def load_regular_rules_csv(cls, data_dir: Path) -> List[Tuple[re.Pattern, str, str]]:
+        """
+        Load regular_rules.csv: compiled pattern, workflow, intent_name.
+
+        Args:
+            data_dir: Directory containing regular_rules.csv.
+
+        Returns:
+            List of (compiled pattern, workflow, intent_name); invalid regex rows skipped.
+        """
+        path = data_dir / "regular_rules.csv"
+        out: List[Tuple[re.Pattern, str, str]] = []
+        if not path.is_file():
+            return out
+        try:
+            with path.open(encoding="utf-8", newline="") as f:
+                reader = csv.DictReader(f)
+                if not reader.fieldnames:
+                    return out
+                for row in reader:
+                    pat_raw = ""
+                    try:
+                        pat_raw = (row.get("pattern") or "").strip()
+                        wf = (row.get("workflow") or "").strip()
+                        intent = (row.get("intent_name") or "").strip()
+                        if not pat_raw or not wf or not intent:
+                            continue
+                        compiled = re.compile(pat_raw, re.IGNORECASE)
+                        out.append((compiled, wf, intent))
+                    except re.error as exc:
+                        logger.debug("Skip invalid regex %r: %s", pat_raw, exc)
+                        continue
+        except OSError as exc:
+            logger.debug("regular_rules read failed: %s", exc)
+        return out
+
+
+# ---------------------------------------------------------------------------
+# Public API — matching
+# ---------------------------------------------------------------------------
+
 
 @dataclass
 class KeywordMatchResult:
@@ -58,150 +182,95 @@ class KeywordMatchResult:
 
 class KeywordRetrieval:
     """
-    Keyword and regex-based intent matcher for strong-rule workflows (SP-API, UDS).
+    Stateless three-stage matcher using caller-supplied rule rows.
 
-    Primary public entry point: ``match(query)``.
-
-    Loads rules from config, compiles patterns, and returns the first matching
-    workflow + intent. Used as Layer 1 before vector retrieval and LLM.
+    Stages:
+      1. dict_rows: (canonical_query_lower, workflow) — full-string equality vs query (case-insensitive)
+      2. for_loop_rows: (phrase_lower, workflow, intent_name) — phrase substring in query
+      3. regex_rows: (compiled_pattern, workflow, intent_name) — pattern.search(query)
     """
 
     def __init__(
         self,
-        rules_path: Optional[Path] = None,
+        dict_rows: List[Tuple[str, str]],
+        for_loop_rows: List[Tuple[str, str, str]],
+        regex_rows: List[Tuple[re.Pattern, str, str]],
     ) -> None:
         """
         Args:
-            rules_path: Directory or file for rule config. If None, uses default.
+            dict_rows: Exact-match entries (canonical lower, workflow).
+            for_loop_rows: Phrase containment entries (phrase lower, workflow, intent_name).
+            regex_rows: Regex entries (compiled pattern, workflow, intent_name).
         """
-        self._rules_path = rules_path or _DEFAULT_RULES_PATH
-        self._compiled: List[tuple] = []  # (pattern, workflow, intent_name)
-        self._amazon_keywords_cache: Optional[List[str]] = None
-        self._load_and_compile_rules()
-
-    def _load_and_compile_rules(self) -> None:
-        """Load rule config and compile regex/keyword lists. Ensures logic cohesion."""
-        all_rules: List[tuple] = []
-        for wf in _WORKFLOW_ORDER:
-            all_rules.extend(self._get_rules_for_workflow(wf))
-        self._compiled = all_rules
-
-    def _get_rules_for_workflow(self, workflow: str) -> List[tuple]:
-        """Return rules for a single workflow. Used by detect_parallel for per-workflow checks."""
-        if workflow == "sp_api":
-            order_id_re = re.compile(r"\d{3}-\d{7}-\d{7}", re.IGNORECASE)
-            latest_re = re.compile(r"\b(latest|current|real-time|最新|当前)\b", re.IGNORECASE)
-            return [
-                (order_id_re, "sp_api", "get_order_status"),
-                (latest_re, "sp_api", "realtime_check"),
-            ]
-        if workflow == "uds":
-            uds_order_re = re.compile(r"\b(order|orders|订单)\b", re.IGNORECASE)
-            uds_inv_re = re.compile(r"\b(inventory|stock|库存)\b", re.IGNORECASE)
-            return [
-                (uds_order_re, "uds", "order_history"),
-                (uds_inv_re, "uds", "inventory"),
-            ]
-        if workflow == "amazon_docs":
-            keywords = self._load_amazon_docs_keywords()
-            return [(kw, "amazon_docs", "amazon_business") for kw in keywords]
-        return []
-
-    def _load_amazon_docs_keywords(self) -> List[str]:
-        """Load Amazon Business keywords from amazon_intents.csv (skip header). Cached."""
-        if self._amazon_keywords_cache is not None:
-            return self._amazon_keywords_cache
-        if not _AMAZON_INTENTS_CSV.is_file():
-            self._amazon_keywords_cache = []
-            return []
-        try:
-            lines = _AMAZON_INTENTS_CSV.read_text(encoding="utf-8").splitlines()
-            # First line is header "keyword"
-            self._amazon_keywords_cache = [line.strip() for line in lines[1:] if line.strip()]
-            return self._amazon_keywords_cache
-        except Exception:
-            self._amazon_keywords_cache = []
-            return []
-
-    def _match_workflow(self, query: str, workflow: str) -> Optional[KeywordMatchResult]:
-        """Check if query matches rules for a single workflow. Used by detect_parallel."""
-        if not query or not query.strip():
-            return None
-        q = query.strip()
-        rules = self._get_rules_for_workflow(workflow)
-        for rule in rules:
-            pattern_or_str, wf, intent_name = rule
-            if isinstance(pattern_or_str, re.Pattern):
-                if pattern_or_str.search(q):
-                    return KeywordMatchResult(
-                        workflow=wf,
-                        intent_name=intent_name,
-                        confidence="high",
-                        source="keyword",
-                    )
-            elif isinstance(pattern_or_str, str):
-                if pattern_or_str.lower() in q.lower():
-                    return KeywordMatchResult(
-                        workflow=wf,
-                        intent_name=intent_name,
-                        confidence="high",
-                        source="keyword",
-                    )
-        return None
-
-    def detect_parallel(self, query: str) -> Optional[KeywordMatchResult]:
-        """
-        Run parallel detection for sp_api, uds, amazon_docs. Return first non-None in order.
-
-        Used by ClassificationImplementMethod.keyword_classification_method.
-        """
-        if not query or not query.strip():
-            return None
-        step_results: Dict[str, Optional[KeywordMatchResult]] = {}
-
-        def _run_step(wf: str) -> None:
-            step_results[wf] = self._match_workflow(query, wf)
-
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            list(executor.map(_run_step, _WORKFLOW_ORDER))
-
-        for wf in _WORKFLOW_ORDER:
-            r = step_results.get(wf)
-            if r is not None:
-                return r
-        return None
+        # Defensive copies so external mutation does not affect matching.
+        self._dict_rows: List[Tuple[str, str]] = list(dict_rows)
+        self._for_loop_rows: List[Tuple[str, str, str]] = list(for_loop_rows)
+        self._regex_rows: List[Tuple[re.Pattern, str, str]] = list(regex_rows)
 
     def match(self, query: str) -> Optional[KeywordMatchResult]:
         """
-        Run keyword/regex match on query. Returns first match or None.
+        Match in order: dict exact → for-loop phrase → regex.
 
         Args:
-            query: User query text (e.g. rewritten query or intent clause).
+            query: User query text.
 
         Returns:
-            KeywordMatchResult if any rule matches, else None.
+            KeywordMatchResult if any stage matches, else None.
         """
         if not query or not query.strip():
             return None
         q = query.strip()
-        for pattern_or_str, workflow, intent_name in self._compiled:
-            matched = False
-            if isinstance(pattern_or_str, re.Pattern):
-                matched = bool(pattern_or_str.search(q))
-            elif isinstance(pattern_or_str, str):
-                matched = pattern_or_str.lower() in q.lower()
-            if matched:
+        q_lower = q.lower()
+
+        # Stage 1: dict exact match (case-insensitive full string)
+        for canonical_lower, workflow in self._dict_rows:
+            if q_lower == canonical_lower:
+                return KeywordMatchResult(
+                    workflow=workflow,
+                    intent_name=workflow,
+                    confidence="high",
+                    source="keyword",
+                )
+
+        # Stage 2: phrase contained in query
+        for phrase_lower, workflow, intent_name in self._for_loop_rows:
+            if phrase_lower in q_lower:
                 return KeywordMatchResult(
                     workflow=workflow,
                     intent_name=intent_name,
                     confidence="high",
                     source="keyword",
                 )
+
+        # Stage 3: regex
+        for pattern, workflow, intent_name in self._regex_rows:
+            if pattern.search(q):
+                return KeywordMatchResult(
+                    workflow=workflow,
+                    intent_name=intent_name,
+                    confidence="high",
+                    source="keyword",
+                )
+
         return None
 
 
-def keyword_retrieve(query: str) -> Optional[KeywordMatchResult]:
+def keyword_retrieve(
+    query: str,
+    dict_rows: List[Tuple[str, str]],
+    for_loop_rows: List[Tuple[str, str, str]],
+    regex_rows: List[Tuple[re.Pattern, str, str]],
+) -> Optional[KeywordMatchResult]:
     """
-    Optional one-shot helper (tests / scripts). Prefer ``KeywordRetrieval`` for DI and tests.
+    One-shot match using injected rule rows (no file I/O).
+
+    Args:
+        query: User query text.
+        dict_rows: Exact-match rows.
+        for_loop_rows: Phrase containment rows.
+        regex_rows: Compiled regex rows.
+
+    Returns:
+        KeywordMatchResult or None.
     """
-    return KeywordRetrieval().match(query)
+    return KeywordRetrieval(dict_rows, for_loop_rows, regex_rows).match(query)

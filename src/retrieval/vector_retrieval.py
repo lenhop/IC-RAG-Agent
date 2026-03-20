@@ -1,26 +1,16 @@
 """
 Vector Retrieval — Public API Module (公共接口模块)
 
-Architecture (强制):
-  vector_retrieval.py = 公共接口模块（Layer 2 唯一入口），负责 Chroma 向量检索
-  __init__.py         = 包入口，从本模块 re-export 公共 API
+Architecture:
+  vector_retrieval.py 仅提供与具体业务环节无关的公共能力：
+    - VectorCandidate   检索结果数据类
+    - VectorRetrieval   Chroma 向量检索（由调用方注入 chroma_path、collection_name 等）
 
-  下游模块（gateway、classification 等）应通过本模块或 src.retrieval 包导入，
-  禁止直接依赖内部实现（_ensure_client、_embed_* 等）。
+  意图注册表路径、CHROMA_INTENT_REGISTRY_*、GATEWAY_VECTOR_* 等属于 gateway 分类环节，
+  应在下游（如 implement_methods）解析后传入 VectorRetrieval。
 
 Workflow:
-  Query → 连接 Chroma(intent_registry) → embed(query) → TopK 相似检索 → 阈值过滤 → List[VectorCandidate]
-
-Internal (not exported):
-  _PROJECT_ROOT, _DEFAULT_CHROMA_PATH, _DEFAULT_COLLECTION, _DEFAULT_TOP_K, _DEFAULT_THRESHOLD
-  _ensure_client      — 懒加载 Chroma 客户端与 collection
-  _embed_query        — 单条 query 向量化
-  _embed_via_ollama   — 调用 Ollama /api/embed
-
-Public API (exported via __init__.py):
-  VectorCandidate      — 单条检索结果（text, intent, workflow, score, metadata）
-  VectorRetrieval      — 主类；retrieve(query, top_k=..., score_threshold=...) → List[VectorCandidate]
-  vector_retrieve(...) — 一次性便捷函数（测试/脚本用）
+  Query → embed(query) → Chroma query → 阈值过滤 → List[VectorCandidate]
 """
 
 from __future__ import annotations
@@ -30,20 +20,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
 
-# Default Chroma path (align with load_intent_registry_to_chroma.py)
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_DEFAULT_CHROMA_PATH = _PROJECT_ROOT / "data" / "chroma_db" / "intent_registry"
-_DEFAULT_COLLECTION = "intent_registry"
-_DEFAULT_TOP_K = 5
-_DEFAULT_THRESHOLD = 0.0  # No filtering by default; caller can set higher
-
 
 # ---------------------------------------------------------------------------
-# Public API — 公共接口（唯一对外入口，由 __init__.py re-export）
-#
-# 下游业务模块（gateway、classification、dispatcher 等）必须通过这些类/函数访问
-# Layer 2 向量检索能力。
+# Public API
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class VectorCandidate:
@@ -58,45 +39,45 @@ class VectorCandidate:
 
 class VectorRetrieval:
     """
-    Chroma-based vector retrieval over intent_registry.
+    Chroma-based vector retrieval; caller supplies store location and collection name.
 
-    Primary public entry point: ``retrieve(query, ...)``.
-
-    Connects to local Chroma at chroma_path, embeds query (via backend from env),
-    runs similarity search, and returns top-K candidates above threshold.
+    Embedding uses embed_backend (default ollama) and shared Ollama env:
+    OLLAMA_BASE_URL, OLLAMA_EMBED_MODEL — generic runtime config, not gateway-specific.
     """
 
     def __init__(
         self,
-        chroma_path: Optional[Path] = None,
-        collection_name: str = _DEFAULT_COLLECTION,
-        top_k: int = _DEFAULT_TOP_K,
-        score_threshold: float = _DEFAULT_THRESHOLD,
+        chroma_path: Path,
+        collection_name: str,
+        *,
+        top_k: int = 5,
+        score_threshold: float = 0.0,
+        embed_backend: str = "ollama",
     ) -> None:
         """
         Args:
-            chroma_path: Chroma persist directory (default: data/chroma_db/intent_registry).
+            chroma_path: Chroma persist directory (must exist before non-empty retrieve).
             collection_name: Chroma collection name.
-            top_k: Max number of candidates to return.
-            score_threshold: Minimum similarity score (in [0,1] if normalized).
+            top_k: Default max candidates per retrieve call.
+            score_threshold: Default minimum similarity in [0, 1] after distance mapping.
+            embed_backend: Embedding implementation name (currently supports ollama).
         """
-        self._chroma_path = Path(
-            os.getenv("CHROMA_INTENT_REGISTRY_PATH", str(chroma_path or _DEFAULT_CHROMA_PATH))
-        )
-        self._collection_name = os.getenv("CHROMA_INTENT_REGISTRY_COLLECTION", collection_name)
+        self._chroma_path = Path(chroma_path)
+        self._collection_name = collection_name.strip()
         self._top_k = top_k
         self._score_threshold = score_threshold
+        self._embed_backend = (embed_backend or "ollama").strip().lower()
         self._client = None
         self._collection = None
 
     def _ensure_client(self) -> None:
-        """Lazy init Chroma client and collection to avoid import at module load."""
+        """Lazy init Chroma client and collection."""
         if self._client is not None:
             return
         try:
             import chromadb
-        except ImportError as e:
-            raise RuntimeError("chromadb is required for vector retrieval") from e
+        except ImportError as exc:
+            raise RuntimeError("chromadb is required for vector retrieval") from exc
         if not self._chroma_path.exists():
             raise FileNotFoundError(f"Chroma path not found: {self._chroma_path}")
         self._client = chromadb.PersistentClient(path=str(self._chroma_path))
@@ -106,16 +87,15 @@ class VectorRetrieval:
         )
 
     def _embed_query(self, query: str) -> List[float]:
-        """Embed single query using INTENT_REGISTRY_EMBED_BACKEND (e.g. ollama)."""
-        backend = (os.getenv("INTENT_REGISTRY_EMBED_BACKEND") or "ollama").strip().lower()
-        if backend == "ollama":
+        """Vectorize query using configured embed_backend."""
+        if self._embed_backend == "ollama":
             return self._embed_via_ollama(query)
-        # Fallback: minilm or other; could inject embedder later
         return self._embed_via_ollama(query)
 
     def _embed_via_ollama(self, query: str) -> List[float]:
-        """Call Ollama /api/embed for one string."""
+        """Call Ollama /api/embed for one string (generic OLLAMA_* env)."""
         import requests
+
         base_url = (os.getenv("OLLAMA_BASE_URL") or "http://localhost:11434").strip().rstrip("/")
         model = (os.getenv("OLLAMA_EMBED_MODEL") or "all-minilm:latest").strip()
         url = f"{base_url}/api/embed"
@@ -127,8 +107,8 @@ class VectorRetrieval:
             if not emb or len(emb) != 1:
                 raise ValueError("Ollama embed returned invalid embeddings")
             return emb[0]
-        except Exception as e:
-            raise RuntimeError(f"Ollama embed failed: {e}") from e
+        except Exception as exc:
+            raise RuntimeError(f"Ollama embed failed: {exc}") from exc
 
     def retrieve(
         self,
@@ -137,15 +117,15 @@ class VectorRetrieval:
         score_threshold: Optional[float] = None,
     ) -> List[VectorCandidate]:
         """
-        Retrieve top-K intent candidates from Chroma for the given query.
+        Retrieve top-K candidates from Chroma for the given query.
 
         Args:
             query: User query or intent clause.
-            top_k: Override instance top_k.
-            score_threshold: Override instance score_threshold.
+            top_k: Override instance default.
+            score_threshold: Override instance default.
 
         Returns:
-            List of VectorCandidate (text, intent, workflow, score), ordered by score desc.
+            VectorCandidate list ordered by score descending.
         """
         if not query or not query.strip():
             return []
@@ -153,7 +133,6 @@ class VectorRetrieval:
         thresh = score_threshold if score_threshold is not None else self._score_threshold
         self._ensure_client()
         query_embedding = self._embed_query(query.strip())
-        # Chroma query returns distances (cosine); convert to similarity if needed
         result = self._collection.query(
             query_embeddings=[query_embedding],
             n_results=k,
@@ -163,9 +142,8 @@ class VectorRetrieval:
         metadatas = result.get("metadatas") or [[]]
         distances = result.get("distances") or [[]]
         candidates: List[VectorCandidate] = []
-        for i, (docs, metas, dists) in enumerate(zip(documents, metadatas, distances)):
-            for j, (doc, meta, dist) in enumerate(zip(docs, metas, dists)):
-                # Cosine distance: 0 = identical, 2 = opposite. Convert to similarity: 1 - dist/2
+        for docs, metas, dists in zip(documents, metadatas, distances):
+            for doc, meta, dist in zip(docs, metas, dists):
                 sim = 1.0 - (float(dist) / 2.0) if dist is not None else 0.0
                 if sim < thresh:
                     continue
@@ -184,11 +162,32 @@ class VectorRetrieval:
 
 def vector_retrieve(
     query: str,
-    chroma_path: Optional[Path] = None,
-    top_k: int = _DEFAULT_TOP_K,
+    *,
+    chroma_path: Path,
+    collection_name: str,
+    top_k: int = 5,
+    score_threshold: float = 0.0,
+    embed_backend: str = "ollama",
 ) -> List[VectorCandidate]:
     """
-    Optional one-shot helper (tests / scripts). Prefer ``VectorRetrieval`` for DI and tests.
+    One-shot retrieve; caller supplies chroma_path and collection_name.
+
+    Args:
+        query: Query text.
+        chroma_path: Chroma persist directory.
+        collection_name: Collection name.
+        top_k: Max results.
+        score_threshold: Minimum similarity.
+        embed_backend: Embedding backend name.
+
+    Returns:
+        List of VectorCandidate.
     """
-    retriever = VectorRetrieval(chroma_path=chroma_path, top_k=top_k)
+    retriever = VectorRetrieval(
+        chroma_path,
+        collection_name,
+        top_k=top_k,
+        score_threshold=score_threshold,
+        embed_backend=embed_backend,
+    )
     return retriever.retrieve(query)

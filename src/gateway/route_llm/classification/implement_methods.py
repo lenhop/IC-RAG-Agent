@@ -14,12 +14,14 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Dict, List, Optional
+import re
+from pathlib import Path
+from typing import ClassVar, Dict, List, Optional, Tuple
 
 from ...prompt_loader import load_prompt
 from src.llm.call_deepseek import DeepSeekChat
 from src.llm.call_ollama import OllamaClient
-from src.retrieval.keyword_retrieval import KeywordRetrieval
+from src.retrieval.keyword_retrieval import KeywordRetrieval, LoadKeywordRule
 from src.retrieval.vector_retrieval import VectorRetrieval
 
 from .classification import IntentResult, _LLMIntentDetector
@@ -58,6 +60,106 @@ def _vector_threshold() -> float:
         return float(os.getenv("GATEWAY_VECTOR_INTENT_THRESHOLD") or "0.7")
     except ValueError:
         return 0.7
+
+
+# ---------------------------------------------------------------------------
+# Classification keyword rules — load classification_data once via LoadKeywordRule
+# ---------------------------------------------------------------------------
+
+_CLASSIFICATION_DATA_DIR = Path(__file__).resolve().parent / "classification_data"
+# Project root: .../src/gateway/route_llm/classification/implement_methods.py -> parents[4]
+_IC_PROJECT_ROOT = Path(__file__).resolve().parents[4]
+_DEFAULT_INTENT_REGISTRY_CHROMA = _IC_PROJECT_ROOT / "data" / "chroma_db" / "intent_registry"
+
+
+class ClassificationIntentVectorStore:
+    """
+    Builds VectorRetrieval for intent-registry Chroma once (class-level cache).
+
+    Resolves CHROMA_INTENT_REGISTRY_PATH, CHROMA_INTENT_REGISTRY_COLLECTION,
+    INTENT_REGISTRY_EMBED_BACKEND here — not inside vector_retrieval public API.
+    """
+
+    _vector_retrieval: ClassVar[Optional[VectorRetrieval]] = None
+
+    @classmethod
+    def _resolve_chroma_path(cls) -> Path:
+        """Intent-registry Chroma directory from env or project default."""
+        raw = (os.getenv("CHROMA_INTENT_REGISTRY_PATH") or "").strip()
+        if raw:
+            return Path(raw).expanduser().resolve()
+        return _DEFAULT_INTENT_REGISTRY_CHROMA.resolve()
+
+    @classmethod
+    def _resolve_collection_name(cls) -> str:
+        return (os.getenv("CHROMA_INTENT_REGISTRY_COLLECTION") or "intent_registry").strip()
+
+    @classmethod
+    def _resolve_embed_backend(cls) -> str:
+        return (os.getenv("INTENT_REGISTRY_EMBED_BACKEND") or "ollama").strip().lower()
+
+    @classmethod
+    def _ensure_retriever(cls) -> None:
+        if cls._vector_retrieval is not None:
+            return
+        cls._vector_retrieval = VectorRetrieval(
+            cls._resolve_chroma_path(),
+            cls._resolve_collection_name(),
+            top_k=5,
+            score_threshold=0.0,
+            embed_backend=cls._resolve_embed_backend(),
+        )
+
+    @classmethod
+    def get_vector_retrieval(cls) -> VectorRetrieval:
+        """Shared VectorRetrieval for classification vector layer."""
+        cls._ensure_retriever()
+        if cls._vector_retrieval is None:
+            raise RuntimeError("ClassificationIntentVectorStore failed to build VectorRetrieval")
+        return cls._vector_retrieval
+
+
+class ClassificationKeywordRuleStore:
+    """
+    Loads intent keyword rules from classification_data/ exactly once (class-level cache).
+
+    Internal to the classification package; wires CSV/YAML into KeywordRetrieval for
+    ClassificationImplementMethod.keyword_classification_method.
+    """
+
+    _dict_data: ClassVar[Optional[List[Tuple[str, str]]]] = None
+    _for_loop_data: ClassVar[Optional[List[Tuple[str, str, str]]]] = None
+    _regex_data: ClassVar[Optional[List[Tuple[re.Pattern, str, str]]]] = None
+    _keyword_retrieval: ClassVar[Optional[KeywordRetrieval]] = None
+
+    @classmethod
+    def _ensure_loaded(cls) -> None:
+        """Load three rule sets from disk once and build KeywordRetrieval singleton."""
+        if cls._keyword_retrieval is not None:
+            return
+        data_dir = _CLASSIFICATION_DATA_DIR
+        try:
+            cls._dict_data = LoadKeywordRule.load_dict_sentences_csv(data_dir)
+            cls._for_loop_data = LoadKeywordRule.load_frequent_variable_yml(data_dir)
+            cls._regex_data = LoadKeywordRule.load_regular_rules_csv(data_dir)
+        except Exception as exc:
+            logger.warning("ClassificationKeywordRuleStore load failed: %s", exc)
+            cls._dict_data = []
+            cls._for_loop_data = []
+            cls._regex_data = []
+        cls._keyword_retrieval = KeywordRetrieval(
+            list(cls._dict_data or []),
+            list(cls._for_loop_data or []),
+            list(cls._regex_data or []),
+        )
+
+    @classmethod
+    def get_keyword_retrieval(cls) -> KeywordRetrieval:
+        """Return shared KeywordRetrieval backed by class-cached rule rows."""
+        cls._ensure_loaded()
+        if cls._keyword_retrieval is None:
+            raise RuntimeError("ClassificationKeywordRuleStore failed to build KeywordRetrieval")
+        return cls._keyword_retrieval
 
 
 class IntentSplitMethod:
@@ -196,17 +298,22 @@ class ClassificationImplementMethod:
     If all miss through LLM, workflow general (generic knowledge).
     """
 
+    @classmethod
+    def _get_keyword_retrieval(cls) -> KeywordRetrieval:
+        """Keyword rules loaded once in ClassificationKeywordRuleStore."""
+        return ClassificationKeywordRuleStore.get_keyword_retrieval()
+
     def keyword_classification_method(
         self, query: str, context: Optional[str]
     ) -> Optional[IntentResult]:
         """
-        First layer: keyword/regex match. Calls KeywordRetrieval.detect_parallel().
+        First layer: keyword match (dict → for-loop phrases → regex). Calls KeywordRetrieval.match().
         """
         if not _use_keyword():
             return None
         if not query or not query.strip():
             return None
-        result = KeywordRetrieval().detect_parallel(query.strip())
+        result = self._get_keyword_retrieval().match(query.strip())
         if result is None:
             return None
         return IntentResult(
@@ -216,11 +323,16 @@ class ClassificationImplementMethod:
             source="keyword",
         )
 
+    @classmethod
+    def _get_vector_retrieval(cls) -> VectorRetrieval:
+        """Intent-registry store configured in ClassificationIntentVectorStore."""
+        return ClassificationIntentVectorStore.get_vector_retrieval()
+
     def vector_classification_method(
         self, query: str, context: Optional[str]
     ) -> Optional[IntentResult]:
         """
-        Second layer: Chroma vector similarity. Calls VectorRetrieval.retrieve().
+        Second layer: Chroma vector similarity via ClassificationIntentVectorStore.
         Returns IntentResult if top candidate score >= threshold.
         """
         if not _use_vector():
@@ -228,7 +340,7 @@ class ClassificationImplementMethod:
         if not query or not query.strip():
             return None
         try:
-            candidates = VectorRetrieval().retrieve(
+            candidates = self._get_vector_retrieval().retrieve(
                 query.strip(),
                 top_k=1,
                 score_threshold=_vector_threshold(),

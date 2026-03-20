@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 import time
 import uuid
 from typing import Any, Dict, List
@@ -45,6 +44,7 @@ from .view_helpers import (
     PlanHelper,
 )
 from src.logger import format_route_metadata, get_logger_facade
+from src.retrieval.query_process import QueryProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +142,7 @@ def _run_rewrite(
         req, gateway_memory=memory,
         conversation_context=clarification_context, enable_routing=False,
     )
-    rewritten_query = re.sub(r"\s+", " ", (rewritten_query or "")).strip()
+    rewritten_query = QueryProcessor.normalize(rewritten_query)
     return rewritten_query, int((time.perf_counter() - started) * 1000)
 
 
@@ -272,7 +272,7 @@ class RewritePipeline:
             rewritten_query, _, memory_rounds, memory_text_length, *_ = rewrite_and_route(
                 req, gateway_memory=memory, conversation_context=ctx, enable_routing=False,
             )
-            rewritten_query = re.sub(r"\s+", " ", (rewritten_query or "")).strip()
+            rewritten_query = QueryProcessor.normalize(rewritten_query)
             rewrite_time_ms = int((time.perf_counter() - started) * 1000)
             logger.info("[Perf] rewrite endpoint rewrite: %d ms", rewrite_time_ms)
 

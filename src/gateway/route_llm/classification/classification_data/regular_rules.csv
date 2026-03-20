@@ -1,0 +1,5 @@
+pattern,workflow,intent_name
+"\d{3}-\d{7}-\d{7}",sp_api,get_order_status
+"\b(latest|current|real-time|最新|当前)\b",sp_api,realtime_check
+"\b(order|orders|订单)\b",uds,order_history
+"\b(inventory|stock|库存)\b",uds,inventory

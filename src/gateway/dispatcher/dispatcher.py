@@ -19,7 +19,6 @@ from __future__ import annotations
 import concurrent.futures
 import logging
 import os
-import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -37,6 +36,7 @@ from .services import (
     call_uds,
 )
 from src.logger import get_logger_facade
+from src.retrieval.query_process import QueryProcessor
 
 logger = logging.getLogger(__name__)
 _gateway_logger = None
@@ -50,11 +50,6 @@ def _intent_classification_enabled() -> bool:
     """Return True when gateway LLM intent classification is enabled."""
     v = os.getenv("GATEWAY_VECTOR_INTENT_ENABLED", "false").strip().lower()
     return v in ("1", "true", "yes", "on")
-
-
-def _normalize_query(text: str) -> str:
-    """Trim and collapse whitespace."""
-    return re.sub(r"\s+", " ", (text or "").strip())
 
 
 def _build_plan_from_extracted_intents(
@@ -313,7 +308,7 @@ def build_execution_plan(
     from ..route_llm.rewriting.rewriters import _RewriteRouter
 
     explicit = (request.workflow or "auto").strip().lower() or "auto"
-    normalized_query = _normalize_query(request.query or "")
+    normalized_query = QueryProcessor.normalize(request.query or "")
     if _gateway_logger:
         try:
             _gateway_logger.log_runtime(

@@ -26,6 +26,7 @@ from ...schemas import QueryRequest
 from ...prompt_loader import load_prompt
 from ...message import ConversationHistoryHandler
 from src.logger import get_logger_facade
+from src.retrieval.query_process import QueryProcessor, normalize_query
 from src.llm.call_deepseek import DeepSeekChat
 from src.llm.call_ollama import OllamaClient
 
@@ -38,9 +39,7 @@ except Exception:
     _gateway_logger = None
 
 
-def normalize_query(text: str) -> str:
-    """Trim and collapse whitespace. Always applied before any routing."""
-    return re.sub(r"\s+", " ", (text or "").strip())
+# normalize_query imported from src.retrieval.query_process
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -57,62 +56,18 @@ class RewriteResponseProcessor:
 
     @staticmethod
     def strip_echoed_context(response: str, fallback_query: str) -> str:
-        """检测 LLM 是否回显了上下文/系统痕迹，若是则返回 fallback。"""
-        if not response or not response.strip():
-            return fallback_query
-        r_lower = response.strip().lower()
-        echo_patterns = (
-            "normalize: completed",
-            "integrate short-term memory",
-            "rewrite backend",
-            "rewrite time",
-            "intent classification",
-            "rewrite-only test mode",
-            "user:",
-            "assistant:",
-        )
-        if any(p in r_lower for p in echo_patterns):
-            logger.debug("Rewrite output contains echoed context; using fallback query")
-            return fallback_query
-        return response.strip()
+        """Detect LLM-echoed context; return fallback if contaminated. Delegates to QueryProcessor."""
+        return QueryProcessor.strip_echoed_context(response, fallback_query)
 
     @staticmethod
     def collapse_to_single_sentence(text: str) -> str:
-        """将多行文本折叠为单行（改写输出必须是单句）。"""
-        if not text or not text.strip():
-            return text or ""
-        line = re.sub(r"\s*\n+\s*", " ", text.strip())
-        line = re.sub(r"\s+", " ", line).strip()
-        return line if line else text.strip()
+        """Collapse multi-line to single line. Delegates to QueryProcessor."""
+        return QueryProcessor.collapse_to_single_line(text)
 
     @staticmethod
     def apply_normalization_fixes(text: str) -> str:
-        """文本规范化：修正常见拼写错误、去除口语填充词、统一小写。"""
-        if not text or not text.strip():
-            return text or ""
-        s = text.strip()
-        # 合并重复标点
-        s = re.sub(r"\?+", "?", s)
-        s = re.sub(r"!+", "!", s)
-        # 常见拼写修正
-        replacements = [
-            (r"\bwat\b", "what"),
-            (r"\binvetory\b", "inventory"),
-            (r"\binvnetory\b", "inventory"),
-            (r"\btehm\b", "them"),
-            (r"\bpls\b", "please"),
-            (r"\bthx\b", "thanks"),
-            (r"\bu\b", "you"),
-            (r"\bur\b", "your"),
-        ]
-        for pattern, repl in replacements:
-            s = re.sub(pattern, repl, s, flags=re.IGNORECASE)
-        # 去除开头的 "hey" 和结尾的 "thx/thanks"
-        s = re.sub(r"^\s*hey\s*,?\s*", "", s, flags=re.IGNORECASE).strip()
-        s = re.sub(r"\s*(thx|thanks)\s*[.!?]*\s*$", "", s, flags=re.IGNORECASE).strip()
-        s = s.lower()
-        s = re.sub(r"\s+", " ", s).strip()
-        return s if s else text.strip()
+        """Apply typo/filler fixes. Delegates to QueryProcessor."""
+        return QueryProcessor.apply_typo_and_filler_fixes(text)
 
     @staticmethod
     def is_rewrite_responsibility_compliant(text: str) -> bool:
@@ -138,14 +93,14 @@ class RewriteResponseProcessor:
 
     @classmethod
     def enforce_rewrite_responsibility(cls, rewritten_text: str, fallback_query: str) -> str:
-        """强制执行改写职责约束：不合规时回退到原始查询。"""
-        collapsed = cls.collapse_to_single_sentence(rewritten_text)
+        """Enforce rewrite responsibility: fallback to original if non-compliant."""
+        collapsed = QueryProcessor.collapse_to_single_line(rewritten_text)
         if cls.is_rewrite_responsibility_compliant(collapsed):
             return collapsed
         logger.warning(
             "Rewrite output violates rewriting responsibility; fallback to normalized original query"
         )
-        return cls.collapse_to_single_sentence(fallback_query)
+        return QueryProcessor.collapse_to_single_line(fallback_query)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

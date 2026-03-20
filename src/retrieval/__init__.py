@@ -11,11 +11,12 @@ Architecture (强制):
 
 Public API (exported by this package):
   KeywordMatchResult                  — 关键字匹配结果数据类
-  KeywordRetrieval                    — Layer 1 主类；match(query) → Optional[KeywordMatchResult]
-  keyword_retrieve(query)             — Layer 1 一次性便捷函数
+  KeywordRetrieval                    — Layer 1 主类；注入规则行后 match(query)
+  LoadKeywordRule                     — 从目录加载 CSV/YAML 规则（类方法）
+  keyword_retrieve(query, dict_rows, for_loop_rows, regex_rows) — 一次性便捷函数（无文件 I/O）
   VectorCandidate                     — 向量检索单条候选数据类
-  VectorRetrieval                     — Layer 2 主类；retrieve(query, ...) → List[VectorCandidate]
-  vector_retrieve(query, ...)         — Layer 2 一次性便捷函数
+  VectorRetrieval                     — Layer 2；注入 chroma_path、collection_name 后 retrieve
+  vector_retrieve(query, chroma_path=..., collection_name=...) — 一次性便捷函数
 """
 
 # ---------------------------------------------------------------------------
@@ -30,8 +31,10 @@ from __future__ import annotations
 from src.retrieval.keyword_retrieval import (
     KeywordMatchResult,
     KeywordRetrieval,
+    LoadKeywordRule,
     keyword_retrieve,
 )
+from src.retrieval.query_process import QueryProcessor, normalize_query
 from src.retrieval.vector_retrieval import (
     VectorCandidate,
     VectorRetrieval,
@@ -41,8 +44,11 @@ from src.retrieval.vector_retrieval import (
 __all__ = [
     "KeywordMatchResult",
     "KeywordRetrieval",
+    "LoadKeywordRule",
+    "QueryProcessor",
     "VectorCandidate",
     "VectorRetrieval",
     "keyword_retrieve",
+    "normalize_query",
     "vector_retrieve",
 ]

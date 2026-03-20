@@ -1,0 +1,16 @@
+# High-frequency variant sentences (for-loop, max ~10).
+# Match: if phrase in query (case-insensitive).
+# Order: longer phrases first to reduce false positives.
+sp_api:
+  - "check order status for "
+  - "latest order status"
+
+uds:
+  - "how many sales quantity for asin "
+  - "tell me the sales revenue of last month"
+
+amazon_business:
+  - "what is fba"
+  - "what is fbm"
+  - "fba fee policy"
+
