@@ -21,7 +21,7 @@ class QueryRequest(BaseModel):
         query: Natural language question from the user.
         workflow: Routing workflow selector
                   (auto|general|amazon_docs|ic_docs|sp_api|uds).
-        rewrite_enable: Whether to enable query rewriting.
+        rewrite_backend: LLM backend for the unified rewrite+split stage.
         session_id: Optional session identifier for multi-turn context.
         stream: Whether client requests streaming response (SSE).
     """
@@ -34,15 +34,11 @@ class QueryRequest(BaseModel):
             "Defaults to auto when not provided."
         ),
     )
-    rewrite_enable: bool = Field(
-        default=True,
-        description="Enable or disable query rewriting.",
-    )
     rewrite_backend: Optional[str] = Field(
         default=None,
         description=(
-            "Rewrite backend when rewrite_enable=True: 'ollama' or 'deepseek'. "
-            "Ignored when rewrite_enable=False. Defaults to GATEWAY_REWRITE_BACKEND env."
+            "Rewrite stage backend: 'ollama' or 'deepseek'. "
+            "Defaults to GATEWAY_REWRITE_BACKEND env."
         ),
     )
     session_id: Optional[str] = Field(
@@ -67,11 +63,11 @@ class QueryRequest(BaseModel):
         return s if s in ("ollama", "deepseek") else None
 
     model_config = ConfigDict(
+        extra="ignore",
         json_schema_extra={
             "example": {
                 "query": "What were my total Amazon sales last week?",
                 "workflow": "uds",
-                "rewrite_enable": True,
                 "rewrite_backend": "ollama",
                 "session_id": "session-1234",
                 "user_id": None,
@@ -175,7 +171,6 @@ class QueryResponse(BaseModel):
                 "debug": {
                     "original_query": "What were my total Amazon sales last week?",
                     "rewritten_query": "total Amazon sales last week",
-                    "rewrite_enabled": True,
                     "rewrite_backend": "ollama",
                     "rewrite_time_ms": 24,
                     "route_input_query": "total Amazon sales last week",
@@ -194,18 +189,13 @@ class RewriteResponse(BaseModel):
 
     Fields:
         original_query: Original user query text.
-        rewritten_query: Query text after normalization/rewriting.
-        rewrite_enabled: Whether rewriting was enabled for this request.
+        rewritten_query: Display text after unified rewrite+split stage.
         rewrite_backend: Effective rewrite backend used, if any.
         rewrite_time_ms: Rewrite elapsed time in milliseconds.
     """
 
     original_query: str = Field(..., description="Original user query text.")
     rewritten_query: str = Field(..., description="Rewritten query text.")
-    rewrite_enabled: bool = Field(
-        default=True,
-        description="Whether rewriting was enabled for this request.",
-    )
     rewrite_backend: Optional[str] = Field(
         default=None,
         description="Effective rewrite backend used for this request.",
@@ -256,7 +246,7 @@ class RewriteResponse(BaseModel):
     )
     intents: Optional[List[str]] = Field(
         default=None,
-        description="Intent classification list: split sub-questions from rewritten query (for UI bullet list).",
+        description="Sub-questions after post-rewrite split (rewriting); used for UI bullet list before per-intent classification.",
     )
     intent_details: Optional[List[Dict[str, Any]]] = Field(
         default=None,
@@ -294,7 +284,6 @@ class RewriteResponse(BaseModel):
             "example": {
                 "original_query": "Total sales in October 2025",
                 "rewritten_query": "total sales for October 2025",
-                "rewrite_enabled": True,
                 "rewrite_backend": "ollama",
                 "rewrite_time_ms": 18,
             }

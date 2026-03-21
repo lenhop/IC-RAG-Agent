@@ -52,9 +52,7 @@ class GatewayConfig:
 
     @classmethod
     def resolve_rewrite_backend(cls, request: QueryRequest) -> Optional[str]:
-        """Resolve effective rewrite backend used by gateway."""
-        if not request.rewrite_enable:
-            return None
+        """Resolve effective rewrite backend used by gateway (unified rewrite always on)."""
         backend = (request.rewrite_backend or "").strip().lower()
         if backend:
             return backend

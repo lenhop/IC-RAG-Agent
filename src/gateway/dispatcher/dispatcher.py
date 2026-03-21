@@ -22,11 +22,8 @@ import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..route_llm.classification import (
-    classify_intents_batch,
-    split_intents,
-    validate_intents,
-)
+from ..route_llm.classification import classify_intents_batch, validate_intents
+from ..route_llm.rewriting import split_intents
 from ..schemas import QueryRequest, RewritePlan, TaskExecutionResult, TaskGroup, TaskItem
 from .services import (
     call_amazon_docs,

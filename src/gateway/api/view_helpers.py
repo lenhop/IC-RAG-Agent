@@ -33,26 +33,31 @@ class IntentDetailsBuilder:
 
     @classmethod
     def build_intent_details(
-        cls, rewritten_query: str
+        cls,
+        rewritten_query: str,
+        intents_override: Optional[List[str]] = None,
     ) -> Tuple[Optional[List[str]], List[Dict[str, Any]], List[str]]:
         """
         Build (intents, intent_details, workflows) from rewritten query.
 
-        Runs split_intents; classifies via classify_intents_batch (includes
+        If intents_override is set, classifies those strings. Otherwise treats the rewritten
+        string as a single sub-query (callers should pass intents from unified rewrite).
+        classifies via classify_intents_batch (includes
         intent_elapsed_ms and step_timings for UI/log). Falls back to "general"
         when classification fails.
         """
         intents: Optional[List[str]] = None
         intent_details: List[Dict[str, Any]] = []
         workflows: List[str] = []
-        if not (rewritten_query or "").strip():
+        if not (rewritten_query or "").strip() and not (intents_override or []):
             return intents, intent_details, workflows
         try:
-            from ..route_llm.classification import (
-                classify_intents_batch,
-                split_intents,
-            )
-            intents = split_intents(rewritten_query)
+            from ..route_llm.classification import classify_intents_batch
+            if intents_override is not None:
+                intents = [s.strip() for s in intents_override if (s or "").strip()]
+            else:
+                rq = (rewritten_query or "").strip()
+                intents = [rq] if rq else []
             if intents:
                 batch_results = classify_intents_batch(intents)
                 for r in batch_results:
@@ -162,7 +167,6 @@ class DebugTraceBuilder:
         return {
             "original_query": original_query,
             "rewritten_query": rewritten_query,
-            "rewrite_enabled": bool(request.rewrite_enable),
             "rewrite_backend": GatewayConfig.resolve_rewrite_backend(request),
             "rewrite_time_ms": rewrite_time_ms,
             "route_input_query": route_input_query,

@@ -3,13 +3,13 @@ Intent Classification — Public API Module (公共接口模块)
 
 Architecture (强制):
   classification.py = 对外门面：公共函数 + _IntentValidator；委托实现到 implement_methods
-  implement_methods.py = 实现层：IntentSplitMethod、ClassificationImplementMethod、IntentResult、ClassificationIntentVectorStore
+  implement_methods.py = 实现层：ClassificationImplementMethod、IntentResult、ClassificationIntentVectorStore
   __init__.py       = 包入口，从本模块 re-export 公共 API
 
   下游（dispatcher, api 等）通过本包入口访问；禁止依赖 implement_methods 内部私有符号。
 
 Workflow (per Intent-Classification-Workflow diagram):
-  Rewritten Query → Split Intents → per-intent: keyword → vector → LLM → Merge → Dispatcher
+  Sub-queries from unified rewrite stage → per-intent: keyword → vector → LLM → Merge → Dispatcher
 
 Internal (in this module, not exported):
   _IntentValidator — 必填字段校验与追问
@@ -18,7 +18,7 @@ Implementation detail (implement_methods):
   IntentResult；ClassificationIntentVectorStore.llm_detect — LLM 并行三 workflow；classification_data/amazon_intents.csv 示例注入
 
 Public API (exported via __init__.py):
-  split_intents, classify_intent, classify_intents_batch, validate_intents, IntentResult
+  classify_intent, classify_intents_batch, validate_intents, IntentResult
 """
 
 from __future__ import annotations
@@ -32,7 +32,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from .implement_methods import (
     ClassificationImplementMethod,
     IntentResult,
-    IntentSplitMethod,
 )
 
 logger = logging.getLogger(__name__)
@@ -146,11 +145,6 @@ class _IntentValidator:
 # ---------------------------------------------------------------------------
 # Public API — 委托 implement_methods
 # ---------------------------------------------------------------------------
-
-
-def split_intents(query: str, conversation_context: Optional[str] = None) -> List[str]:
-    """将重写后的查询拆分为单意图子问题列表。"""
-    return IntentSplitMethod.split(query, conversation_context=conversation_context)
 
 
 def classify_intent(

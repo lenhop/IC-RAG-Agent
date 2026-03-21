@@ -351,7 +351,7 @@ def _chat_handler(
     message: str,
     history: List[Tuple[str, str]],
     workflow: str,
-    rewrite_enable: bool,
+    rewrite_preview: bool,
     rewrite_backend: str,
     session_id: str,
     auth_token: Optional[str] = None,
@@ -364,8 +364,8 @@ def _chat_handler(
         message: User message.
         history: Chat history (unused; ChatInterface manages it).
         workflow: Selected workflow (auto|general|amazon_docs|ic_docs|sp_api|uds).
-        rewrite_enable: Whether query rewriting is enabled.
-        rewrite_backend: Rewrite backend when enabled: "ollama" or "deepseek".
+        rewrite_preview: When True, call /rewrite first to show unified rewrite preview.
+        rewrite_backend: Rewrite LLM backend: "ollama" or "deepseek".
         session_id: Session UUID for multi-turn context.
         auth_token: Optional JWT for protected gateway.
         user_info: Optional user dict with user_id for user-scoped history.
@@ -395,13 +395,12 @@ def _chat_handler(
     # Sum of clarification + rewrite + classification (ms) for UI trace after full query.
     route_llm_total_ms: Optional[int] = None
 
-    # In rewrite-only test mode, always run rewrite (recommended for this mode).
-    effective_rewrite_enable = rewrite_enable or REWRITE_ONLY_TEST_MODE
+    # In rewrite-only test mode, always run /rewrite preview (recommended for this mode).
+    effective_rewrite_preview = rewrite_preview or REWRITE_ONLY_TEST_MODE
 
-    if effective_rewrite_enable:
+    if effective_rewrite_preview:
         rewrite_result = client.rewrite_sync(
             query=raw_query,
-            rewrite_enable=True,
             rewrite_backend=(rewrite_backend or "").strip() or None,
             session_id=session_id or None,
             user_id=user_id,
@@ -552,8 +551,7 @@ def _chat_handler(
                 client.query_sync(
                     query=routed_query,
                     workflow=workflow or "auto",
-                    rewrite_enable=False,
-                    rewrite_backend=None,
+                    rewrite_backend=(rewrite_backend or "").strip() or None,
                     session_id=session_id or None,
                     user_id=user_id,
                     token=auth_token,
@@ -574,14 +572,13 @@ def _chat_handler(
             )
         return
 
-    # Query using rewritten text; disable rewrite to avoid double rewriting.
+    # Full query: server always runs unified rewrite; pass backend for consistency.
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(
             client.query_sync,
             query=routed_query,
             workflow=workflow or "auto",
-            rewrite_enable=False,
-            rewrite_backend=None,
+            rewrite_backend=(rewrite_backend or "").strip() or None,
             session_id=session_id or None,
             user_id=user_id,
             token=auth_token,
@@ -730,8 +727,8 @@ def create_demo() -> gr.Blocks:
                         label="Workflow",
                         info="auto|general|amazon_docs|ic_docs|sp_api|uds",
                     )
-                    # Rewriting is always on; backend from env. No UI controls needed.
-                    rewrite_checkbox = gr.State(value=True)
+                    # Optional /rewrite preview before full query; backend from env default.
+                    rewrite_preview_checkbox = gr.State(value=True)
                     rewrite_backend_dropdown = gr.State(value=_normalize_rewrite_backend(REWRITE_BACKEND_DEFAULT))
                     gr.Markdown("### User")
                     user_display = gr.Markdown("", elem_id="ic_user_display", line_breaks=True)
@@ -753,7 +750,7 @@ def create_demo() -> gr.Blocks:
                         title="",
                         additional_inputs=[
                             workflow_radio,
-                            rewrite_checkbox,
+                            rewrite_preview_checkbox,
                             rewrite_backend_dropdown,
                             session_id_state,
                             auth_token_state,

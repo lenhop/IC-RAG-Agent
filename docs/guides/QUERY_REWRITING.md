@@ -20,7 +20,7 @@ On failure (connection, timeout, API error), the gateway returns the normalized 
 
 When `GATEWAY_REWRITE_PLANNER_ENABLED=true` (set by `bin/project_stack.sh` for the gateway), the gateway uses a **two-phase flow** to handle complex queries with multiple sub-questions:
 
-1. **Phase 1 – Intent classification:** The LLM is asked to list each distinct sub-question. Expected output: `{"intents": ["...", "..."]}`. Implemented via `split_intents()` in `src/gateway/route_llm/classification/`.
+1. **Phase 1 – Unified rewrite (rewriting):** One LLM call rewrites and emits sub-questions. Expected output: `{"intents": ["...", "..."], "rewritten_display": "..."}`. Prompt: `src/gateway/route_llm/rewriting/rewrite_prompt.md` (implementation in `rewrite_implement.py` / `rewriters.py`).
 
 2. **Phase 2 – Task building:** For each intent, LLM prompt-based classification assigns a workflow (sp_api, uds, amazon_docs, general). One task is created per intent.
 
@@ -44,7 +44,6 @@ Example: `"what is FBA get order 112-123 which table stores fee show me trend"` 
 | **DEEPSEEK_LLM_MODEL** | deepseek-chat | Model for all DeepSeek chat calls (clarification, rewrite, intent split). |
 | **DEEPSEEK_BASE_URL** | https://api.deepseek.com | OpenAI-compatible API base URL. |
 | **DEEPSEEK_REQUEST_TIMEOUT** | 60 | HTTP timeout (seconds) for DeepSeek requests. |
-| **GATEWAY_INTENT_SPLIT_BACKEND** | ollama | Intent split: `ollama` or `deepseek` (`split_intents`). |
 
 **Unified clients:**
 - **DeepSeek:** `src/llm/call_deepseek.py` — `DeepSeekChat.complete()`.
@@ -129,7 +128,6 @@ When calling `POST /api/v1/query` directly:
 {
   "query": "What were my sales last week?",
   "workflow": "auto",
-  "rewrite_enable": true,
   "rewrite_backend": "ollama",
   "session_id": "optional-session-id",
   "stream": false
@@ -137,7 +135,7 @@ When calling `POST /api/v1/query` directly:
 ```
 
 - `rewrite_backend` is optional; when omitted, `GATEWAY_REWRITE_BACKEND` is used.
-- When `rewrite_enable` is `false`, `rewrite_backend` is ignored.
+- The gateway always runs the unified rewrite+split stage when the query pipeline proceeds past clarification (requires `session_id` for memory merge).
 
 ---
 

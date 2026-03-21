@@ -28,18 +28,33 @@ def _make_two_task_plan() -> RewritePlan:
     )
 
 
+def _fake_rewrite_and_route(*_args, **_kwargs):
+    """Ten-tuple matching rewrite_and_route(enable_routing=False)."""
+    return (
+        "rewritten q",
+        None,
+        0,
+        0,
+        None,
+        None,
+        None,
+        None,
+        None,
+        ["intent-1", "intent-2"],
+    )
+
+
 def test_query_pipeline_passes_preclassified_intents_to_planner(monkeypatch):
     captured: dict = {}
     events: list[tuple[str, dict]] = []
 
     monkeypatch.setattr(api_module.AuthGuard, "resolve_user_id", staticmethod(lambda req, payload: "u1"))
     monkeypatch.setattr(api_module, "_run_clarification", lambda *_args, **_kwargs: (None, None))
-    monkeypatch.setattr(api_module, "_run_rewrite", lambda *_args, **_kwargs: ("rewritten q", 12))
+    monkeypatch.setattr(api_module, "rewrite_and_route", _fake_rewrite_and_route)
     monkeypatch.setattr(
         api_module,
-        "_prepare_intent_classification",
-        lambda rewritten_query, ctx: (
-            ["intent-1", "intent-2"],
+        "_classify_intents_batch_safe",
+        lambda intents, ctx: (
             [
                 {
                     "query": "intent-1",
@@ -55,7 +70,9 @@ def test_query_pipeline_passes_preclassified_intents_to_planner(monkeypatch):
                     "required_fields": [],
                     "clarification_template": "",
                 },
-            ],
+            ]
+            if intents
+            else None
         ),
     )
 
@@ -98,7 +115,7 @@ def test_query_pipeline_passes_preclassified_intents_to_planner(monkeypatch):
     monkeypatch.setattr(api_module.GatewayEventLogger, "log_error", staticmethod(lambda **kwargs: None))
     monkeypatch.setattr(api_module.GatewayConfig, "is_rewrite_only_mode", staticmethod(lambda: False))
 
-    req = QueryRequest(query="hello", workflow="auto", rewrite_enable=True, session_id="s1", user_id="u1")
+    req = QueryRequest(query="hello", workflow="auto", session_id="s1", user_id="u1")
     response = api_module.QueryPipeline.run(req, user_payload={"sub": "u1"}, memory=None)
 
     assert captured["intents"] == ["intent-1", "intent-2"]
@@ -115,13 +132,28 @@ def test_query_pipeline_passes_preclassified_intents_to_planner(monkeypatch):
     assert response.answer
 
 
+def _fake_rewrite_and_route_empty_intents(*_args, **_kwargs):
+    return (
+        "rewritten q",
+        None,
+        0,
+        0,
+        None,
+        None,
+        None,
+        None,
+        None,
+        [],
+    )
+
+
 def test_query_pipeline_handles_no_classification_data(monkeypatch):
     captured: dict = {}
 
     monkeypatch.setattr(api_module.AuthGuard, "resolve_user_id", staticmethod(lambda req, payload: "u1"))
     monkeypatch.setattr(api_module, "_run_clarification", lambda *_args, **_kwargs: (None, None))
-    monkeypatch.setattr(api_module, "_run_rewrite", lambda *_args, **_kwargs: ("rewritten q", 8))
-    monkeypatch.setattr(api_module, "_prepare_intent_classification", lambda rewritten_query, ctx: (None, None))
+    monkeypatch.setattr(api_module, "rewrite_and_route", _fake_rewrite_and_route_empty_intents)
+    monkeypatch.setattr(api_module, "_classify_intents_batch_safe", lambda intents, ctx: None)
 
     def _build_execution_plan(request, rewritten_query, intents=None, conversation_context=None, classified_intents=None):
         captured["intents"] = intents
@@ -152,7 +184,7 @@ def test_query_pipeline_handles_no_classification_data(monkeypatch):
     monkeypatch.setattr(api_module.GatewayEventLogger, "log_error", staticmethod(lambda **kwargs: None))
     monkeypatch.setattr(api_module.GatewayConfig, "is_rewrite_only_mode", staticmethod(lambda: False))
 
-    req = QueryRequest(query="hello", workflow="auto", rewrite_enable=True, session_id="s1", user_id="u1")
+    req = QueryRequest(query="hello", workflow="auto", session_id="s1", user_id="u1")
     response = api_module.QueryPipeline.run(req, user_payload={"sub": "u1"}, memory=None)
 
     assert captured["intents"] is None

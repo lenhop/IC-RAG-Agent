@@ -77,7 +77,6 @@ def call_rewrite(
     payload = {
         "query": query,
         "workflow": "auto",
-        "rewrite_enable": True,
         "rewrite_backend": rewrite_backend,
         "session_id": None,
         "stream": False,

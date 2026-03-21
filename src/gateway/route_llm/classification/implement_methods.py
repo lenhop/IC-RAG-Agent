@@ -4,8 +4,8 @@ Intent classification implementation methods.
 Architecture:
   IntentResult — classification result dataclass (re-exported via classification facade).
   ClassificationIntentVectorStore — cached VectorRetrieval + parallel LLM intent detection (layer 3).
-  IntentSplitMethod — LLM multi-intent split.
   ClassificationImplementMethod — keyword then vector then LLM (serial short-circuit).
+  Post-rewrite intent split lives in route_llm.rewriting (not this module).
 
 This module does not import classification.py (avoids circular dependency); classification
 imports from here and re-exports public types and API wrappers.
@@ -87,11 +87,6 @@ def _intent_detect_backend() -> str:
     return (os.getenv("GATEWAY_INTENT_DETECT_BACKEND") or "ollama").strip().lower()
 
 
-def _intent_split_backend() -> str:
-    """LLM backend for intent split (ollama or deepseek), from env."""
-    return (os.getenv("GATEWAY_INTENT_SPLIT_BACKEND") or "ollama").strip().lower()
-
-
 def _use_keyword() -> bool:
     """Whether keyword classification is enabled (default: True)."""
     val = (os.getenv("GATEWAY_INTENT_USE_KEYWORD") or "true").strip().lower()
@@ -166,7 +161,7 @@ class ClassificationIntentVectorStore:
     @classmethod
     def _resolve_chroma_path(cls) -> Path:
         """Intent-registry Chroma directory from env or project default."""
-        raw = (os.getenv("CHROMA_INTENT_REGISTRY_PATH") or "").strip()
+        raw = (os.getenv("CHROMA_INTENT_REGISTRY_PATHClarification") or "").strip()
         if raw:
             return Path(raw).expanduser().resolve()
         return _DEFAULT_INTENT_REGISTRY_CHROMA.resolve()
@@ -445,134 +440,6 @@ class ClassificationKeywordRuleStore:
         if cls._keyword_retrieval is None:
             raise RuntimeError("ClassificationKeywordRuleStore failed to build KeywordRetrieval")
         return cls._keyword_retrieval
-
-
-class IntentSplitMethod:
-    """
-    Multi-intent splitter: uses LLM only; on failure returns a single-element list
-    with the original query (no heuristic splitting).
-    """
-
-    @classmethod
-    def split(cls, query: str, conversation_context: Optional[str] = None) -> List[str]:
-        """
-        Split rewritten user query into independent intent clauses.
-
-        Args:
-            query: Rewritten query text.
-            conversation_context: Optional history for prompt {history} placeholder.
-
-        Returns:
-            List of intent strings; on LLM failure or invalid JSON, [query.strip()].
-        """
-        if not query or not query.strip():
-            return []
-
-        prompt_template = load_prompt("classification/intent_split_query")
-        history_text = (conversation_context or "").strip() or "(no conversation history)"
-        prompt = (
-            prompt_template.replace("{history}", history_text).replace(
-                "{rewritten_query}", query.strip()
-            )
-        )
-        text = ""
-
-        if _intent_split_backend() == "deepseek" and (os.getenv("DEEPSEEK_API_KEY") or "").strip():
-            try:
-                text = DeepSeekChat().complete(
-                    system_prompt="You are an intent splitter. Output ONLY valid JSON.",
-                    user_content=prompt,
-                    max_tokens=512,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Intent split DeepSeek failed: %s; returning original query", exc
-                )
-                return [query.strip()]
-        else:
-            try:
-                text = OllamaClient().generate(prompt, empty_fallback="")
-            except Exception as exc:
-                logger.warning(
-                    "Intent split LLM call failed: %s; returning original query", exc
-                )
-                return [query.strip()]
-
-        if not text:
-            return [query.strip()]
-
-        raw = cls._strip_markdown_fences(text)
-        parsed = cls._parse_json_response(raw)
-        if parsed is None:
-            return [query.strip()]
-
-        intents = parsed.get("intents")
-        if not isinstance(intents, list) or not intents:
-            return [query.strip()]
-
-        result = cls._dedupe_intents(intents)
-        if not result:
-            return [query.strip()]
-
-        cls._log_split_result(query, result)
-        return result
-
-    @staticmethod
-    def _strip_markdown_fences(text: str) -> str:
-        raw = text.strip()
-        if raw.startswith("```"):
-            lines = raw.splitlines()
-            if len(lines) >= 2 and lines[-1].strip() == "```":
-                return "\n".join(lines[1:-1]).strip()
-        return raw
-
-    @staticmethod
-    def _parse_json_response(raw: str) -> Optional[Dict[str, object]]:
-        try:
-            return json.loads(raw)
-        except ValueError:
-            start = raw.find("{")
-            end = raw.rfind("}")
-            if start >= 0 and end > start:
-                try:
-                    return json.loads(raw[start : end + 1])
-                except ValueError:
-                    logger.warning("Intent split JSON parse failed; heuristic fallback")
-                    return None
-            logger.warning("Intent split no JSON found; heuristic fallback")
-            return None
-
-    @staticmethod
-    def _dedupe_intents(intents: List[object]) -> List[str]:
-        seen: set[str] = set()
-        result: List[str] = []
-        for item in intents:
-            if not isinstance(item, str):
-                continue
-            cleaned = item.strip()
-            lowered = cleaned.lower()
-            if cleaned and lowered not in seen:
-                seen.add(lowered)
-                result.append(cleaned)
-        return result
-
-    @staticmethod
-    def _log_split_result(query: str, result: List[str]) -> None:
-        if not _split_gateway_logger:
-            return
-        try:
-            _split_gateway_logger.log_runtime(
-                event_name="intent_split_completed",
-                stage="intent_classification",
-                message="split_intents completed",
-                status="success",
-                workflow="intent_classification",
-                query_raw=query,
-                intent_list=result,
-                metadata={"intent_count": len(result)},
-            )
-        except Exception:
-            pass
 
 
 class ClassificationImplementMethod:

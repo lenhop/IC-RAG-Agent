@@ -131,21 +131,6 @@ def _run_clarification(
     return context, None
 
 
-def _run_rewrite(
-    request: QueryRequest, effective_user_id: str | None,
-    clarification_context: str | None, memory: Any,
-) -> tuple[str, int]:
-    """Execute rewrite pipeline → (rewritten_query, elapsed_ms)."""
-    req = request.model_copy(update={"user_id": effective_user_id}) if effective_user_id else request
-    started = time.perf_counter()
-    rewritten_query, _, *_ = rewrite_and_route(
-        req, gateway_memory=memory,
-        conversation_context=clarification_context, enable_routing=False,
-    )
-    rewritten_query = QueryProcessor.normalize(rewritten_query)
-    return rewritten_query, int((time.perf_counter() - started) * 1000)
-
-
 def _log_and_persist(
     memory: Any, *,
     event_type: str, content: dict,
@@ -166,39 +151,20 @@ def _log_and_persist(
         )
 
 
-def _prepare_intent_classification(
-    rewritten_query: str,
+def _classify_intents_batch_safe(
+    intents: list[str] | None,
     conversation_context: str | None,
-) -> tuple[list[str] | None, list[dict[str, Any]] | None]:
-    """Prepare intent split and optional batch classification results.
-
-    Returns:
-      (intents, classified_intents)
-      - intents: split sub-queries (or None if disabled/unavailable)
-      - classified_intents: optional per-intent metadata from classify_intents_batch
-    """
-    if not (rewritten_query or "").strip():
-        return None, None
-    if os.getenv("GATEWAY_INTENT_CLASSIFICATION_ENABLED", "").lower() not in ("1", "true", "yes", "on"):
-        return None, None
-
+) -> list[dict[str, Any]] | None:
+    """Run classify_intents_batch; never raises."""
+    if not intents:
+        return None
     try:
-        from ..route_llm.classification import classify_intents_batch, split_intents
+        from ..route_llm.classification import classify_intents_batch
 
-        intents = split_intents(rewritten_query, conversation_context)
-        if not intents:
-            return None, None
-
-        classified_intents: list[dict[str, Any]] | None = None
-        try:
-            classified_intents = classify_intents_batch(intents, conversation_context)
-        except Exception as exc:
-            logger.warning("Intent batch classification failed (non-fatal): %s", exc)
-
-        return intents, classified_intents
+        return classify_intents_batch(intents, conversation_context)
     except Exception as exc:
-        logger.warning("Intent split failed (non-fatal): %s", exc)
-        return None, None
+        logger.warning("Intent batch classification failed (non-fatal): %s", exc)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +223,6 @@ class RewritePipeline:
                 )
                 return RewriteResponse(
                     original_query=original_query, rewritten_query=original_query,
-                    rewrite_enabled=bool(request.rewrite_enable),
                     rewrite_backend=GatewayConfig.resolve_rewrite_backend(request),
                     rewrite_time_ms=0, plan=None,
                     clarification_required=True, clarification_question=q,
@@ -266,19 +231,26 @@ class RewritePipeline:
                     clarification_time_ms=clar_elapsed_ms,
                 )
 
-            # 2. Rewrite (needs memory_rounds, so call rewrite_and_route directly)
+            # 2. Unified rewrite (JSON: display + intents) + 3. Intent preview
             req = request.model_copy(update={"user_id": uid}) if uid else request
             started = time.perf_counter()
-            rewritten_query, _, memory_rounds, memory_text_length, *_ = rewrite_and_route(
-                req, gateway_memory=memory, conversation_context=ctx, enable_routing=False,
+            rr = rewrite_and_route(
+                req,
+                gateway_memory=memory,
+                conversation_context=ctx,
+                enable_routing=False,
             )
-            rewritten_query = QueryProcessor.normalize(rewritten_query)
+            rewritten_query = QueryProcessor.normalize(rr[0])
+            memory_rounds = rr[2]
+            memory_text_length = rr[3]
+            intents_override = list(rr[9])
             rewrite_time_ms = int((time.perf_counter() - started) * 1000)
             logger.info("[Perf] rewrite endpoint rewrite: %d ms", rewrite_time_ms)
 
-            # 3. Intent classification preview
             intent_start = time.perf_counter()
-            intents, intent_details, workflows = IntentDetailsBuilder.build_intent_details(rewritten_query)
+            intents, intent_details, workflows = IntentDetailsBuilder.build_intent_details(
+                rewritten_query, intents_override=intents_override
+            )
             classification_time_ms = int((time.perf_counter() - intent_start) * 1000)
             logger.info("[Perf] rewrite endpoint intent_classification: %d ms", classification_time_ms)
 
@@ -295,7 +267,6 @@ class RewritePipeline:
 
             return RewriteResponse(
                 original_query=original_query, rewritten_query=rewritten_query,
-                rewrite_enabled=bool(request.rewrite_enable),
                 rewrite_backend=GatewayConfig.resolve_rewrite_backend(request),
                 rewrite_time_ms=rewrite_time_ms, plan=None,
                 clarification_status=clarification_status,
@@ -311,7 +282,6 @@ class RewritePipeline:
             logger.exception("Rewrite endpoint failed: %s", exc)
             return RewriteResponse(
                 original_query=original_query, rewritten_query=original_query,
-                rewrite_enabled=bool(request.rewrite_enable),
                 rewrite_backend=GatewayConfig.resolve_rewrite_backend(request),
                 rewrite_time_ms=0, plan=None, error=str(exc),
             )
@@ -326,11 +296,8 @@ class QueryPipeline:
     """
     Orchestrates the /query endpoint:
       1) Clarification     → early return if ambiguous
-      2) Rewrite           → normalize + memory merge + rewrite
-      3) Intent split + batch classify → split query via split_intents(),
-                             then run classify_intents_batch() once (loop is
-                             internal to the classification module); result
-                             is (intents, classified_intents) passed downstream
+      2) Unified rewrite   → one LLM (JSON: display + intents) + memory merge
+      3) Batch classify    → classify_intents_batch(intents)
       4) Build plan        → execution plan + field validation
       5) Route             → determine workflow / route metadata
       6) Execute           → Dispatcher runs worker agents
@@ -419,9 +386,22 @@ class QueryPipeline:
                     clarification_backend=clar_raw.get("clarification_backend"),
                 )
 
-            # 2. Rewrite
+            # 2. Unified rewrite + 3. Batch intent classification
             rewrite_start = time.perf_counter()
-            rewritten_query, rewrite_time_ms = _run_rewrite(request, uid, ctx, memory)
+            req_qp = request.model_copy(update={"user_id": uid}) if uid else request
+            classified_intents: list[dict[str, Any]] | None = None
+
+            rr = rewrite_and_route(
+                req_qp,
+                gateway_memory=memory,
+                conversation_context=ctx,
+                enable_routing=False,
+            )
+            rewritten_query = QueryProcessor.normalize(rr[0])
+            memory_rounds_q = rr[2]
+            memory_text_length_q = rr[3]
+            intents: list[str] | None = list(rr[9]) if rr[9] else None
+            rewrite_time_ms = int((time.perf_counter() - rewrite_start) * 1000)
             MemoryEventWriter.append_event(
                 memory,
                 user_id=uid,
@@ -437,7 +417,7 @@ class QueryPipeline:
             GatewayEventLogger.log_runtime(
                 event_name="gateway_query_stage",
                 stage="rewrite",
-                message="rewrite completed",
+                message="unified rewrite completed",
                 status="success",
                 request_id=request_id,
                 session_id=request.session_id,
@@ -447,12 +427,10 @@ class QueryPipeline:
             )
             logger.info("[Perf] query endpoint rewrite: %d ms", rewrite_time_ms)
 
-            # 3. Intent classification: split -> per-intent prompt chain -> merge
             intent_start = time.perf_counter()
-            intents, classified_intents = _prepare_intent_classification(
-                rewritten_query,
-                ctx,
-            )
+            classified_intents = _classify_intents_batch_safe(intents, ctx)
+            intent_elapsed_ms = int((time.perf_counter() - intent_start) * 1000)
+
             MemoryEventWriter.append_event(
                 memory,
                 user_id=uid,
@@ -466,7 +444,6 @@ class QueryPipeline:
                 },
                 status="ok",
             )
-            intent_elapsed_ms = int((time.perf_counter() - intent_start) * 1000)
             GatewayEventLogger.log_runtime(
                 event_name="gateway_query_stage",
                 stage="intent_classification",
@@ -638,11 +615,15 @@ class QueryPipeline:
                     route_source,
                     route_backend,
                     route_llm_confidence,
+                    _,
                 ) = rewrite_and_route(
                     request,
                     enable_routing=True,
                     route_query=route_input_query,
                     rewritten_query=rewritten_query,
+                    rewrite_intents=intents or [],
+                    memory_rounds=memory_rounds_q,
+                    memory_text_length=memory_text_length_q,
                 )
                 if execution_plan.task_groups and execution_plan.task_groups[0].tasks:
                     execution_plan.task_groups[0].tasks[0].workflow = workflow

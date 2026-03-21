@@ -30,7 +30,6 @@ def load_prompt(name: str) -> str:
     Supports subdirectory paths, e.g.:
         "clarification/clarification_prompt"
         "rewriting/rewrite_prompt"
-        "classification/intent_split_query"
 
     Raises FileNotFoundError if neither .md nor .txt exists.
 

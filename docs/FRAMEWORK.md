@@ -257,60 +257,54 @@ First step of Route LLM; runs **before** rewriting. Detects ambiguous or incompl
 
 
 
-### 3.2 Query Rewriting
+### 3.2 Query Rewriting (unified rewrite + split)
 
-Second step of Route LLM; runs **after** clarification (when the query is clear). Produces one clean, normalized sentence for downstream intent classification. Does not split intents or assign workflows.
+Second step of Route LLM; runs **after** clarification (when the query is clear). One LLM call returns JSON with `rewritten_display` and `intents[]` (see `rewriting/rewrite_prompt.md`).
 
-**Responsibilities (from Rewriting_Responsibility)**
+**Responsibilities (aligned with Rewriting_Responsibility + split rules in the same prompt)**
 
-- **Normalization:** lowercase, remove extra spaces and line breaks, unify punctuation, correct obvious typos (optional).
-- **Context completion:** resolve references (it / this / that → explicit entities); fill omitted information from conversation context.
-- **Rewrite for clarity:** colloquial → formal/standard; do not change meaning; **do not split sentences**.
-- **Remove useless tokens:** modal particles, polite phrases (optional).
+- **Normalization:** fix typos, fillers, punctuation; preserve Amazon entities (ASIN, order IDs, dates).
+- **Context completion:** resolve references using conversation history when unambiguous.
+- **Clarity:** colloquial to formal; do not answer the user; do not assign workflows in prose.
+- **Split:** emit one or more self-contained sub-questions in `intents`.
 
-**What rewriting does NOT do**
+**What the unified rewrite stage does**
 
-- Does NOT split multi-intent queries into sub-questions.
-- Does NOT assign workflows or routing.
-- Does NOT output JSON or structured plans.
-- Output is always **plain text** — one clean, normalized sentence.
+- Rewrites the user query with conversation context (same product goals as legacy plain-text rewrite).
+- Splits into one or more **self-contained sub-questions** in the same LLM response.
+- Outputs **JSON only** (`intents`, optional `rewritten_display`). Parsed in `route_llm.rewriting.rewrite_implement`.
+- Does **not** assign workflows; downstream intent classification does.
 
 **When it runs**
 
-- After clarification (or when clarification is skipped). Only when rewrite is enabled (e.g. client sends rewrite_enable true).
-- Backend: Ollama or DeepSeek (same as clarification; configurable).
+- After clarification (or when clarification is skipped). Always part of `/query` and `/rewrite` pipelines when `session_id` is present for memory merge.
 
 **Inputs**
 
 - **Current query:** normalized raw query (trim, collapse whitespace) from the previous step.
-- **Conversation context:** optional. Preloaded context (e.g. from clarification) is merged with Redis memory (user or session); turns are deduplicated and renumbered. Last N rounds (configurable) are formatted as "Turn K: User asked \"...\" -> Answer \"...\"" for the LLM.
+- **Conversation context:** preloaded context (e.g. from clarification) merged with Redis session history; formatted for the LLM.
 
 **Pipeline (high level)**
 
-- Normalize query (trim, collapse whitespace). If empty, return empty; if rewrite disabled, return normalized.
-- Load and merge conversation context (preloaded + Redis); format for LLM.
-- Call LLM with rewrite prompt: rules (normalize, resolve refs, fill from context, clarity, preserve entities, no split, one line only). Input = context + current query.
-- Post-process: strip echoed trace/labels from LLM output; collapse newlines to one line; check responsibility compliance (plain text, no JSON/list). If non-compliant, fallback to normalized original query.
-- Return single-line rewritten query.
+- Normalize query. If empty, return empty.
+- Load and merge conversation context (preloaded + Redis); build prompt from `rewriting/rewrite_prompt.md`.
+- Call LLM (Ollama or DeepSeek); parse JSON; dedupe `intents`; derive `rewritten_display` if missing.
+- On parse/LLM failure, fallback to a single intent equal to the normalized query.
 
-**Output**
+**Boundary with intent classification**
 
-- One plain-text sentence. Passed to intent classification (which may split into sub-questions). On LLM/backend failure, returns normalized original query.
-
-**Boundary with Intent Classification**
-
-- Intent splitting (multi-intent → sub-questions) is **not** part of rewriting; it is Step 1 of the Intent Classification workflow. Rewriting outputs a single sentence; the intent classifier consumes it and may split it there.
+- **Intent classification** maps each sub-string in `intents` to a workflow (keyword / vector / LLM). It does not perform rewrite or split.
 
 
 
 ### 3.3 Intent Classification
 
-Classify sub-intents from the rewritten query into executable workflows.
+Classify each string in `intents` (from section 3.2) into executable workflows.
 
 ```mermaid
 flowchart TD
-    A[Input: Rewritten Query] --> B[Intent Splitting<br/>Model: qwen3:1.7b]
-    B --> C[Intent Clause List]
+    A[Input: intents from unified rewrite] --> B[Batch classify per clause]
+    B --> C[Intent Clause List with workflow]
     C --> D{For each clause}
     D --> E1[Keyword Retrieval<br/>Rule-based]
     D --> E2[Vector Retrieval<br/>Embedding: all-minilm]
@@ -326,14 +320,13 @@ flowchart TD
 
 **Workflow steps**
 
-1. Receive rewritten query (single line from 3.2) as input.
-2. Split into intent clauses using qwen3:1.7b; output a list of sub-intents.
-3. For each clause, run dual retrieval in parallel: keyword (rule-based) and vector (all-minilm + Chroma).
-4. Compare keyword vs vector; if same and neither is `hybrid`, use that result.
-5. If different or either is `hybrid`, run fallback resolver.
-6. Fallback priority: keyword (if not hybrid) → vector (if not hybrid) → `general`.
-7. Aggregate all final workflows into a deduplicated list plus per-intent details.
-8. Pass to Planner/Dispatcher for plan build, task execution, and result merge.
+1. Receive `intents` list from the unified rewrite stage (3.2).
+2. For each clause, run dual retrieval in parallel: keyword (rule-based) and vector (all-minilm + Chroma).
+3. Compare keyword vs vector; if same and neither is `hybrid`, use that result.
+4. If different or either is `hybrid`, run fallback resolver.
+5. Fallback priority: keyword (if not hybrid) → vector (if not hybrid) → `general`.
+6. Aggregate all final workflows into a deduplicated list plus per-intent details.
+7. Pass to Planner/Dispatcher for plan build, task execution, and result merge.
 
 **Fallback examples**
 
@@ -349,8 +342,6 @@ flowchart TD
 
 | Flag | Effect |
 |------|--------|
-| `GATEWAY_INTENT_CLASSIFICATION_ENABLED=true` | dual retrieval + fallback resolver |
-| `GATEWAY_INTENT_CLASSIFICATION_ENABLED=false` | keep split list, heuristic workflow assignment |
 | `GATEWAY_VECTOR_INTENT_ENABLED=true` | vector-intent path in planner execution |
 
 Out of scope: rewriting text, clarification questions, downstream execution.

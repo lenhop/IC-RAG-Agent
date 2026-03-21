@@ -43,7 +43,7 @@ class GatewayClient:
     """
     Client for the unified gateway query API.
 
-    Calls POST /api/v1/query with query, workflow, rewrite_enable, session_id.
+    Calls POST /api/v1/query with query, workflow, optional rewrite_backend, session_id.
     Supports mock mode when base_url is empty or GATEWAY_MOCK=true.
     """
 
@@ -82,7 +82,6 @@ class GatewayClient:
         self,
         query: str,
         workflow: str = "auto",
-        rewrite_enable: bool = True,
         rewrite_backend: Optional[str] = None,
         session_id: Optional[str] = None,
         user_id: Optional[str] = None,
@@ -95,9 +94,7 @@ class GatewayClient:
             query: User query string.
             workflow: Workflow selector. One of:
                      auto|general|amazon_docs|ic_docs|sp_api|uds
-            rewrite_enable: Whether to enable query rewriting.
-            rewrite_backend: When rewrite_enable=True, backend to use:
-                            "ollama" or "deepseek". Ignored when rewrite_enable=False.
+            rewrite_backend: Optional "ollama" or "deepseek" for the unified rewrite stage.
             session_id: Optional session ID for multi-turn context.
             user_id: Optional user ID for user-scoped conversation history.
             token: Optional JWT for protected gateway (GATEWAY_AUTH_REQUIRED).
@@ -114,15 +111,14 @@ class GatewayClient:
         payload: Dict[str, Any] = {
             "query": query,
             "workflow": wf,
-            "rewrite_enable": rewrite_enable,
             "session_id": session_id,
             "user_id": user_id,
         }
-        if rewrite_enable and rewrite_backend:
+        if rewrite_backend:
             payload["rewrite_backend"] = (rewrite_backend or "").strip().lower()
 
         if self._mock_mode:
-            return self._mock_response(query, wf, rewrite_enable, rewrite_backend, session_id, user_id)
+            return self._mock_response(query, wf, rewrite_backend, session_id, user_id)
 
         url = f"{self._base_url}/api/v1/query"
         return self._post_json(url, payload, token=token)
@@ -130,7 +126,6 @@ class GatewayClient:
     def rewrite_sync(
         self,
         query: str,
-        rewrite_enable: bool = True,
         rewrite_backend: Optional[str] = None,
         session_id: Optional[str] = None,
         user_id: Optional[str] = None,
@@ -141,7 +136,6 @@ class GatewayClient:
 
         Args:
             query: User query string.
-            rewrite_enable: Whether to enable rewriting.
             rewrite_backend: Optional backend ("ollama" or "deepseek").
             session_id: Optional session ID for multi-turn logging to Redis.
             user_id: Optional user ID for user-scoped conversation history.
@@ -154,7 +148,6 @@ class GatewayClient:
             return {
                 "original_query": query,
                 "rewritten_query": query,
-                "rewrite_enabled": rewrite_enable,
                 "rewrite_backend": rewrite_backend or "mock",
                 "rewrite_time_ms": 0,
                 "clarification_status": "Skip",
@@ -164,11 +157,10 @@ class GatewayClient:
         payload: Dict[str, Any] = {
             "query": query,
             "workflow": "auto",
-            "rewrite_enable": rewrite_enable,
             "session_id": session_id,
             "user_id": user_id,
         }
-        if rewrite_enable and rewrite_backend:
+        if rewrite_backend:
             payload["rewrite_backend"] = (rewrite_backend or "").strip().lower()
 
         url = f"{self._base_url}/api/v1/rewrite"
@@ -295,14 +287,16 @@ class GatewayClient:
         self,
         query: str,
         workflow: str,
-        rewrite_enable: bool,
         rewrite_backend: Optional[str],
         session_id: Optional[str],
         user_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Return simulated response when gateway is unavailable or mock mode."""
         return {
-            "answer": f"[Mock] Query: {query}\nWorkflow: {workflow}\nRewrite: {rewrite_enable}\nBackend: {rewrite_backend or 'default'}\nSession: {session_id or 'none'}",
+            "answer": (
+                f"[Mock] Query: {query}\nWorkflow: {workflow}\n"
+                f"Backend: {rewrite_backend or 'default'}\nSession: {session_id or 'none'}"
+            ),
             "workflow": workflow,
             "routing_confidence": 1.0,
             "sources": [],

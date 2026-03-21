@@ -2,12 +2,14 @@
 
 Architecture (强制):
   classification.py — 对外门面（公共函数 + 校验器；委托 implement_methods）
-  implement_methods.py — 实现层（IntentResult、拆分、keyword/vector/LLM 管线）
+  implement_methods.py — 实现层（IntentResult、keyword/vector/LLM 管线）
   __init__.py         — 包入口（re-export 公共 API）
 
-所有下游模块必须通过包入口导入：
+Sub-queries are produced by the unified rewrite stage (route_llm.rewriting).
+
+所有下游模块必须通过包入口导入分类 API：
     from src.gateway.route_llm.classification import (
-        split_intents, classify_intent, classify_intents_batch,
+        classify_intent, classify_intents_batch,
         validate_intents, IntentResult,
     )
 
@@ -18,7 +20,6 @@ from .classification import (
     IntentResult,
     classify_intent,
     classify_intents_batch,
-    split_intents,
     validate_intents,
 )
 
@@ -26,6 +27,5 @@ __all__ = [
     "IntentResult",
     "classify_intent",
     "classify_intents_batch",
-    "split_intents",
     "validate_intents",
 ]
