@@ -7,9 +7,10 @@ Supports mock mode when gateway is unavailable or GATEWAY_MOCK=true.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Iterator, Optional
 
 import requests
 
@@ -29,6 +30,67 @@ def _safe_json(resp: Optional[requests.Response]) -> Dict[str, Any]:
 VALID_WORKFLOWS = frozenset(
     {"auto", "general", "amazon_docs", "ic_docs", "sp_api", "uds"}
 )
+
+
+def iter_rewrite_events_from_final_dict(response: Dict[str, Any]) -> Iterator[Dict[str, Any]]:
+    """
+    Expand a single POST /api/v1/rewrite JSON body into the same event sequence as
+    ``/api/v1/rewrite/stream`` (for mock mode and gateways without the stream route).
+
+    Args:
+        response: Parsed rewrite JSON or error-shaped dict from ``rewrite_sync``.
+
+    Yields:
+        ``clarification`` / ``rewrite`` / ``classification`` steps when applicable,
+        then exactly one ``complete`` event (``rewrite_response`` == response).
+    """
+    if not isinstance(response, dict):
+        yield {
+            "step": "complete",
+            "rewrite_response": {
+                "original_query": "",
+                "rewritten_query": "",
+                "error": "invalid rewrite response",
+            },
+        }
+        return
+    if response.get("error") or response.get("clarification_required"):
+        yield {"step": "complete", "rewrite_response": response}
+        return
+
+    yield {
+        "step": "clarification",
+        "payload": {
+            "clarification_time_ms": response.get("clarification_time_ms"),
+            "clarification_backend": response.get("clarification_backend"),
+            "clarification_status": response.get("clarification_status") or "Skip",
+            "memory_rounds": 0,
+            "memory_text_length": 0,
+        },
+    }
+    yield {
+        "step": "rewrite",
+        "payload": {
+            "rewritten_query": response.get("rewritten_query"),
+            "rewrite_time_ms": response.get("rewrite_time_ms"),
+            "rewrite_backend": response.get("rewrite_backend"),
+            "memory_rounds": int(response.get("memory_rounds") or 0),
+            "memory_text_length": int(response.get("memory_text_length") or 0),
+            "clarification_time_ms": response.get("clarification_time_ms"),
+            "clarification_backend": response.get("clarification_backend"),
+            "clarification_status": response.get("clarification_status"),
+        },
+    }
+    yield {
+        "step": "classification",
+        "payload": {
+            "intents": list(response.get("intents") or []),
+            "intent_details": list(response.get("intent_details") or []),
+            "workflows": list(response.get("workflows") or []),
+            "classification_time_ms": response.get("classification_time_ms"),
+        },
+    }
+    yield {"step": "complete", "rewrite_response": response}
 
 
 class GatewayClientError(Exception):
@@ -165,6 +227,160 @@ class GatewayClient:
 
         url = f"{self._base_url}/api/v1/rewrite"
         return self._post_json(url, payload, token=token)
+
+    def rewrite_stream_sync(
+        self,
+        query: str,
+        rewrite_backend: Optional[str] = None,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        token: Optional[str] = None,
+    ) -> Iterator[Dict[str, Any]]:
+        """
+        Consume NDJSON from POST /api/v1/rewrite/stream (progressive rewrite pipeline).
+
+        Falls back to ``rewrite_sync`` + ``iter_rewrite_events_from_final_dict`` when
+        the stream route returns HTTP 404 (older gateway) or in mock mode.
+
+        Args:
+            query: User query string.
+            rewrite_backend: Optional backend ("ollama" or "deepseek").
+            session_id: Optional session ID for Redis logging.
+            user_id: Optional user ID for user-scoped history.
+            token: Optional JWT for protected gateway.
+
+        Yields:
+            Event dicts with ``step`` in (``clarification``, ``rewrite``,
+            ``classification``, ``complete``). The last event is always ``complete``.
+        """
+        payload: Dict[str, Any] = {
+            "query": query,
+            "workflow": "auto",
+            "session_id": session_id,
+            "user_id": user_id,
+        }
+        if rewrite_backend:
+            payload["rewrite_backend"] = (rewrite_backend or "").strip().lower()
+
+        if self._mock_mode:
+            final = self.rewrite_sync(
+                query=query,
+                rewrite_backend=rewrite_backend,
+                session_id=session_id,
+                user_id=user_id,
+                token=token,
+            )
+            yield from iter_rewrite_events_from_final_dict(final)
+            return
+
+        headers: Dict[str, str] = {}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        url_stream = f"{self._base_url}/api/v1/rewrite/stream"
+        try:
+            with requests.post(
+                url_stream,
+                json=payload,
+                headers=headers if headers else None,
+                timeout=self._timeout,
+                stream=True,
+            ) as resp:
+                if resp.status_code == 404:
+                    logger.warning(
+                        "Gateway has no /api/v1/rewrite/stream; using /api/v1/rewrite"
+                    )
+                    final = self.rewrite_sync(
+                        query=query,
+                        rewrite_backend=rewrite_backend,
+                        session_id=session_id,
+                        user_id=user_id,
+                        token=token,
+                    )
+                    yield from iter_rewrite_events_from_final_dict(final)
+                    return
+                try:
+                    resp.raise_for_status()
+                except requests.HTTPError as exc:
+                    logger.warning("rewrite/stream HTTP error: %s", exc)
+                    err_body = _safe_json(resp)
+                    if isinstance(err_body, dict) and err_body.get("detail"):
+                        msg = str(err_body.get("detail"))
+                    else:
+                        msg = str(exc)
+                    yield {
+                        "step": "complete",
+                        "rewrite_response": {
+                            "original_query": query,
+                            "rewritten_query": query,
+                            "error": msg,
+                        },
+                    }
+                    return
+
+                emitted_any = False
+                for line in resp.iter_lines(decode_unicode=True):
+                    if line is None:
+                        continue
+                    stripped = str(line).strip()
+                    if not stripped:
+                        continue
+                    try:
+                        yield json.loads(stripped)
+                        emitted_any = True
+                    except ValueError as exc:
+                        logger.warning("Invalid NDJSON line from rewrite/stream: %s", exc)
+                if not emitted_any:
+                    logger.warning(
+                        "rewrite/stream returned no parseable NDJSON; falling back to /rewrite"
+                    )
+                    final = self.rewrite_sync(
+                        query=query,
+                        rewrite_backend=rewrite_backend,
+                        session_id=session_id,
+                        user_id=user_id,
+                        token=token,
+                    )
+                    yield from iter_rewrite_events_from_final_dict(final)
+        except requests.ConnectionError as exc:
+            logger.warning("Gateway connection failed (rewrite stream): %s", exc)
+            yield {
+                "step": "complete",
+                "rewrite_response": {
+                    "original_query": query,
+                    "rewritten_query": query,
+                    "error": (
+                        f"Cannot connect to gateway at {self._base_url}. "
+                        "Is it running?"
+                    ),
+                    "error_type": "ConnectionError",
+                },
+            }
+        except requests.Timeout as exc:
+            logger.warning("Gateway request timed out (rewrite stream): %s", exc)
+            yield {
+                "step": "complete",
+                "rewrite_response": {
+                    "original_query": query,
+                    "rewritten_query": query,
+                    "error": (
+                        f"Query timed out after {self._timeout}s. "
+                        "The server took too long to respond."
+                    ),
+                    "error_type": "Timeout",
+                },
+            }
+        except requests.RequestException as exc:
+            logger.warning("Gateway request failed (rewrite stream): %s", exc)
+            yield {
+                "step": "complete",
+                "rewrite_response": {
+                    "original_query": query,
+                    "rewritten_query": query,
+                    "error": str(exc),
+                    "error_type": "RequestException",
+                },
+            }
 
     def _post_json(
         self,

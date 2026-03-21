@@ -114,7 +114,7 @@ def _format_dispatcher_section_html(
     response_workflow: Optional[str] = None,
 ) -> str:
     """
-    Render section 5 (Dispatcher) as HTML matching Route LLM trace cards.
+    Render section 4 (Dispatcher) as HTML matching Route LLM trace cards.
 
     Shows plan build time, worker execution time, plan summary, and per-task metrics.
 
@@ -174,7 +174,7 @@ def _format_dispatcher_section_html(
         lines: List[str] = [
             "<div style=\"border: 1px solid #d1d5db; border-radius: 10px; "
             "padding: 10px 12px; margin: 8px 0; background-color: #f9fafb;\">",
-            "<h4 style=\"margin: 0 0 8px 0;\">5. Dispatcher</h4>",
+            "<h4 style=\"margin: 0 0 8px 0;\">4. Dispatcher</h4>",
             "<ul style=\"margin: 0; padding-left: 20px;\">",
         ]
         # Gateway route-only: /query returns before workers; explain missing timings.
@@ -307,6 +307,155 @@ def _format_intent_classification_lines(
     return lines
 
 
+# Keys copied from final /rewrite (or stream ``complete``) into UI state for cards 1–3.
+REWRITE_PREVIEW_MERGE_KEYS: tuple[str, ...] = (
+    "clarification_time_ms",
+    "clarification_backend",
+    "clarification_status",
+    "memory_rounds",
+    "memory_text_length",
+    "rewritten_query",
+    "rewrite_time_ms",
+    "rewrite_backend",
+    "intents",
+    "intent_details",
+    "workflows",
+    "classification_time_ms",
+)
+
+
+def _format_rewrite_plan_markdown(rewrite_result: Dict[str, Any]) -> str:
+    """
+    Build optional markdown appendix when rewrite preview includes an execution plan.
+
+    Args:
+        rewrite_result: Parsed /rewrite (or stream ``complete``) payload.
+
+    Returns:
+        Markdown fragment or empty string when no plan tasks exist.
+    """
+    try:
+        plan = rewrite_result.get("plan")
+        if not plan or not isinstance(plan, dict):
+            return ""
+        plan_type = plan.get("plan_type", "single_domain")
+        task_groups = plan.get("task_groups") or []
+        tasks_flat: List[Dict[str, Any]] = []
+        for g in task_groups:
+            tasks_flat.extend(g.get("tasks") or [])
+        if not tasks_flat:
+            return ""
+        lines = [f"\n\n**Plan** (`{plan_type}`):\n"]
+        for i, t in enumerate(tasks_flat, 1):
+            wf = t.get("workflow", "general")
+            q = (t.get("query") or "").strip()
+            lines.append(f"\n{i}. `{wf}`: {q}")
+        return "".join(lines)
+    except Exception as exc:
+        logger.warning("Plan markdown formatting failed (non-fatal): %s", exc)
+        return ""
+
+
+def _build_rewrite_preview_html_staged(
+    state: Dict[str, Any],
+    phases_done: int,
+    original_query: str,
+    rewrite_backend_fallback: str,
+) -> str:
+    """
+    Assemble cumulative HTML for rewrite preview cards (clarification / rewrite / classification).
+
+    Args:
+        state: Merged fields from stream payloads (and optional final rewrite_response).
+        phases_done: Number of stages to include: 1, 2, or 3.
+        original_query: Raw user text (fallback before rewritten_query exists).
+        rewrite_backend_fallback: UI/env backend label if API omits rewrite_backend.
+
+    Returns:
+        HTML string for Gradio chat (markdown with embedded HTML).
+    """
+    if phases_done < 1:
+        return ""
+
+    memory_rounds = int(state.get("memory_rounds") or 0)
+    memory_text_len = int(state.get("memory_text_length") or 0)
+    clarification_status = str(state.get("clarification_status") or "—")
+    clarification_backend_value = _display_clarification_backend(
+        state.get("clarification_backend")
+    )
+    clarification_time_raw = state.get("clarification_time_ms")
+    clarification_time_display = (
+        f"{int(clarification_time_raw)} ms"
+        if clarification_time_raw is not None
+        else "N/A"
+    )
+
+    lines_parts: List[str] = [
+        "<div style=\"border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px 12px; margin: 8px 0;\">",
+        "<h4 style=\"margin: 0 0 8px 0;\">1. Clarification</h4>",
+        "<ul style=\"margin: 0; padding-left: 20px;\">",
+        f"<li>Integrate historical conversations: {memory_rounds} rounds (text length: {memory_text_len} chars)</li>",
+        f"<li>Clarification backend: {clarification_backend_value}</li>",
+        f"<li>Clarification: {clarification_status}</li>",
+        f"<li>Clarification time: {clarification_time_display}</li>",
+        "</ul>",
+        "</div>",
+        "",
+    ]
+
+    if phases_done >= 2:
+        routed = _to_single_line(
+            str(state.get("rewritten_query") or original_query)
+        )
+        try:
+            rewrite_ms = int(state.get("rewrite_time_ms") or 0)
+        except (TypeError, ValueError):
+            rewrite_ms = 0
+        rewrite_backend_value = _display_rewrite_backend(
+            state.get("rewrite_backend") or rewrite_backend_fallback
+        )
+        lines_parts.extend(
+            [
+                "<div style=\"border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px 12px; margin: 8px 0;\">",
+                "<h4 style=\"margin: 0 0 8px 0;\">2. Rewritten</h4>",
+                "<ul style=\"margin: 0; padding-left: 20px;\">",
+                f"<li>Integrate short-term memory: {memory_rounds} rounds (text length: {memory_text_len} chars)</li>",
+                "<li>Normalize: Completed</li>",
+                f"<li>Rewritten query: {routed}</li>",
+                f"<li>Rewrite backend: {rewrite_backend_value}</li>",
+                f"<li>Rewrite time: {rewrite_ms} ms</li>",
+                "</ul>",
+                "</div>",
+                "",
+            ]
+        )
+
+    if phases_done >= 3:
+        classification_ms = state.get("classification_time_ms")
+        if classification_ms is not None:
+            try:
+                classification_ms = int(classification_ms)
+            except (TypeError, ValueError):
+                classification_ms = None
+        intents_list = list(state.get("intents") or [])
+        intent_details_list = list(state.get("intent_details") or [])
+        workflows_list = list(state.get("workflows") or [])
+        lines_parts.append(
+            "<div style=\"border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px 12px; margin: 8px 0;\">"
+        )
+        lines_parts.extend(
+            _format_intent_classification_lines(
+                intent_details_list=intent_details_list,
+                intents_list=intents_list,
+                workflows_list=workflows_list,
+                classification_time_ms=classification_ms,
+            )
+        )
+        lines_parts.append("</div>")
+
+    return "\n".join(lines_parts)
+
+
 # Config from env (after load_dotenv above so .env is applied)
 GATEWAY_API_URL = os.environ.get("GATEWAY_API_URL", "").rstrip("/")
 GATEWAY_MOCK = os.environ.get("GATEWAY_MOCK", "").lower() in ("true", "1", "yes")
@@ -355,7 +504,7 @@ def _display_rewrite_backend(api_value: Any) -> str:
 # Default rewrite_backend sent on /rewrite and /query: must match gateway .env (no separate UI var).
 REWRITE_BACKEND_DEFAULT = _gateway_rewrite_backend_from_env()
 # Bumped when chat client behavior changes. Shown in Status panel so operators can confirm UI reload.
-UNIFIED_CHAT_CLIENT_BUILD = "full-query-after-preview-2026-03-18"
+UNIFIED_CHAT_CLIENT_BUILD = "rewrite-preview-complete-merge-2026-03-18"
 SKIP_LOGIN = os.environ.get("UNIFIED_CHAT_SKIP_LOGIN", "").lower() in ("true", "1", "yes")
 # Default credentials when SKIP_LOGIN: auto sign-in so token/user_id are set (e.g. for history).
 DEFAULT_SKIP_LOGIN_USER = os.environ.get("UNIFIED_CHAT_SKIP_LOGIN_USER", "lenhe")
@@ -425,11 +574,21 @@ def _do_signout() -> tuple[None, None, dict, dict]:
     return None, None, gr.update(visible=True), gr.update(visible=False)
 
 
-def _auto_signin_if_skip_login() -> tuple:
+def _auto_signin_if_skip_login(session_id: Optional[str] = None) -> tuple:
     """
     When SKIP_LOGIN is True, sign in with default credentials and return state updates.
     Used on demo load so token/user_info and history are set without showing login.
-    Returns (token, user_info, login_visible, chat_visible, signin_msg, user_md, chat_history, chatbot_state).
+
+    On every full browser refresh, Gradio runs this once (not an empty chat query). It calls
+    the gateway sign-in API and may fetch session history; until it returns, the UI can show
+    a loading/processing state.
+
+    Args:
+        session_id: Current Session ID state (same as left panel). Used for history fetch.
+
+    Returns:
+        Tuple for demo.load outputs: token, user, login_panel, chat_panel, signin_msg,
+        user_md, chatbot update, chatbot_state.
     """
     if not SKIP_LOGIN:
         return (
@@ -453,7 +612,7 @@ def _auto_signin_if_skip_login() -> tuple:
     if token and show_chat:
         client = GatewayClient(base_url=GATEWAY_API_URL or None)
         try:
-            sid = str(uuid4())
+            sid = (session_id or "").strip() or str(uuid4())
             hist_result = client.get_session_history_sync(sid, last_n=3)
             if not hist_result.get("error"):
                 raw = hist_result.get("history", [])
@@ -551,21 +710,94 @@ def _chat_handler(
     # Sum of clarification + rewrite + classification (ms) for UI trace after full query.
     route_llm_total_ms: Optional[int] = None
 
-    # Optional first call to /rewrite so the chat shows sections 1–4 before /query completes.
+    # Optional first call: /rewrite/stream yields NDJSON so cards 1–3 appear as each stage finishes.
+    rewrite_result: Dict[str, Any] = {}
+    ui_state: Dict[str, Any] = {}
     if rewrite_preview:
-        rewrite_result = client.rewrite_sync(
+        rb_fallback = (rewrite_backend or "").strip()
+        for event in client.rewrite_stream_sync(
             query=raw_query,
-            rewrite_backend=(rewrite_backend or "").strip() or None,
+            rewrite_backend=rb_fallback or None,
             session_id=session_id or None,
             user_id=user_id,
             token=auth_token,
-        )
+        ):
+            step = event.get("step")
+            if step == "clarification":
+                ui_state.update(event.get("payload") or {})
+                rewrite_message = _build_rewrite_preview_html_staged(
+                    ui_state, 1, raw_query, rb_fallback
+                )
+                yield rewrite_message
+            elif step == "rewrite":
+                ui_state.update(event.get("payload") or {})
+                rewrite_message = _build_rewrite_preview_html_staged(
+                    ui_state, 2, raw_query, rb_fallback
+                )
+                yield rewrite_message
+            elif step == "classification":
+                ui_state.update(event.get("payload") or {})
+                rewrite_message = _build_rewrite_preview_html_staged(
+                    ui_state, 3, raw_query, rb_fallback
+                )
+                yield rewrite_message
+            elif step == "complete":
+                rewrite_result = event.get("rewrite_response") or {}
+                if (
+                    not rewrite_result.get("error")
+                    and not rewrite_result.get("clarification_required")
+                ):
+                    # Always rebuild cards from the final payload. Proxies or clients may only
+                    # deliver this event (no progressive NDJSON), or drops earlier lines.
+                    for key in REWRITE_PREVIEW_MERGE_KEYS:
+                        if key in rewrite_result and rewrite_result[key] is not None:
+                            ui_state[key] = rewrite_result[key]
+                    merged_preview = (
+                        _build_rewrite_preview_html_staged(
+                            ui_state, 3, raw_query, rb_fallback
+                        )
+                        + _format_rewrite_plan_markdown(rewrite_result)
+                    )
+                    # Avoid a duplicate Gradio update when progressive events already matched.
+                    prev_preview = rewrite_message
+                    rewrite_message = merged_preview
+                    if merged_preview != prev_preview:
+                        yield merged_preview
+
+        # Stream returned no terminal payload (empty body, non-NDJSON, parse errors).
+        if rewrite_preview and not rewrite_result:
+            sync_fallback = client.rewrite_sync(
+                query=raw_query,
+                rewrite_backend=rb_fallback or None,
+                session_id=session_id or None,
+                user_id=user_id,
+                token=auth_token,
+            )
+            if isinstance(sync_fallback, dict) and sync_fallback:
+                rewrite_result = sync_fallback
+                if (
+                    not sync_fallback.get("error")
+                    and not sync_fallback.get("clarification_required")
+                ):
+                    for key in REWRITE_PREVIEW_MERGE_KEYS:
+                        if key in sync_fallback and sync_fallback[key] is not None:
+                            ui_state[key] = sync_fallback[key]
+                    rewrite_message = (
+                        _build_rewrite_preview_html_staged(
+                            ui_state, 3, raw_query, rb_fallback
+                        )
+                        + _format_rewrite_plan_markdown(sync_fallback)
+                    )
+                    yield rewrite_message
+
         rewrite_error = rewrite_result.get("error")
         if rewrite_error:
-            yield (
+            err_text = (
                 "Rewrite failed; continuing with original query.\n"
                 f"Error: {rewrite_error}"
             )
+            # Keep any progressive cards already shown before the failure.
+            yield f"{rewrite_message}\n\n{err_text}" if rewrite_message else err_text
         elif rewrite_result.get("clarification_required"):
             # Clarification needed: display question and store pending for follow-up
             clarification_question = (
@@ -584,69 +816,16 @@ def _chat_handler(
                 "Your follow-up will be merged with the original query."
             )
             return
-        else:
-            routed_query = _to_single_line(str(rewrite_result.get("rewritten_query") or raw_query))
+        elif rewrite_result:
+            routed_query = _to_single_line(
+                str(rewrite_result.get("rewritten_query") or raw_query)
+            )
             rewrite_ms = int(rewrite_result.get("rewrite_time_ms") or 0)
             rewrite_backend_value = _display_rewrite_backend(
                 rewrite_result.get("rewrite_backend") or rewrite_backend
             )
-            memory_rounds = int(rewrite_result.get("memory_rounds") or 0)
-            memory_text_len = int(rewrite_result.get("memory_text_length") or 0)
-            intents_list = rewrite_result.get("intents") or []
-            intent_details_list = rewrite_result.get("intent_details") or []
-            workflows_list = rewrite_result.get("workflows") or []
-            clarification_status = str(
-                rewrite_result.get("clarification_status") or "—"
-            )
-            clarification_backend_value = _display_clarification_backend(
-                rewrite_result.get("clarification_backend")
-            )
             clarification_time_raw = rewrite_result.get("clarification_time_ms")
-            clarification_time_display = (
-                f"{int(clarification_time_raw)} ms"
-                if clarification_time_raw is not None
-                else "N/A"
-            )
-            lines_parts: List[str] = [
-                "<div style=\"border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px 12px; margin: 8px 0;\">",
-                "<h4 style=\"margin: 0 0 8px 0;\">1. Clarification</h4>",
-                "<ul style=\"margin: 0; padding-left: 20px;\">",
-                f"<li>Integrate historical conversations: {memory_rounds} rounds (text length: {memory_text_len} chars)</li>",
-                f"<li>Clarification backend: {clarification_backend_value}</li>",
-                f"<li>Clarification: {clarification_status}</li>",
-                f"<li>Clarification time: {clarification_time_display}</li>",
-                "</ul>",
-                "</div>",
-                "",
-                "<div style=\"border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px 12px; margin: 8px 0;\">",
-                "<h4 style=\"margin: 0 0 8px 0;\">2. Rewritten</h4>",
-                "<ul style=\"margin: 0; padding-left: 20px;\">",
-                f"<li>Integrate short-term memory: {memory_rounds} rounds (text length: {memory_text_len} chars)</li>",
-                "<li>Normalize: Completed</li>",
-                f"<li>Rewritten query: {_to_single_line(routed_query)}</li>",
-                f"<li>Rewrite backend: {rewrite_backend_value}</li>",
-                f"<li>Rewrite time: {rewrite_ms} ms</li>",
-                "</ul>",
-                "</div>",
-                "",
-                "<div style=\"border: 1px solid #e5e7eb; border-radius: 10px; padding: 10px 12px; margin: 8px 0;\">",
-            ]
             classification_ms = rewrite_result.get("classification_time_ms")
-            if classification_ms is not None:
-                try:
-                    classification_ms = int(classification_ms)
-                except (TypeError, ValueError):
-                    classification_ms = None
-            lines_parts.extend(
-                _format_intent_classification_lines(
-                    intent_details_list=intent_details_list,
-                    intents_list=intents_list,
-                    workflows_list=workflows_list,
-                    classification_time_ms=classification_ms,
-                )
-            )
-            lines_parts.append("</div>")
-            # Aggregate Route LLM wall time: treat missing segments as 0 so total still displays.
             clar_ms_int = 0
             if clarification_time_raw is not None:
                 try:
@@ -666,38 +845,13 @@ def _chat_handler(
                 except (TypeError, ValueError):
                     class_ms_int = 0
             route_llm_total_ms = clar_ms_int + rewrite_ms_int + class_ms_int
-            lines_parts.extend(
-                [
-                    "",
-                    "<div style=\"border: 1px solid #d1d5db; border-radius: 10px; padding: 10px 12px; margin: 8px 0; background-color: #f9fafb;\">",
-                    "<h4 style=\"margin: 0 0 8px 0;\">4. Route LLM total time</h4>",
-                    "<ul style=\"margin: 0; padding-left: 20px;\">",
-                    f"<li>Clarification: {clar_ms_int} ms</li>",
-                    f"<li>Rewritten: {rewrite_ms_int} ms</li>",
-                    f"<li>Classification: {class_ms_int} ms</li>",
-                    f"<li><strong>Total (1+2+3): {route_llm_total_ms} ms</strong></li>",
-                    "</ul>",
-                    "</div>",
-                ]
-            )
-            rewrite_message = "\n".join(lines_parts)
-            # Include execution plan when available (planner mode)
-            plan = rewrite_result.get("plan")
-            if plan and isinstance(plan, dict):
-                plan_type = plan.get("plan_type", "single_domain")
-                task_groups = plan.get("task_groups") or []
-                tasks_flat: List[Dict[str, Any]] = []
-                for g in task_groups:
-                    tasks_flat.extend(g.get("tasks") or [])
-                if tasks_flat:
-                    rewrite_message += f"\n\n**Plan** (`{plan_type}`):\n"
-                    for i, t in enumerate(tasks_flat, 1):
-                        wf = t.get("workflow", "general")
-                        q = (t.get("query") or "").strip()
-                        rewrite_message += f"\n{i}. `{wf}`: {q}"
-            yield rewrite_message
+            if not rewrite_message:
+                rewrite_message = _build_rewrite_preview_html_staged(
+                    ui_state, 3, raw_query, rb_fallback
+                ) + _format_rewrite_plan_markdown(rewrite_result)
+                yield rewrite_message
 
-    # Full query: always call /query so planner + dispatcher run (section 5 when gateway executes workers).
+    # Full query: always call /query so planner + dispatcher run (section 4 card when gateway executes workers).
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(
             client.query_sync,
@@ -838,12 +992,6 @@ def create_demo() -> gr.Blocks:
         css=CHAT_DIALOG_CSS,
     ) as demo:
         gr.Markdown("# IC-RAG-Agent Chat")
-        gr.Markdown(
-            "Unified Chat UI - Sign in or register, then select workflow and type your question. "
-            "Uses mock mode when gateway is unavailable. "
-            "After each message, the client calls **`/rewrite`** (preview) then **`/query`** (dispatcher + workers). "
-            "If you still see **Rewrite-only test mode**, restart this UI process; that text is not in the current codebase."
-        )
 
         session_id_state = gr.State(value=initial_session_id)
         auth_token_state = gr.State(value=None)
@@ -989,9 +1137,10 @@ def create_demo() -> gr.Blocks:
         )
 
         # When SKIP_LOGIN: on load, sign in with default user so token/user_id and history are set.
+        # queue=False avoids tying the ChatInterface "processing" indicator to this slow I/O on refresh.
         demo.load(
             fn=_auto_signin_if_skip_login,
-            inputs=[],
+            inputs=[session_id_state],
             outputs=[
                 auth_token_state,
                 user_info_state,
@@ -1002,6 +1151,7 @@ def create_demo() -> gr.Blocks:
                 chatbot,
                 chat.chatbot_state,
             ],
+            queue=False,
         )
         reg_btn.click(
             fn=on_register,

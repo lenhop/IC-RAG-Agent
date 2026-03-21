@@ -53,7 +53,7 @@ With unified chat (7862):
 
 3. Ensure `DEEPSEEK_API_KEY` and Chroma env vars match [tasks/RAG_WORKFLOW.md](../../tasks/RAG_WORKFLOW.md).
 
-### Dispatcher (section 5) missing in chat?
+### Dispatcher (section 4) missing in chat?
 
 - **Gateway**: `project_stack.sh restart --dispatcher-rag-only` forces `GATEWAY_REWRITE_ONLY_MODE=false` and `GATEWAY_ROUTE_ONLY_MODE=false` on the gateway process so a `true` value in `.env` does not block Dispatcher + RAG.
 - **Unified Chat** always calls full `/query` after the optional `/rewrite` preview. If the gateway is started with `--route-only` / `GATEWAY_REWRITE_ONLY_MODE=true`, `/query` returns before workers run, so dispatcher timings and task results are empty.

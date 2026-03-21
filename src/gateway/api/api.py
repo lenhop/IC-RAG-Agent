@@ -2,8 +2,9 @@
 Gateway FastAPI application — routes + pipeline orchestration.
 
 Exposes REST API for the unified query gateway:
-- POST /api/v1/query   → QueryPipeline.run()
-- POST /api/v1/rewrite → RewritePipeline.run()
+- POST /api/v1/query         → QueryPipeline.run()
+- POST /api/v1/rewrite       → RewritePipeline.run()
+- POST /api/v1/rewrite/stream → NDJSON stream of RewritePipeline.iter_rewrite_events()
 - GET  /health         → health check
 - GET  /api/v1/session → conversation history
 
@@ -13,14 +14,16 @@ request lifecycle; pure helpers live in view_helpers.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
 import uuid
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterator, List
 
 from fastapi import Depends, FastAPI, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from ..dispatcher import build_execution_plan, DispatcherExecutor
 from ..route_llm.clarification import check_ambiguity
@@ -184,7 +187,23 @@ class RewritePipeline:
     """
 
     @classmethod
-    def run(cls, request: QueryRequest, user_payload: dict | None, memory: Any) -> RewriteResponse:
+    def iter_rewrite_events(
+        cls,
+        request: QueryRequest,
+        user_payload: dict | None,
+        memory: Any,
+    ) -> Iterator[dict[str, Any]]:
+        """
+        Yield pipeline progress as JSON-serializable dicts for NDJSON streaming.
+
+        Event shapes:
+            {"step": "clarification", "payload": {...}} — after ambiguity check (happy path).
+            {"step": "rewrite", "payload": {...}} — after unified rewrite.
+            {"step": "classification", "payload": {...}} — after intent details built.
+            {"step": "complete", "rewrite_response": {...}} — final body (same as /rewrite JSON).
+
+        Clarification-required and errors end with a single ``complete`` event (no partial cards).
+        """
         request_id = str(uuid.uuid4())
         original_query = (request.query or "").strip()
         uid = AuthGuard.resolve_user_id(request, user_payload)
@@ -224,7 +243,7 @@ class RewritePipeline:
                     user_id=uid, workflow="clarification", query_raw=original_query,
                     clarification_question=q, answer=q, latency_ms=0,
                 )
-                return RewriteResponse(
+                early = RewriteResponse(
                     original_query=original_query, rewritten_query=original_query,
                     rewrite_backend=GatewayConfig.resolve_rewrite_backend(request),
                     rewrite_time_ms=0, plan=None,
@@ -233,6 +252,29 @@ class RewritePipeline:
                     clarification_backend=clarification_backend,
                     clarification_time_ms=clar_elapsed_ms,
                 )
+                yield {
+                    "step": "complete",
+                    "rewrite_response": early.model_dump(mode="json"),
+                }
+                return
+
+            # Partial UI: clarification card (memory stats filled after rewrite).
+            clar_status_ui = (
+                "Complete" if GatewayConfig.clarification_enabled() else "Skip"
+            )
+            clar_backend_ui = (
+                clar_raw.get("clarification_backend") if clar_raw else None
+            )
+            yield {
+                "step": "clarification",
+                "payload": {
+                    "clarification_time_ms": clar_elapsed_ms,
+                    "clarification_backend": clar_backend_ui,
+                    "clarification_status": clar_status_ui,
+                    "memory_rounds": 0,
+                    "memory_text_length": 0,
+                },
+            }
 
             # 2. Unified rewrite (JSON: display + intents) + 3. Intent preview
             req = request.model_copy(update={"user_id": uid}) if uid else request
@@ -250,6 +292,27 @@ class RewritePipeline:
             rewrite_time_ms = int((time.perf_counter() - started) * 1000)
             logger.info("[Perf] rewrite endpoint rewrite: %d ms", rewrite_time_ms)
 
+            rb = GatewayConfig.resolve_rewrite_backend(request)
+            if GatewayConfig.clarification_enabled():
+                clarification_status = "Complete"
+                clarification_backend = (
+                    clar_raw.get("clarification_backend") if clar_raw else clarification_backend
+                )
+
+            yield {
+                "step": "rewrite",
+                "payload": {
+                    "rewritten_query": rewritten_query,
+                    "rewrite_time_ms": rewrite_time_ms,
+                    "rewrite_backend": rb,
+                    "memory_rounds": memory_rounds,
+                    "memory_text_length": memory_text_length,
+                    "clarification_time_ms": clar_elapsed_ms,
+                    "clarification_backend": clarification_backend,
+                    "clarification_status": clarification_status,
+                },
+            }
+
             intent_start = time.perf_counter()
             intents, intent_details, workflows = IntentDetailsBuilder.build_intent_details(
                 rewritten_query, intents_override=intents_override
@@ -265,15 +328,20 @@ class RewritePipeline:
                 intent_list=intents or [], intent_details=intent_details or [],
                 answer=rewritten_query, latency_ms=rewrite_time_ms,
             )
-            if GatewayConfig.clarification_enabled():
-                clarification_status = "Complete"
-                clarification_backend = (
-                    clar_raw.get("clarification_backend") if clar_raw else clarification_backend
-                )
 
-            return RewriteResponse(
+            yield {
+                "step": "classification",
+                "payload": {
+                    "intents": intents or [],
+                    "intent_details": intent_details or [],
+                    "workflows": workflows or [],
+                    "classification_time_ms": classification_time_ms,
+                },
+            }
+
+            final = RewriteResponse(
                 original_query=original_query, rewritten_query=rewritten_query,
-                rewrite_backend=GatewayConfig.resolve_rewrite_backend(request),
+                rewrite_backend=rb,
                 rewrite_time_ms=rewrite_time_ms, plan=None,
                 clarification_status=clarification_status,
                 clarification_backend=clarification_backend,
@@ -284,13 +352,40 @@ class RewritePipeline:
                 clarification_time_ms=clar_elapsed_ms,
                 classification_time_ms=classification_time_ms,
             )
+            yield {
+                "step": "complete",
+                "rewrite_response": final.model_dump(mode="json"),
+            }
         except Exception as exc:
             logger.exception("Rewrite endpoint failed: %s", exc)
-            return RewriteResponse(
+            err_body = RewriteResponse(
                 original_query=original_query, rewritten_query=original_query,
                 rewrite_backend=GatewayConfig.resolve_rewrite_backend(request),
                 rewrite_time_ms=0, plan=None, error=str(exc),
             )
+            yield {
+                "step": "complete",
+                "rewrite_response": err_body.model_dump(mode="json"),
+            }
+
+    @classmethod
+    def run(cls, request: QueryRequest, user_payload: dict | None, memory: Any) -> RewriteResponse:
+        """Non-streaming /rewrite: consume iter_rewrite_events and return final RewriteResponse."""
+        last: dict[str, Any] | None = None
+        for ev in cls.iter_rewrite_events(request, user_payload, memory):
+            if ev.get("step") == "complete" and isinstance(ev.get("rewrite_response"), dict):
+                last = ev["rewrite_response"]
+        if not last:
+            original_query = (request.query or "").strip()
+            return RewriteResponse(
+                original_query=original_query,
+                rewritten_query=original_query,
+                rewrite_backend=GatewayConfig.resolve_rewrite_backend(request),
+                rewrite_time_ms=0,
+                plan=None,
+                error="internal: missing complete event",
+            )
+        return RewriteResponse.model_validate(last)
 
 
 # ---------------------------------------------------------------------------
@@ -680,7 +775,7 @@ class QueryPipeline:
                 route_backend=route_backend,
                 route_llm_confidence=route_llm_confidence,
             )
-            # Expose planner + dispatcher wall times for chat UI (section 5).
+            # Expose planner + dispatcher wall times for chat UI (section 4 Dispatcher card).
             debug_trace = {
                 **dict(debug_trace),
                 "plan_build_ms": plan_elapsed_ms,
@@ -825,6 +920,43 @@ async def rewrite(
 ) -> RewriteResponse:
     """Run Route LLM pipeline only: clarification, rewriting, intent classification."""
     return RewritePipeline.run(request, _user, gateway_memory)
+
+
+@app.post(
+    "/api/v1/rewrite/stream",
+    summary="Route LLM only (NDJSON progress)",
+)
+async def rewrite_stream(
+    request: QueryRequest,
+    _user: dict | None = Depends(_get_optional_user),
+) -> StreamingResponse:
+    """
+    Stream rewrite pipeline progress as newline-delimited JSON (application/x-ndjson).
+
+    Each line is one JSON object. The last event is always step ``complete`` with the
+    same ``rewrite_response`` shape as POST /api/v1/rewrite.
+    """
+
+    def ndjson_iter() -> Iterator[str]:
+        try:
+            for ev in RewritePipeline.iter_rewrite_events(request, _user, gateway_memory):
+                yield json.dumps(ev, ensure_ascii=False) + "\n"
+        except Exception as exc:
+            logger.exception("rewrite/stream iterator failed: %s", exc)
+            err = RewriteResponse(
+                original_query=(request.query or "").strip(),
+                rewritten_query=(request.query or "").strip(),
+                rewrite_backend=GatewayConfig.resolve_rewrite_backend(request),
+                rewrite_time_ms=0,
+                plan=None,
+                error=str(exc),
+            )
+            yield json.dumps(
+                {"step": "complete", "rewrite_response": err.model_dump(mode="json")},
+                ensure_ascii=False,
+            ) + "\n"
+
+    return StreamingResponse(ndjson_iter(), media_type="application/x-ndjson")
 
 
 @app.post("/api/v1/query", response_model=QueryResponse, summary="Submit unified gateway query")
