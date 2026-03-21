@@ -38,7 +38,7 @@ SAMPLE_HISTORY = [
     },
     {
         "query": "what is the weather today, and what is Amazon FBA fee?",
-        "answer": "(Rewrite-only; no execution.)",
+        "answer": "(Gateway rewrite-only response; workers not invoked.)",
         "workflow": "rewrite_only",
         "timestamp": "2026-03-14T08:59:20.451284Z",
         "user_id": "0145953e-b2a8-4e87-9eaa-fe4ad975cfe4",

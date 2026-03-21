@@ -9,12 +9,19 @@
 # Optional:
 # - ui:      7862
 #
+# Primary entrypoints:
+#   ./bin/project_stack.sh ...    (this file)
+#   ./bin/ic.sh ...               thin alias; same arguments
+#
 # Usage:
-#   ./bin/project_stack.sh start
-#   ./bin/project_stack.sh restart
-#   ./bin/project_stack.sh stop
-#   ./bin/project_stack.sh status
-#   ./bin/project_stack.sh start --with-ui
+#   ./bin/project_stack.sh start|restart|stop|status [options]
+#   ./bin/project_stack.sh service <start|restart|stop|status> <gateway|uds|rag|sp_api|ui>
+#
+# Options (stack commands):
+#   --with-ui  --route-only  --dispatcher-rag-only  --no-login  --wait
+#
+#   --wait     After start/restart, require every service in the stack to pass its
+#              health check (exit 1 if any fail). Use for CI or strict local restarts.
 
 set -euo pipefail
 
@@ -46,29 +53,41 @@ mkdir -p "${LOG_DIR}" "${PID_DIR}"
 WITH_UI="false"
 REWRITE_ONLY_MODE="false"
 NO_LOGIN="false"
+# Gateway + Agent RAG only: no UDS/SP-API processes; gateway stubs those workers (worker_profile.py).
+DISPATCHER_RAG_ONLY_MODE="false"
+# When true, failed health check after start/restart exits non-zero.
+WAIT_STRICT="false"
 
 print_usage() {
   cat <<'EOF'
-Manage local IC-RAG-Agent stack.
+Manage local IC-RAG-Agent stack (or use ./bin/ic.sh — same commands).
 
-Commands:
-  start              Start all backend services
-  restart            Restart all backend services
-  stop               Stop all managed services
-  status             Show managed services status
+Stack commands (start/restart/stop/status):
+  start              Start services for the selected profile (see options below)
+  restart            Stop then start the same profile
+  stop               Stop only the services that belong to the current profile
+  status             Status for the current profile
 
-Options:
-  --with-ui          Also run unified chat UI on port 7862
-  --route-only       Route LLM only: gateway runs clarification + rewrite + intents (no plan in rewrite endpoint);
-                     no downstream workers (uds/rag/sp_api). Use for quick testing.
-  --rewrite-only     Alias for --route-only (deprecated, use --route-only)
-  --no-login         With --with-ui: skip login and show chat directly (dev convenience).
+  Options:
+    --with-ui          Unified chat (Gradio) on 7862
+    --route-only       Gateway only (+ optional UI); no uds/rag/sp_api processes
+    --rewrite-only     Alias for --route-only
+    --dispatcher-rag-only   rag(8002) + gateway(8000) only; UDS/SP-API stubbed in gateway
+    --no-login         With --with-ui: UNIFIED_CHAT_SKIP_LOGIN=true
+    --wait             Require health checks to pass (exit 1 on failure)
+
+Per-service commands (ignore stack profile flags):
+  service start <name>      Start one of: gateway | uds | rag | sp_api | ui
+  service restart <name>    Restart one service
+  service stop <name>       Stop one service
+  service status <name>     Show one service status
 
 Examples:
-  ./bin/project_stack.sh start
-  ./bin/project_stack.sh restart --with-ui
-  ./bin/project_stack.sh restart --route-only --with-ui --no-login
-  ./bin/project_stack.sh status
+  ./bin/ic.sh restart --with-ui
+  ./bin/ic.sh restart --dispatcher-rag-only --with-ui --wait
+  ./bin/ic.sh restart --route-only --with-ui --no-login --wait
+  ./bin/ic.sh service restart rag
+  ./bin/ic.sh service status gateway
 EOF
 }
 
@@ -79,6 +98,15 @@ services() {
       echo "gateway ui"
     else
       echo "gateway"
+    fi
+    return 0
+  fi
+
+  if [[ "${DISPATCHER_RAG_ONLY_MODE}" == "true" ]]; then
+    if [[ "${WITH_UI}" == "true" ]]; then
+      echo "rag gateway ui"
+    else
+      echo "rag gateway"
     fi
     return 0
   fi
@@ -144,28 +172,35 @@ service_start_cmd() {
       local ollama_model="${GATEWAY_REWRITE_OLLAMA_MODEL:-qwen3:1.7b}"
       local route_url="${GATEWAY_ROUTE_LLM_OLLAMA_URL:-http://localhost:11434}"
       local route_model="${GATEWAY_ROUTE_LLM_OLLAMA_MODEL:-qwen3:1.7b}"
+      # dispatcher-rag-only: override .env if it still sets rewrite/route-only (would skip Dispatcher+RAG).
+      local rag_only_env=""
+      if [[ "${DISPATCHER_RAG_ONLY_MODE}" == "true" ]]; then
+        rag_only_env="GATEWAY_WORKER_PROFILE=rag_only GATEWAY_REWRITE_ONLY_MODE=false GATEWAY_ROUTE_ONLY_MODE=false "
+      fi
       if [[ "${REWRITE_ONLY_MODE}" == "true" ]]; then
-        echo "RAG_API_URL=${rag_url} UDS_API_URL=${uds_url} SP_API_URL=${sp_url} GATEWAY_REWRITE_ONLY_MODE=true GATEWAY_REWRITE_PLANNER_ENABLED=true GATEWAY_CLARIFICATION_ENABLED=true GATEWAY_REWRITE_BACKEND=${rewrite_backend} GATEWAY_CLARIFICATION_BACKEND=${clarification_backend} GATEWAY_INTENT_SPLIT_BACKEND=${intent_split_backend} GATEWAY_INTENT_DETECT_BACKEND=${intent_detect_backend} GATEWAY_REWRITE_OLLAMA_URL=${ollama_url} GATEWAY_REWRITE_OLLAMA_MODEL=${ollama_model} GATEWAY_ROUTE_LLM_OLLAMA_URL=${route_url} GATEWAY_ROUTE_LLM_OLLAMA_MODEL=${route_model} GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
+        echo "${rag_only_env}RAG_API_URL=${rag_url} UDS_API_URL=${uds_url} SP_API_URL=${sp_url} GATEWAY_REWRITE_ONLY_MODE=true GATEWAY_REWRITE_PLANNER_ENABLED=true GATEWAY_CLARIFICATION_ENABLED=true GATEWAY_REWRITE_BACKEND=${rewrite_backend} GATEWAY_CLARIFICATION_BACKEND=${clarification_backend} GATEWAY_INTENT_SPLIT_BACKEND=${intent_split_backend} GATEWAY_INTENT_DETECT_BACKEND=${intent_detect_backend} GATEWAY_REWRITE_OLLAMA_URL=${ollama_url} GATEWAY_REWRITE_OLLAMA_MODEL=${ollama_model} GATEWAY_ROUTE_LLM_OLLAMA_URL=${route_url} GATEWAY_ROUTE_LLM_OLLAMA_MODEL=${route_model} GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
       else
-        echo "RAG_API_URL=${rag_url} UDS_API_URL=${uds_url} SP_API_URL=${sp_url} GATEWAY_REWRITE_PLANNER_ENABLED=true GATEWAY_CLARIFICATION_ENABLED=true GATEWAY_REWRITE_BACKEND=${rewrite_backend} GATEWAY_CLARIFICATION_BACKEND=${clarification_backend} GATEWAY_INTENT_SPLIT_BACKEND=${intent_split_backend} GATEWAY_INTENT_DETECT_BACKEND=${intent_detect_backend} GATEWAY_REWRITE_OLLAMA_URL=${ollama_url} GATEWAY_REWRITE_OLLAMA_MODEL=${ollama_model} GATEWAY_ROUTE_LLM_OLLAMA_URL=${route_url} GATEWAY_ROUTE_LLM_OLLAMA_MODEL=${route_model} GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
+        echo "${rag_only_env}RAG_API_URL=${rag_url} UDS_API_URL=${uds_url} SP_API_URL=${sp_url} GATEWAY_REWRITE_PLANNER_ENABLED=true GATEWAY_CLARIFICATION_ENABLED=true GATEWAY_REWRITE_BACKEND=${rewrite_backend} GATEWAY_CLARIFICATION_BACKEND=${clarification_backend} GATEWAY_INTENT_SPLIT_BACKEND=${intent_split_backend} GATEWAY_INTENT_DETECT_BACKEND=${intent_detect_backend} GATEWAY_REWRITE_OLLAMA_URL=${ollama_url} GATEWAY_REWRITE_OLLAMA_MODEL=${ollama_model} GATEWAY_ROUTE_LLM_OLLAMA_URL=${route_url} GATEWAY_ROUTE_LLM_OLLAMA_MODEL=${route_model} GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
       fi
       ;;
     uds)
       echo "UDS_LLM_PROVIDER=${UDS_LLM_PROVIDER:-ollama} ${PYTHON_BIN} -m uvicorn src.uds.api:app --host 0.0.0.0 --port 8001"
       ;;
     rag)
-      # Force RAG to 8002 to avoid collision with gateway on 8000.
-      echo "RAG_API_PORT=8002 ./bin/run_rag_api.sh"
+      # RAG HTTP service (Agent RAG: DeepSeek + Chroma). Port 8002 avoids gateway 8000.
+      echo "RAG_API_PORT=8002 ${PYTHON_BIN} -m uvicorn src.agent.rag.app:app --host 0.0.0.0 --port 8002"
       ;;
     sp_api)
       echo "${PYTHON_BIN} -m uvicorn src.sp_api.fast_api:app --host 0.0.0.0 --port 8003"
       ;;
     ui)
       local no_login_env=""
-      local ui_rewrite_backend="${UNIFIED_CHAT_REWRITE_BACKEND:-${GATEWAY_REWRITE_BACKEND:-ollama}}"
       [[ "${NO_LOGIN}" == "true" ]] && no_login_env="UNIFIED_CHAT_SKIP_LOGIN=true "
+      # Unified chat reads GATEWAY_REWRITE_BACKEND / GATEWAY_CLARIFICATION_BACKEND from .env (dotenv).
+      # UI always runs full /query after optional /rewrite preview; gateway --route-only still skips
+      # downstream inside the server (GATEWAY_REWRITE_ONLY_MODE), not in the client.
       if [[ "${REWRITE_ONLY_MODE}" == "true" ]]; then
-        echo "GATEWAY_API_URL=http://127.0.0.1:8000 GATEWAY_MOCK=false ${no_login_env}UNIFIED_CHAT_REWRITE_ONLY_MODE=true UNIFIED_CHAT_REWRITE_ENABLE=true UNIFIED_CHAT_REWRITE_BACKEND=${ui_rewrite_backend} UNIFIED_CHAT_GRADIO_PORT=7862 ${PYTHON_BIN} scripts/run_unified_chat.py"
+        echo "GATEWAY_API_URL=http://127.0.0.1:8000 GATEWAY_MOCK=false ${no_login_env}UNIFIED_CHAT_REWRITE_ENABLE=true UNIFIED_CHAT_GRADIO_PORT=7862 ${PYTHON_BIN} scripts/run_unified_chat.py"
       else
         echo "GATEWAY_API_URL=http://127.0.0.1:8000 GATEWAY_MOCK=false ${no_login_env}UNIFIED_CHAT_GRADIO_PORT=7862 ${PYTHON_BIN} scripts/run_unified_chat.py"
       fi
@@ -339,9 +374,18 @@ do_start() {
 
   echo ""
   echo "Waiting for services to become healthy..."
-  for service in $(services); do
-    wait_for_health "${service}" || true
-  done
+  if [[ "${WAIT_STRICT}" == "true" ]]; then
+    for service in $(services); do
+      if ! wait_for_health "${service}"; then
+        echo "[error] Strict wait: ${service} did not become healthy"
+        exit 1
+      fi
+    done
+  else
+    for service in $(services); do
+      wait_for_health "${service}" || true
+    done
+  fi
 
   echo ""
   do_status
@@ -349,16 +393,73 @@ do_start() {
   echo "Logs: ${LOG_DIR}"
 }
 
+# Stop only services that belong to the active profile (reverse startup order).
 do_stop() {
-  local service
-  # Stop in reverse dependency order.
-  if [[ "${WITH_UI}" == "true" ]]; then
-    stop_service "ui"
+  local -a arr
+  # shellcheck disable=SC2206
+  arr=( $(services) )
+  local i
+  for (( i=${#arr[@]}-1; i>=0; i-- )); do
+    stop_service "${arr[i]}"
+  done
+}
+
+service_validate_name() {
+  local n="${1:-}"
+  case "${n}" in
+    gateway|uds|rag|sp_api|ui) return 0 ;;
+    *)
+      echo "[error] Unknown service '${n}'. Use: gateway uds rag sp_api ui"
+      exit 1
+      ;;
+  esac
+}
+
+service_do_start_one() {
+  local name="${1:-}"
+  service_validate_name "${name}"
+  if [[ "${name}" == "ui" ]] && ! check_python_module "gradio"; then
+    echo "[error] UI requested but Python module 'gradio' is not installed."
+    exit 1
   fi
-  stop_service "sp_api"
-  stop_service "rag"
-  stop_service "uds"
-  stop_service "gateway"
+  start_service "${name}"
+  echo "[ok] service start ${name}"
+}
+
+service_do_restart_one() {
+  local name="${1:-}"
+  service_validate_name "${name}"
+  stop_service "${name}"
+  service_do_start_one "${name}"
+}
+
+service_do_status_one() {
+  local name="${1:-}"
+  service_validate_name "${name}"
+  status_service "${name}"
+}
+
+service_main() {
+  local sub="${1:-}"
+  local name="${2:-}"
+  if [[ -z "${sub}" || -z "${name}" ]]; then
+    echo "[error] Usage: service <start|restart|stop|status> <gateway|uds|rag|sp_api|ui>"
+    exit 1
+  fi
+  case "${sub}" in
+    start) service_do_start_one "${name}" ;;
+    restart) service_do_restart_one "${name}" ;;
+    stop)
+      service_validate_name "${name}"
+      stop_service "${name}"
+      echo "[ok] service stop ${name}"
+      ;;
+    status) service_do_status_one "${name}" ;;
+    *)
+      echo "[error] Unknown service subcommand: ${sub}"
+      exit 1
+      ;;
+  esac
 }
 
 do_restart() {
@@ -375,7 +476,12 @@ do_status() {
 
 main() {
   local command="${1:-}"
-  shift || true
+  [[ -n "${command}" ]] && shift || true
+
+  if [[ "${command}" == "service" ]]; then
+    service_main "${1:-}" "${2:-}"
+    exit 0
+  fi
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -385,8 +491,14 @@ main() {
       --route-only|--rewrite-only)
         REWRITE_ONLY_MODE="true"
         ;;
+      --dispatcher-rag-only)
+        DISPATCHER_RAG_ONLY_MODE="true"
+        ;;
       --no-login)
         NO_LOGIN="true"
+        ;;
+      --wait)
+        WAIT_STRICT="true"
         ;;
       --help|-h)
         print_usage
@@ -400,6 +512,13 @@ main() {
     esac
     shift
   done
+
+  if [[ "${DISPATCHER_RAG_ONLY_MODE}" == "true" ]]; then
+    if [[ "${REWRITE_ONLY_MODE}" == "true" ]]; then
+      echo "[error] --dispatcher-rag-only cannot be combined with --route-only"
+      exit 1
+    fi
+  fi
 
   case "${command}" in
     start) do_start ;;

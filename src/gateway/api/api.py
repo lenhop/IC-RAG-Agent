@@ -121,14 +121,17 @@ def _load_clarification_context(memory: Any, session_id: str | None) -> str | No
 def _run_clarification(
     original_query: str, session_id: str | None, memory: Any,
 ) -> tuple[str | None, dict | None]:
-    """Return (context, raw) — raw is non-None only when clarification is needed."""
+    """
+    Return (context, ambiguity_result).
+
+    ambiguity_result is None when clarification is disabled. When enabled, it is the
+    full dict from check_ambiguity (needs_clarification, clarification_backend, ...).
+    """
     if not GatewayConfig.clarification_enabled():
         return None, None
     context = _load_clarification_context(memory, session_id)
     raw = check_ambiguity(original_query, conversation_context=context)
-    if raw.get("needs_clarification"):
-        return context, raw
-    return context, None
+    return context, raw
 
 
 def _log_and_persist(
@@ -212,7 +215,7 @@ class RewritePipeline:
                 workflow=request.workflow or "auto",
                 latency_ms=clar_elapsed_ms,
             )
-            if clar_raw:
+            if clar_raw and clar_raw.get("needs_clarification"):
                 q = clar_raw.get("clarification_question") or ""
                 clarification_backend = clar_raw.get("clarification_backend")
                 GatewayEventLogger.log_interaction(
@@ -264,6 +267,9 @@ class RewritePipeline:
             )
             if GatewayConfig.clarification_enabled():
                 clarification_status = "Complete"
+                clarification_backend = (
+                    clar_raw.get("clarification_backend") if clar_raw else clarification_backend
+                )
 
             return RewriteResponse(
                 original_query=original_query, rewritten_query=rewritten_query,
@@ -345,7 +351,7 @@ class QueryPipeline:
             ctx, clar_raw = _run_clarification(original_query, request.session_id, memory)
             clar_elapsed_ms = int((time.perf_counter() - clar_start) * 1000)
             logger.info("[Perf] query endpoint clarification: %d ms", clar_elapsed_ms)
-            if clar_raw:
+            if clar_raw and clar_raw.get("needs_clarification"):
                 q = clar_raw.get("clarification_question") or ""
                 _log_and_persist(
                     memory,
@@ -674,6 +680,12 @@ class QueryPipeline:
                 route_backend=route_backend,
                 route_llm_confidence=route_llm_confidence,
             )
+            # Expose planner + dispatcher wall times for chat UI (section 5).
+            debug_trace = {
+                **dict(debug_trace),
+                "plan_build_ms": plan_elapsed_ms,
+                "dispatch_execute_ms": dispatch_elapsed_ms,
+            }
 
             # 9a. All tasks failed
             if top_error and not merged_answer:

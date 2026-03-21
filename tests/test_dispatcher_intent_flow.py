@@ -8,6 +8,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.gateway.dispatcher import dispatcher
+from src.gateway.dispatcher.planning import builders as planning_builders
+from src.gateway.dispatcher.planning import fallback as planning_fallback
+from src.gateway.dispatcher.planning import postprocess as planning_postprocess
 from src.gateway.schemas import RewritePlan, TaskGroup, TaskItem
 
 
@@ -33,7 +36,7 @@ def test_build_plan_from_extracted_intents_prefers_preclassified(monkeypatch):
     def _should_not_call(*args, **kwargs):
         raise AssertionError("classify_intents_batch should not be called when preclassified is provided")
 
-    monkeypatch.setattr(dispatcher, "classify_intents_batch", _should_not_call)
+    monkeypatch.setattr(planning_builders, "classify_intents_batch", _should_not_call)
 
     plan, intents_with_meta = dispatcher._build_plan_from_extracted_intents(
         intents,
@@ -50,9 +53,9 @@ def test_build_plan_from_extracted_intents_prefers_preclassified(monkeypatch):
 
 
 def test_build_multi_task_plan_from_query_uses_batch_classification(monkeypatch):
-    monkeypatch.setattr(dispatcher, "split_intents", lambda q: ["intent-a", "intent-b"])
+    monkeypatch.setattr(planning_fallback, "split_intents", lambda q: ["intent-a", "intent-b"])
     monkeypatch.setattr(
-        dispatcher,
+        planning_fallback,
         "classify_intents_batch",
         lambda intents: [
             {"workflow": "sp_api"},
@@ -87,12 +90,12 @@ def test_expand_merged_tasks_falls_back_to_general_on_batch_failure(monkeypatch)
         ],
     )
 
-    monkeypatch.setattr(dispatcher, "split_intents", lambda q: ["part1", "part2"])
+    monkeypatch.setattr(planning_postprocess, "split_intents", lambda q: ["part1", "part2"])
 
     def _raise(*args, **kwargs):
         raise RuntimeError("simulated batch failure")
 
-    monkeypatch.setattr(dispatcher, "classify_intents_batch", _raise)
+    monkeypatch.setattr(planning_postprocess, "classify_intents_batch", _raise)
 
     expanded = dispatcher._expand_merged_tasks(plan)
     tasks = expanded.task_groups[0].tasks

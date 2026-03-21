@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..dispatcher.summary.merge import ResultAggregator
 from ..schemas import RewritePlan, TaskExecutionResult
 from .config import GatewayConfig
 
@@ -127,23 +128,13 @@ class PlanHelper:
     def merge_task_answers(
         cls, plan: RewritePlan, task_results: List[TaskExecutionResult],
     ) -> str:
-        """Build deterministic merged answer from successful task outputs."""
-        completed = [
-            r for r in task_results
-            if r.status == "completed" and (r.answer or "").strip()
-        ]
-        if not completed:
-            return ""
-        if len(completed) == 1:
-            return completed[0].answer.strip()
-        if plan.merge_strategy == "none":
-            return completed[0].answer.strip()
-        if plan.merge_strategy in ("compare", "synthesize"):
-            merged_lines = ["Combined results:"]
-            for result in completed:
-                merged_lines.append(f"- [{result.workflow}] {result.answer.strip()}")
-            return "\n".join(merged_lines)
-        return "\n".join(f"- [{r.workflow}] {r.answer.strip()}" for r in completed)
+        """
+        Merge task outputs into one answer (rule merge by default).
+
+        When ``GATEWAY_SUMMARY_LLM_ENABLED`` and ``DEEPSEEK_API_KEY`` are set,
+        multi-task merges use DeepSeek with fallback to rule merge on failure.
+        """
+        return ResultAggregator.merge(plan, task_results)
 
 
 # ---------------------------------------------------------------------------

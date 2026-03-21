@@ -9,6 +9,7 @@ Uses GatewayClient.query_sync with mock mode when gateway unavailable.
 
 from __future__ import annotations
 
+import html
 import logging
 import os
 import re
@@ -106,6 +107,127 @@ def _format_query_as_bullets(query: str, min_length: int = 60) -> Optional[str]:
     return "\n".join(f"    - {c}" for c in clauses)
 
 
+def _format_dispatcher_section_html(
+    plan: Optional[Any],
+    task_results: Optional[List[Any]],
+    debug: Optional[Dict[str, Any]],
+    response_workflow: Optional[str] = None,
+) -> str:
+    """
+    Render section 5 (Dispatcher) as HTML matching Route LLM trace cards.
+
+    Shows plan build time, worker execution time, plan summary, and per-task metrics.
+
+    Args:
+        plan: Rewrite plan dict from API (plan_type, task_groups), or None.
+        task_results: List of task result dicts (workflow, status, duration_ms, query, ...).
+        debug: Response debug dict; may include plan_build_ms, dispatch_execute_ms.
+        response_workflow: Top-level ``workflow`` from ``/query`` (e.g. ``rewrite_only``).
+
+    Returns:
+        HTML string for Gradio Markdown, or empty string when nothing to show.
+    """
+    try:
+        debug = debug or {}
+        plan_build = debug.get("plan_build_ms")
+        dispatch_ms = debug.get("dispatch_execute_ms")
+        raw_tasks = task_results or []
+
+        plan_type = "single_domain"
+        planned_task_count = 0
+        parallel_groups = 0
+        if plan and isinstance(plan, dict):
+            plan_type = str(plan.get("plan_type") or "single_domain")
+            for g in plan.get("task_groups") or []:
+                if isinstance(g, dict):
+                    parallel_groups += 1
+                    planned_task_count += len(g.get("tasks") or [])
+
+        completed = 0
+        failed = 0
+        skipped = 0
+        normalized_tasks: List[Dict[str, Any]] = []
+        for t in raw_tasks:
+            if not isinstance(t, dict):
+                continue
+            st = str(t.get("status") or "").lower()
+            if st == "completed":
+                completed += 1
+            elif st == "failed":
+                failed += 1
+            elif st == "skipped":
+                skipped += 1
+            normalized_tasks.append(t)
+
+        wf_top = str(response_workflow or "").strip().lower()
+
+        # Skip empty card when API omitted dispatcher metrics and there is no task data.
+        if (
+            plan_build is None
+            and dispatch_ms is None
+            and not normalized_tasks
+            and planned_task_count == 0
+            and wf_top != "rewrite_only"
+        ):
+            return ""
+
+        lines: List[str] = [
+            "<div style=\"border: 1px solid #d1d5db; border-radius: 10px; "
+            "padding: 10px 12px; margin: 8px 0; background-color: #f9fafb;\">",
+            "<h4 style=\"margin: 0 0 8px 0;\">5. Dispatcher</h4>",
+            "<ul style=\"margin: 0; padding-left: 20px;\">",
+        ]
+        # Gateway route-only: /query returns before workers; explain missing timings.
+        if wf_top == "rewrite_only" and dispatch_ms is None:
+            lines.append(
+                "<li><strong>Worker execution:</strong> skipped (gateway rewrite-only / route-only; "
+                "no dispatcher run)</li>"
+            )
+        if plan_build is not None:
+            try:
+                lines.append(f"<li>Plan build: {int(plan_build)} ms</li>")
+            except (TypeError, ValueError):
+                lines.append(f"<li>Plan build: {html.escape(str(plan_build))}</li>")
+        if dispatch_ms is not None:
+            try:
+                lines.append(f"<li>Execute plan (workers): {int(dispatch_ms)} ms</li>")
+            except (TypeError, ValueError):
+                lines.append(
+                    f"<li>Execute plan (workers): {html.escape(str(dispatch_ms))}</li>"
+                )
+        lines.append(f"<li>Plan type: {html.escape(plan_type)}</li>")
+        lines.append(
+            f"<li>Task groups: {parallel_groups} | Planned tasks: {planned_task_count}</li>"
+        )
+        lines.append(
+            f"<li>Results: <strong>{completed}</strong> completed, "
+            f"{failed} failed, {skipped} skipped</li>"
+        )
+        for i, tr in enumerate(normalized_tasks, 1):
+            wf = html.escape(str(tr.get("workflow") or "—"))
+            st = html.escape(str(tr.get("status") or "—"))
+            try:
+                ms = int(tr.get("duration_ms") or 0)
+            except (TypeError, ValueError):
+                ms = 0
+            q = (tr.get("query") or "").strip()
+            if len(q) > 120:
+                q = q[:117] + "..."
+            q_esc = html.escape(q)
+            tid = html.escape(str(tr.get("task_id") or f"task_{i}"))
+            err = tr.get("error")
+            err_part = f" | error: {html.escape(str(err))}" if err else ""
+            lines.append(
+                f"<li>Task {i} (<code>{tid}</code>): workflow <code>{wf}</code> | "
+                f"status {st} | {ms} ms | query: {q_esc}{err_part}</li>"
+            )
+        lines.extend(["</ul>", "</div>"])
+        return "\n".join(lines)
+    except Exception as exc:
+        logger.warning("Dispatcher section HTML failed (non-fatal): %s", exc)
+        return ""
+
+
 def _to_single_line(text: str) -> str:
     """Normalize any model text into a single display-safe line."""
     if not text:
@@ -192,13 +314,48 @@ GRADIO_PORT = int(os.environ.get("UNIFIED_CHAT_GRADIO_PORT", "7862"))
 REWRITE_ENABLE_DEFAULT = os.environ.get(
     "UNIFIED_CHAT_REWRITE_ENABLE", "true"
 ).lower() in ("true", "1", "yes")
-REWRITE_BACKEND_DEFAULT = (
-    os.environ.get("UNIFIED_CHAT_REWRITE_BACKEND", "ollama").strip().lower()
-)
-REWRITE_ONLY_TEST_MODE = (
-    os.environ.get("UNIFIED_CHAT_REWRITE_ONLY_MODE", "").lower() in ("true", "1", "yes")
-    or os.environ.get("GATEWAY_REWRITE_ONLY_MODE", "").lower() in ("true", "1", "yes")
-)
+
+
+def _gateway_rewrite_backend_from_env() -> str:
+    """
+    Read GATEWAY_REWRITE_BACKEND from .env (same as gateway GatewayConfig).
+
+    Returns:
+        "ollama" or "deepseek"; invalid or missing values fall back to "ollama".
+    """
+    raw = (os.environ.get("GATEWAY_REWRITE_BACKEND") or "ollama").strip().lower()
+    return raw if raw in ("ollama", "deepseek") else "ollama"
+
+
+def _gateway_clarification_backend_from_env() -> str:
+    """
+    Read GATEWAY_CLARIFICATION_BACKEND from .env (same as gateway clarification module).
+
+    Returns:
+        "ollama" or "deepseek"; invalid or missing values fall back to "ollama".
+    """
+    raw = (os.environ.get("GATEWAY_CLARIFICATION_BACKEND") or "ollama").strip().lower()
+    return raw if raw in ("ollama", "deepseek") else "ollama"
+
+
+def _display_clarification_backend(api_value: Any) -> str:
+    """Prefer API-reported backend; if absent, show .env-configured clarification backend."""
+    if api_value is not None and str(api_value).strip():
+        return str(api_value).strip()
+    return _gateway_clarification_backend_from_env()
+
+
+def _display_rewrite_backend(api_value: Any) -> str:
+    """Prefer API-reported backend; if absent, show .env-configured rewrite backend."""
+    if api_value is not None and str(api_value).strip():
+        return str(api_value).strip()
+    return _gateway_rewrite_backend_from_env()
+
+
+# Default rewrite_backend sent on /rewrite and /query: must match gateway .env (no separate UI var).
+REWRITE_BACKEND_DEFAULT = _gateway_rewrite_backend_from_env()
+# Bumped when chat client behavior changes. Shown in Status panel so operators can confirm UI reload.
+UNIFIED_CHAT_CLIENT_BUILD = "full-query-after-preview-2026-03-18"
 SKIP_LOGIN = os.environ.get("UNIFIED_CHAT_SKIP_LOGIN", "").lower() in ("true", "1", "yes")
 # Default credentials when SKIP_LOGIN: auto sign-in so token/user_id are set (e.g. for history).
 DEFAULT_SKIP_LOGIN_USER = os.environ.get("UNIFIED_CHAT_SKIP_LOGIN_USER", "lenhe")
@@ -324,11 +481,10 @@ def _auto_signin_if_skip_login() -> tuple:
 
 def _get_gateway_status() -> str:
     """Return human-readable gateway status for sidebar."""
+    client_line = f"\n**UI client build:** `{UNIFIED_CHAT_CLIENT_BUILD}` (always calls `/query` after preview)"
     if not GATEWAY_API_URL or GATEWAY_MOCK:
-        return "**Status:** Mock mode (no gateway)"
-    if REWRITE_ONLY_TEST_MODE:
-        return f"**Status:** Gateway at {GATEWAY_API_URL} (rewrite-only test mode)"
-    return f"**Status:** Gateway at {GATEWAY_API_URL}"
+        return "**Status:** Mock mode (no gateway)" + client_line
+    return f"**Status:** Gateway at {GATEWAY_API_URL}" + client_line
 
 
 def _normalize_rewrite_backend(value: str) -> str:
@@ -395,10 +551,8 @@ def _chat_handler(
     # Sum of clarification + rewrite + classification (ms) for UI trace after full query.
     route_llm_total_ms: Optional[int] = None
 
-    # In rewrite-only test mode, always run /rewrite preview (recommended for this mode).
-    effective_rewrite_preview = rewrite_preview or REWRITE_ONLY_TEST_MODE
-
-    if effective_rewrite_preview:
+    # Optional first call to /rewrite so the chat shows sections 1–4 before /query completes.
+    if rewrite_preview:
         rewrite_result = client.rewrite_sync(
             query=raw_query,
             rewrite_backend=(rewrite_backend or "").strip() or None,
@@ -412,14 +566,14 @@ def _chat_handler(
                 "Rewrite failed; continuing with original query.\n"
                 f"Error: {rewrite_error}"
             )
-            if REWRITE_ONLY_TEST_MODE:
-                return  # Avoid showing "rewriting is disabled" when rewrite actually failed
         elif rewrite_result.get("clarification_required"):
             # Clarification needed: display question and store pending for follow-up
             clarification_question = (
                 rewrite_result.get("clarification_question") or "Please provide more details."
             )
-            clarification_backend = rewrite_result.get("clarification_backend") or "—"
+            clarification_backend = _display_clarification_backend(
+                rewrite_result.get("clarification_backend")
+            )
             pending_query = rewrite_result.get("pending_query") or raw_query
             _set_pending_query(session_id, pending_query)
             yield (
@@ -433,9 +587,8 @@ def _chat_handler(
         else:
             routed_query = _to_single_line(str(rewrite_result.get("rewritten_query") or raw_query))
             rewrite_ms = int(rewrite_result.get("rewrite_time_ms") or 0)
-            rewrite_backend_value = str(
-                rewrite_result.get("rewrite_backend")
-                or (rewrite_backend or "ollama")
+            rewrite_backend_value = _display_rewrite_backend(
+                rewrite_result.get("rewrite_backend") or rewrite_backend
             )
             memory_rounds = int(rewrite_result.get("memory_rounds") or 0)
             memory_text_len = int(rewrite_result.get("memory_text_length") or 0)
@@ -445,8 +598,8 @@ def _chat_handler(
             clarification_status = str(
                 rewrite_result.get("clarification_status") or "—"
             )
-            clarification_backend_value = str(
-                rewrite_result.get("clarification_backend") or "—"
+            clarification_backend_value = _display_clarification_backend(
+                rewrite_result.get("clarification_backend")
             )
             clarification_time_raw = rewrite_result.get("clarification_time_ms")
             clarification_time_display = (
@@ -544,35 +697,7 @@ def _chat_handler(
                         rewrite_message += f"\n{i}. `{wf}`: {q}"
             yield rewrite_message
 
-    if REWRITE_ONLY_TEST_MODE:
-        # Persist turn to Redis so conversation history is available on next login.
-        if routed_query and (user_id or auth_token):
-            try:
-                client.query_sync(
-                    query=routed_query,
-                    workflow=workflow or "auto",
-                    rewrite_backend=(rewrite_backend or "").strip() or None,
-                    session_id=session_id or None,
-                    user_id=user_id,
-                    token=auth_token,
-                )
-            except Exception as exc:
-                logger.debug("Rewrite-only save turn failed (non-fatal): %s", exc)
-        # Quick-test mode: stop after rewriting and skip displaying downstream.
-        if rewrite_message:
-            yield (
-                f"{rewrite_message}\n\n"
-                "---\n"
-                "**Rewrite-only test mode.** Route LLM and downstream services are skipped."
-            )
-        else:
-            yield (
-                "Rewrite-only test mode enabled, but rewriting is disabled.\n"
-                "No route/downstream call was executed."
-            )
-        return
-
-    # Full query: server always runs unified rewrite; pass backend for consistency.
+    # Full query: always call /query so planner + dispatcher run (section 5 when gateway executes workers).
     with ThreadPoolExecutor(max_workers=1) as executor:
         future = executor.submit(
             client.query_sync,
@@ -606,7 +731,9 @@ def _chat_handler(
     # Handle clarification response: store pending_query and display question
     if result.get("clarification_required"):
         clarification_question = result.get("clarification_question") or "Please provide more details."
-        clarification_backend = result.get("clarification_backend") or "—"
+        clarification_backend = _display_clarification_backend(
+            result.get("clarification_backend")
+        )
         pending_query = result.get("pending_query") or routed_query
         _set_pending_query(session_id, pending_query)
         yield (
@@ -636,7 +763,28 @@ def _chat_handler(
         trace_lines.append(
             f"- Route LLM total (Clarification + Rewritten + Classification): `{route_llm_total_ms} ms`"
         )
-    yield f"{answer}\n" + "\n".join(trace_lines)
+    pb = debug.get("plan_build_ms")
+    de = debug.get("dispatch_execute_ms")
+    if pb is not None or de is not None:
+        trace_lines.append(
+            f"- Dispatcher: plan build `{pb} ms` | workers `{de} ms`"
+        )
+
+    dispatcher_html = _format_dispatcher_section_html(
+        result.get("plan"),
+        result.get("task_results"),
+        debug,
+        response_workflow=str(result.get("workflow") or ""),
+    )
+    # Final chunk must include Route LLM HTML (1–4); streaming replaces prior assistant text.
+    answer_and_trace = f"{answer}\n" + "\n".join(trace_lines)
+    final_parts: List[str] = []
+    if rewrite_message:
+        final_parts.append(rewrite_message)
+    if dispatcher_html:
+        final_parts.append(dispatcher_html)
+    final_parts.append(answer_and_trace)
+    yield "\n\n".join(final_parts)
 
 
 # CSS to make chat dialog and input box taller, keep input visible at bottom
@@ -692,7 +840,9 @@ def create_demo() -> gr.Blocks:
         gr.Markdown("# IC-RAG-Agent Chat")
         gr.Markdown(
             "Unified Chat UI - Sign in or register, then select workflow and type your question. "
-            "Uses mock mode when gateway is unavailable."
+            "Uses mock mode when gateway is unavailable. "
+            "After each message, the client calls **`/rewrite`** (preview) then **`/query`** (dispatcher + workers). "
+            "If you still see **Rewrite-only test mode**, restart this UI process; that text is not in the current codebase."
         )
 
         session_id_state = gr.State(value=initial_session_id)
@@ -899,6 +1049,7 @@ def launch(server_name: str = "0.0.0.0", server_port: Optional[int] = None) -> N
     demo = create_demo()
     print(f"Starting IC-RAG-Agent Chat at http://localhost:{port} (bind {server_name})")
     print(f"Gateway: {GATEWAY_API_URL or '(mock mode)'}")
+    print(f"UI client build: {UNIFIED_CHAT_CLIENT_BUILD} (if chat shows old 'Rewrite-only test mode', restart UI)")
     demo.launch(server_name=server_name, server_port=port, share=False, js=CHAT_AUTOSCROLL_JS)
 
 

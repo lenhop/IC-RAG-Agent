@@ -52,7 +52,6 @@ class QueryProcessor:
         "rewrite backend",
         "rewrite time",
         "intent classification",
-        "rewrite-only test mode",
         "user:",
         "assistant:",
     )

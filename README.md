@@ -78,11 +78,11 @@ The gateway routes queries to RAG, UDS, and SP-API backends. Route LLM (clarific
 ### Start Stack with Chat UI
 
 ```bash
-# Full stack (gateway, UDS, RAG, SP-API, UI)
-./bin/project_stack.sh start --with-ui
+# Full stack (gateway, UDS, RAG, SP-API, UI) — ic.sh is an alias for project_stack.sh
+./bin/ic.sh start --with-ui
 
 # Route-only (gateway + UI, no downstream workers) - for testing Route LLM
-./bin/project_stack.sh start --route-only --with-ui
+./bin/ic.sh start --route-only --with-ui
 ```
 
 ### ECS Ollama
@@ -399,14 +399,14 @@ Prerequisites: `amazon_fqa.csv` at `RAG_FAQ_CSV` or `data/intent_classification/
 ### Start API Server
 
 ```bash
-# Start FastAPI server
-./bin/run_rag_api.sh
+# Legacy RAG API (src.rag.app) — use a free port; gateway stack uses Agent RAG on 8002 via ic.sh
+python -m uvicorn src.rag.app:app --host 0.0.0.0 --port 8004
 
-# Or directly
-uvicorn src.rag.rag_api:app --host 0.0.0.0 --port 8000
+# Gateway stack Agent RAG (recommended)
+./bin/ic.sh service start rag
 
-# Test API
-curl -X POST http://localhost:8000/query \
+# Test legacy RAG API (match the port you chose above)
+curl -X POST http://localhost:8004/query \
   -H "Content-Type: application/json" \
   -d '{"question": "What is FBA?", "mode": "auto"}'
 ```
@@ -454,8 +454,8 @@ IC-RAG-Agent/
 │   ├── run_gateway.py               # Unified gateway (route + dispatch)
 │   └── run_unified_chat.py          # Unified Gradio chat UI (RAG/UDS/SP-API)
 ├── bin/
-│   ├── project_stack.sh             # Start/restart gateway, UDS, RAG, SP-API, UI
-│   ├── run_rag_api.sh               # RAG API launcher (backend)
+│   ├── ic.sh                        # Alias: start/restart stack or single service (see bin/README.md)
+│   ├── project_stack.sh             # Stack implementation (same as ic.sh)
 │   ├── uds_ops.sh                   # deploy/rollback/status/logs/setup
 │   ├── install_ollama_ecs.sh        # Install Ollama on ECS (native)
 │   └── test_ecs_ollama_connection.sh # Test ECS Ollama connectivity from local

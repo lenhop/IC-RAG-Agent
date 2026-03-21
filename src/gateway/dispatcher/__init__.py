@@ -7,6 +7,7 @@ from .dispatcher import (
     build_execution_plan,
 )
 
+# DispatcherExecutor is defined in execution.executor; re-exported via dispatcher module.
 __all__ = [
     "build_execution_plan",
     "DispatcherExecutor",
