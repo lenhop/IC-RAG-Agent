@@ -574,7 +574,10 @@ def _do_signout() -> tuple[None, None, dict, dict]:
     return None, None, gr.update(visible=True), gr.update(visible=False)
 
 
-def _auto_signin_if_skip_login(session_id: Optional[str] = None) -> tuple:
+def _auto_signin_if_skip_login(
+    session_id: Optional[str] = None,
+    existing_chat_history: Optional[List[Dict[str, str]]] = None,
+) -> tuple:
     """
     When SKIP_LOGIN is True, sign in with default credentials and return state updates.
     Used on demo load so token/user_info and history are set without showing login.
@@ -585,6 +588,7 @@ def _auto_signin_if_skip_login(session_id: Optional[str] = None) -> tuple:
 
     Args:
         session_id: Current Session ID state (same as left panel). Used for history fetch.
+        existing_chat_history: Current ChatInterface history state.
 
     Returns:
         Tuple for demo.load outputs: token, user, login_panel, chat_panel, signin_msg,
@@ -626,6 +630,11 @@ def _auto_signin_if_skip_login(session_id: Optional[str] = None) -> tuple:
     # In skip-login mode always show chat panel (never show login form).
     login_vis = False if SKIP_LOGIN else show_login
     chat_vis = True if SKIP_LOGIN else show_chat
+    # Important: on websocket reconnect, demo.load can fire again. If history API returns empty
+    # (or temporarily fails), do not wipe the user's current chat content.
+    has_fetched_history = len(chat_history) > 0
+    chatbot_update = gr.update(value=chat_history) if has_fetched_history else gr.update()
+    chatbot_state_value = chat_history if has_fetched_history else (existing_chat_history or [])
     return (
         token,
         user,
@@ -633,8 +642,8 @@ def _auto_signin_if_skip_login(session_id: Optional[str] = None) -> tuple:
         gr.update(visible=chat_vis),
         msg or "",
         user_md,
-        gr.update(value=chat_history),
-        chat_history,
+        chatbot_update,
+        chatbot_state_value,
     )
 
 
@@ -1188,7 +1197,7 @@ def create_demo() -> gr.Blocks:
         # queue=False avoids tying the ChatInterface "processing" indicator to this slow I/O on refresh.
         demo.load(
             fn=_auto_signin_if_skip_login,
-            inputs=[session_id_state],
+            inputs=[session_id_state, chat.chatbot_state],
             outputs=[
                 auth_token_state,
                 user_info_state,
