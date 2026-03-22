@@ -504,7 +504,7 @@ def _display_rewrite_backend(api_value: Any) -> str:
 # Default rewrite_backend sent on /rewrite and /query: must match gateway .env (no separate UI var).
 REWRITE_BACKEND_DEFAULT = _gateway_rewrite_backend_from_env()
 # Bumped when chat client behavior changes. Shown in Status panel so operators can confirm UI reload.
-UNIFIED_CHAT_CLIENT_BUILD = "rewrite-preview-complete-merge-2026-03-18"
+UNIFIED_CHAT_CLIENT_BUILD = "trace-amazon-docs-chroma-count-2026-03-18"
 SKIP_LOGIN = os.environ.get("UNIFIED_CHAT_SKIP_LOGIN", "").lower() in ("true", "1", "yes")
 # Default credentials when SKIP_LOGIN: auto sign-in so token/user_id are set (e.g. for history).
 DEFAULT_SKIP_LOGIN_USER = os.environ.get("UNIFIED_CHAT_SKIP_LOGIN_USER", "lenhe")
@@ -660,6 +660,49 @@ def _normalize_rewrite_backend(value: str) -> str:
     if normalized in ("ollama", "deepseek"):
         return normalized
     return "ollama"
+
+
+def _amazon_docs_chroma_source_count(result: Dict[str, Any]) -> Optional[int]:
+    """
+    Count Chroma-backed source rows for amazon_docs worker task(s) in a /query response.
+
+    RAG maps each similarity-gated Chroma hit to one ``sources`` entry
+    (see ChromaRetriever.hits_to_sources). For ``hybrid`` plans, only tasks whose
+    ``workflow`` is ``amazon_docs`` are counted.
+
+    Args:
+        result: Parsed gateway JSON (dict) including ``task_results`` and/or ``sources``.
+
+    Returns:
+        Chunk count when amazon_docs ran; None when this query did not involve amazon_docs.
+    """
+    try:
+        task_results = result.get("task_results") or []
+        count_amazon = 0
+        saw_amazon_task = False
+        for tr in task_results:
+            if not isinstance(tr, dict):
+                continue
+            w = str(tr.get("workflow") or "").strip().lower()
+            if w != "amazon_docs":
+                continue
+            saw_amazon_task = True
+            if str(tr.get("status") or "").strip().lower() == "completed":
+                src = tr.get("sources")
+                if isinstance(src, list):
+                    count_amazon += len(src)
+        if saw_amazon_task:
+            return count_amazon
+        wf = str(result.get("workflow") or "").strip().lower()
+        if wf == "amazon_docs":
+            sources = result.get("sources")
+            if isinstance(sources, list):
+                return len(sources)
+            return 0
+        return None
+    except (TypeError, ValueError) as exc:
+        logger.warning("amazon_docs Chroma count failed (non-fatal): %s", exc)
+        return None
 
 
 def _chat_handler(
@@ -916,6 +959,11 @@ def _chat_handler(
     if route_llm_total_ms is not None:
         trace_lines.append(
             f"- Route LLM total (Clarification + Rewritten + Classification): `{route_llm_total_ms} ms`"
+        )
+    chroma_amazon_n = _amazon_docs_chroma_source_count(result)
+    if chroma_amazon_n is not None:
+        trace_lines.append(
+            f"- Chroma (amazon_docs) returned chunks: `{chroma_amazon_n}`"
         )
     pb = debug.get("plan_build_ms")
     de = debug.get("dispatch_execute_ms")

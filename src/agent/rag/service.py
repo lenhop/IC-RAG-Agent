@@ -1,11 +1,14 @@
 """
 Orchestrates RAG modes: general, amazon_business (dual path), documents (Chroma + grounded LLM).
+
+amazon_business runs Chroma retrieval and DeepSeek evidence in parallel threads, then merges.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.llm.embeddings import create_embeddings
@@ -181,18 +184,41 @@ class RagQueryService:
 
     @classmethod
     def _run_amazon_business(cls, question: str) -> Dict[str, Any]:
-        """Chroma gated retrieval + DeepSeek evidence + merge (Chroma wins conflicts)."""
+        """
+        Chroma retrieval and DeepSeek evidence in parallel, then merge (Chroma wins conflicts).
+
+        Both branches are I/O bound (vector DB + HTTP LLM); a small thread pool reduces
+        wall-clock latency versus strict sequencing.
+        """
         cfg, embedder, collection = cls._ensure_chroma_collection()
-        hits = ChromaRetriever.retrieve(
-            collection,
-            embedder,
-            question,
-            top_k=cfg.chroma_top_k,
-            min_similarity=cfg.similarity_threshold,
-            prefetch_n=cfg.chroma_query_prefetch,
-        )
-        chroma_context = _format_chroma_context(hits)
-        evidence = DeepSeekRetrieveFacade.evidence_for_query(question)
+
+        def _chroma_branch() -> Tuple[List[Dict[str, Any]], str]:
+            """Run Chroma query + format context in worker thread."""
+            hits_local = ChromaRetriever.retrieve(
+                collection,
+                embedder,
+                question,
+                top_k=cfg.chroma_top_k,
+                min_similarity=cfg.similarity_threshold,
+                prefetch_n=cfg.chroma_query_prefetch,
+            )
+            return hits_local, _format_chroma_context(hits_local)
+
+        def _deepseek_branch() -> str:
+            """Run DeepSeek evidence pass in worker thread."""
+            return DeepSeekRetrieveFacade.evidence_for_query(question)
+
+        # Both tasks start immediately; result() order only affects which error is raised first.
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_chroma = executor.submit(_chroma_branch)
+            future_deepseek = executor.submit(_deepseek_branch)
+            try:
+                hits, chroma_context = future_chroma.result()
+                evidence = future_deepseek.result()
+            except Exception:
+                logger.exception("amazon_business parallel branch failed")
+                raise
+
         answer = MergeComposer.final_answer(
             question,
             chroma_context,
