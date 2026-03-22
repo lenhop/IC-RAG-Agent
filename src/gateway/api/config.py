@@ -58,6 +58,24 @@ class GatewayConfig:
             return backend
         return os.getenv("GATEWAY_REWRITE_BACKEND", "ollama").strip().lower() or None
 
+    @classmethod
+    def resolve_text_generation_backend(cls) -> str:
+        """
+        LLM for RAG amazon_business merge, SP-API answer formatting, etc.
+
+        Env: GATEWAY_TEXT_GENERATION_BACKEND=deepseek|ollama (see src/llm/text_generation_backend.py).
+        RAG worker (8002) must use the same .env if behavior should match the gateway.
+        """
+        from src.llm.text_generation_backend import resolve_text_generation_backend
+
+        return resolve_text_generation_backend()
+
+    @classmethod
+    def sp_api_format_llm_enabled(cls) -> bool:
+        """When true, gateway may run a strict formatting LLM pass on single-task sp_api answers."""
+        v = (os.getenv("GATEWAY_SP_API_FORMAT_LLM_ENABLED", "true") or "").strip().lower()
+        return v in ("1", "true", "yes", "on")
+
 
 # ---------------------------------------------------------------------------
 # GatewayEventLogger — best-effort event logging facade

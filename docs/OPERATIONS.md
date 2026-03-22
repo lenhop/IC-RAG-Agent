@@ -76,6 +76,9 @@ The unified gateway (port 8000) dispatches to three backend URLs. Set these for 
 | UDS_API_URL | http://127.0.0.1:8001 | UDS Agent (BI/analytics) |
 | SP_API_URL | http://127.0.0.1:8003 | SP-API Agent (seller operations) |
 
+- **GATEWAY_TEXT_GENERATION_BACKEND** (`deepseek` \| `ollama`): Selects the LLM for (1) RAG `amazon_business` merge after Chroma + evidence retrieval, and (2) optional gateway formatting of `sp_api` worker answers. Default: `deepseek` when `DEEPSEEK_API_KEY` is set, otherwise `ollama`. The **RAG service (8002)** and **gateway (8000)** must both load the same `.env` if you expect matching behavior.
+- **GATEWAY_SP_API_FORMAT_LLM_ENABLED** (default `true`): When `true`, the gateway may run a strict formatting pass on single-task `sp_api` results **only if** the worker answer is not already tool-built getOrder YAML. Answers that include a YAML fenced block and the key `sp_api_response` are returned unchanged so the full Amazon payload and correct `OrderStatus` are not summarized or invented. Set `false` to always return the worker response unchanged.
+
 - **General knowledge** is answered by the RAG pipeline in general mode. To use DeepSeek for general, set RAG’s `RAG_LLM_PROVIDER=deepseek` or `RAG_GENERAL_LLM_PROVIDER=deepseek` (RAG env, not gateway).
 - **IC_DOCS_ENABLED:** When `false` (default), the IC docs route does not call RAG; the gateway returns a friendly message (“IC document retrieval is not ready yet...”). Set to `true` once Chroma is populated with IC documents.
 
@@ -189,6 +192,12 @@ curl http://localhost:8000/health
 curl http://localhost:8001/health
 curl http://localhost:8002/health
 curl http://localhost:8003/api/v1/health
+```
+
+Start SP-API Agent (same port as `SP_API_URL` default):
+
+```bash
+python -m uvicorn src.agent.sp_api.app:app --host 0.0.0.0 --port 8003
 ```
 
 ### View Logs

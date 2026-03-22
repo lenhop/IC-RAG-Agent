@@ -6,12 +6,12 @@ import json
 import os
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 import httpx
 
-from ai_toolkit.errors import AuthenticationError
+from .exceptions import SPAPIAuthError
 
 
 # ---------------------------------------------------------------------------
@@ -29,6 +29,7 @@ class SPAPICredentials:
     aws_secret_key: str = ""
     region: str = "us-east-1"
     app_id: str = ""
+    seller_id: str = ""
 
     def __post_init__(self):
         for fname in ("refresh_token", "client_id", "client_secret"):
@@ -37,15 +38,38 @@ class SPAPICredentials:
 
     @classmethod
     def from_env(cls) -> "SPAPICredentials":
-        """Load credentials from environment variables."""
+        """
+        Load credentials from environment variables.
+
+        Refresh token resolution (first non-empty wins):
+            SP_API_REFRESH_TOKEN, then SP_API_SNB_NA_REFRESH_TOKEN (per-account .env layout).
+
+        Seller id resolution:
+            SP_API_SELLER_ID, then SNB_NA_SELLER_ID (optional; listings need one of these).
+        """
         def _get(key: str, required: bool = True) -> str:
             val = os.environ.get(key, "")
             if required and not val:
                 raise ValueError(f"Missing required env var: {key}")
             return val
 
+        def _refresh_token_from_env() -> str:
+            """Pick LWA refresh token from primary or snb_na-specific env names."""
+            for key in ("SP_API_REFRESH_TOKEN", "SP_API_SNB_NA_REFRESH_TOKEN"):
+                raw = (os.environ.get(key) or "").strip()
+                if raw:
+                    return raw
+            raise ValueError(
+                "Missing LWA refresh token: set SP_API_REFRESH_TOKEN or "
+                "SP_API_SNB_NA_REFRESH_TOKEN in the environment."
+            )
+
+        seller_primary = (os.environ.get("SP_API_SELLER_ID") or "").strip()
+        seller_fallback = (os.environ.get("SNB_NA_SELLER_ID") or "").strip()
+        seller_id = seller_primary or seller_fallback
+
         return cls(
-            refresh_token=_get("SP_API_REFRESH_TOKEN"),
+            refresh_token=_refresh_token_from_env(),
             client_id=_get("SP_API_CLIENT_ID"),
             client_secret=_get("SP_API_CLIENT_SECRET"),
             marketplace_id=_get("SP_API_MARKETPLACE_ID", required=False) or "ATVPDKIKX0DER",
@@ -54,6 +78,7 @@ class SPAPICredentials:
             aws_secret_key=_get("SP_API_AWS_SECRET_KEY", required=False),
             region=_get("SP_API_REGION", required=False) or "us-east-1",
             app_id=_get("SP_API_APP_ID", required=False),
+            seller_id=seller_id,
         )
 
 
@@ -86,13 +111,16 @@ class _RateLimiter:
             time.sleep(deficit / self._rate)
 
 
-# Per-endpoint rate limit config: (rate/s, burst)
+# Per-endpoint rate limit config: (rate/s, burst). Match SP-API default usage plans;
+# actual limits may appear in x-amzn-RateLimit-Limit response headers.
+# Orders getOrder: ~0.5 r/s, burst 30. Listings getListingsItem: ~5 r/s, burst 10.
 _RATE_LIMITS: Dict[str, tuple] = {
-    "/catalog/":      (2.0,    2),
-    "/fba/inventory/": (2.0,   2),
-    "/orders/":       (0.0167, 20),
-    "/finances/":     (0.5,    30),
-    "/reports/":      (0.0222, 10),
+    "/listings/": (5.0, 10),
+    "/catalog/": (2.0, 2),
+    "/fba/inventory/": (2.0, 2),
+    "/orders/": (0.5, 30),
+    "/finances/": (0.5, 30),
+    "/reports/": (0.0222, 10),
 }
 _DEFAULT_RATE = (1.0, 5)
 
@@ -105,7 +133,6 @@ class SPAPIClient:
     """Authenticated Amazon SP-API HTTP client."""
 
     _LWA_URL = "https://api.amazon.com/auth/o2/token"
-    _SP_API_BASE = "https://sellingpartnerapi-na.amazon.com"
 
     def __init__(self, credentials: SPAPICredentials, redis_client=None):
         self._creds = credentials
@@ -114,6 +141,9 @@ class SPAPIClient:
         self._token_expiry: float = 0.0
         self._rate_limiters: Dict[str, _RateLimiter] = {}
         self._http = httpx.Client(timeout=30.0)
+        # Base URL without trailing slash; override with SP_API_ENDPOINT for EU/FE etc.
+        raw_base = (os.environ.get("SP_API_ENDPOINT") or "").strip().rstrip("/")
+        self._sp_api_base = raw_base or "https://sellingpartnerapi-na.amazon.com"
 
     @property
     def marketplace_id(self) -> str:
@@ -136,14 +166,14 @@ class SPAPIClient:
             },
         )
         if resp.status_code != 200:
-            raise AuthenticationError(
+            raise SPAPIAuthError(
                 f"LWA token refresh failed: {resp.status_code} {resp.text}",
                 auth_type="lwa_oauth2",
             )
         data = resp.json()
         # Fix #2: guard missing access_token key
         if "access_token" not in data:
-            raise AuthenticationError(
+            raise SPAPIAuthError(
                 "LWA response missing access_token",
                 auth_type="lwa_oauth2",
             )
@@ -217,7 +247,7 @@ class SPAPIClient:
         headers["x-amz-access-token"] = self._access_token or ""
 
         resp = self._http.get(
-            self._SP_API_BASE + path,
+            self._sp_api_base + path,
             params=params,
             headers=headers,
         )

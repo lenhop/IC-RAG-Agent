@@ -726,8 +726,12 @@ class QueryPipeline:
                     memory_rounds=memory_rounds_q,
                     memory_text_length=memory_text_length_q,
                 )
-                if execution_plan.task_groups and execution_plan.task_groups[0].tasks:
-                    execution_plan.task_groups[0].tasks[0].workflow = workflow
+                # Do not overwrite planner task.workflow with route_workflow here.
+                # Intent classification (classify_intents_batch + PlanBuilder) already set
+                # each TaskItem.workflow (e.g. sp_api). route_with_llm is currently a stub
+                # that always returns ("general", 0.0) (see route_llm/rewriting/rewriters.py),
+                # which would incorrectly force single-task plans to RAG/general and skip
+                # sp_api/uds workers despite a correct classification preview in the UI.
 
             # 8. Dispatcher: execute + merge
             dispatch_start = time.perf_counter()

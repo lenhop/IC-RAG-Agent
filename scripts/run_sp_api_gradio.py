@@ -9,7 +9,7 @@ Usage:
   python scripts/run_sp_api_gradio.py
   SP_API_URL=http://127.0.0.1:8000 python scripts/run_sp_api_gradio.py
 
-Requires the SP-API Agent API to be running (e.g. uvicorn src.sp_api.fast_api:app --port 8000).
+Requires the SP-API Agent API to be running (e.g. uvicorn src.agent.sp_api.app:app --port 8003).
 """
 
 from __future__ import annotations
@@ -101,7 +101,7 @@ def _query_sync(query: str, session_id: str) -> str:
             timeout=SP_API_QUERY_TIMEOUT,
         )
     except requests.ConnectionError:
-        return "Cannot connect to SP-API. Is it running? Start with: uvicorn src.sp_api.fast_api:app --port 8000"
+        return "Cannot connect to SP-API. Is it running? Start with: uvicorn src.agent.sp_api.app:app --port 8003"
     except requests.Timeout:
         return "Query timed out. The server took too long to respond."
     except requests.RequestException as e:

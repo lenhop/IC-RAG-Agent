@@ -83,7 +83,12 @@ The gateway routes queries to RAG, UDS, and SP-API backends. Route LLM (clarific
 
 # Route-only (gateway + UI, no downstream workers) - for testing Route LLM
 ./bin/ic.sh start --route-only --with-ui
+
+# RAG + SP-API + gateway (+ optional UI): no UDS process; UDS workflow returns a stub message
+./bin/ic.sh start --dispatcher-rag-only --with-ui
 ```
+
+Chat UI (`--with-ui`) talks to the gateway on **8000**; when the route LLM or workflow selector picks **sp_api**, the gateway calls the SP-API agent on **8003** (unless `GATEWAY_WORKER_PROFILE=rag_only` or `GATEWAY_STUB_UDS_SP_API=true`, which stub SP-API as well). Production readiness depends on credentials, `SP_API_TEST_MODE`, and operational rollout rather than a single flag.
 
 ### ECS Ollama
 
@@ -97,6 +102,13 @@ OLLAMA_EMBED_MODEL=all-minilm:latest
 ```
 
 Where `CH_HOST` is the ECS host already set in `.env`. Test connectivity: `./bin/test_ecs_ollama_connection.sh`
+
+### SP-API Agent service
+
+The gateway dispatches seller SP-API workflow traffic to a dedicated FastAPI worker (default port **8003**). Point the gateway at it with `SP_API_URL` (for example `http://127.0.0.1:8003`).
+
+- **Documentation:** [src/agent/sp_api/README.md](src/agent/sp_api/README.md) (endpoints, environment variables, package layout)
+- **Run locally:** `python -m uvicorn src.agent.sp_api.app:app --host 0.0.0.0 --port 8003`, or start the full stack with `./bin/ic.sh start --with-ui`
 
 ### Auth (Login / Register)
 

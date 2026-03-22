@@ -53,7 +53,7 @@ mkdir -p "${LOG_DIR}" "${PID_DIR}"
 WITH_UI="false"
 REWRITE_ONLY_MODE="false"
 NO_LOGIN="false"
-# Gateway + Agent RAG only: no UDS/SP-API processes; gateway stubs those workers (worker_profile.py).
+# Gateway + Agent RAG + SP-API: no UDS process; gateway stubs UDS only (worker_profile rag_sp_api).
 DISPATCHER_RAG_ONLY_MODE="false"
 # When true, failed health check after start/restart exits non-zero.
 WAIT_STRICT="false"
@@ -72,7 +72,7 @@ Stack commands (start/restart/stop/status):
     --with-ui          Unified chat (Gradio) on 7862
     --route-only       Gateway only (+ optional UI); no uds/rag/sp_api processes
     --rewrite-only     Alias for --route-only
-    --dispatcher-rag-only   rag(8002) + gateway(8000) only; UDS/SP-API stubbed in gateway
+    --dispatcher-rag-only   rag(8002) + sp_api(8003) + gateway(8000); UDS stubbed in gateway
     --no-login         With --with-ui: UNIFIED_CHAT_SKIP_LOGIN=true
     --wait             Require health checks to pass (exit 1 on failure)
 
@@ -104,9 +104,9 @@ services() {
 
   if [[ "${DISPATCHER_RAG_ONLY_MODE}" == "true" ]]; then
     if [[ "${WITH_UI}" == "true" ]]; then
-      echo "rag gateway ui"
+      echo "rag sp_api gateway ui"
     else
-      echo "rag gateway"
+      echo "rag sp_api gateway"
     fi
     return 0
   fi
@@ -175,7 +175,7 @@ service_start_cmd() {
       # dispatcher-rag-only: override .env if it still sets rewrite/route-only (would skip Dispatcher+RAG).
       local rag_only_env=""
       if [[ "${DISPATCHER_RAG_ONLY_MODE}" == "true" ]]; then
-        rag_only_env="GATEWAY_WORKER_PROFILE=rag_only GATEWAY_REWRITE_ONLY_MODE=false GATEWAY_ROUTE_ONLY_MODE=false "
+        rag_only_env="GATEWAY_WORKER_PROFILE=rag_sp_api GATEWAY_REWRITE_ONLY_MODE=false GATEWAY_ROUTE_ONLY_MODE=false "
       fi
       if [[ "${REWRITE_ONLY_MODE}" == "true" ]]; then
         echo "${rag_only_env}RAG_API_URL=${rag_url} UDS_API_URL=${uds_url} SP_API_URL=${sp_url} GATEWAY_REWRITE_ONLY_MODE=true GATEWAY_REWRITE_PLANNER_ENABLED=true GATEWAY_CLARIFICATION_ENABLED=true GATEWAY_REWRITE_BACKEND=${rewrite_backend} GATEWAY_CLARIFICATION_BACKEND=${clarification_backend} GATEWAY_INTENT_SPLIT_BACKEND=${intent_split_backend} GATEWAY_INTENT_DETECT_BACKEND=${intent_detect_backend} GATEWAY_REWRITE_OLLAMA_URL=${ollama_url} GATEWAY_REWRITE_OLLAMA_MODEL=${ollama_model} GATEWAY_ROUTE_LLM_OLLAMA_URL=${route_url} GATEWAY_ROUTE_LLM_OLLAMA_MODEL=${route_model} GATEWAY_PORT=8000 ${PYTHON_BIN} scripts/run_gateway.py"
@@ -191,7 +191,7 @@ service_start_cmd() {
       echo "RAG_API_PORT=8002 ${PYTHON_BIN} -m uvicorn src.agent.rag.app:app --host 0.0.0.0 --port 8002"
       ;;
     sp_api)
-      echo "${PYTHON_BIN} -m uvicorn src.sp_api.fast_api:app --host 0.0.0.0 --port 8003"
+      echo "${PYTHON_BIN} -m uvicorn src.agent.sp_api.app:app --host 0.0.0.0 --port 8003"
       ;;
     ui)
       local no_login_env=""

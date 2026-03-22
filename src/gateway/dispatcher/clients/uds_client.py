@@ -8,7 +8,7 @@ import os
 from typing import Any, Dict, Optional
 
 from .http_client import BackendHttpClient
-from .worker_profile import should_stub_uds_and_sp_api, stub_response_for_workflow
+from .worker_profile import should_stub_uds, stub_response_for_workflow
 
 UDS_API_URL = os.getenv("UDS_API_URL", "http://127.0.0.1:8001").rstrip("/")
 UDS_BACKEND_TIMEOUT = int(os.getenv("GATEWAY_UDS_BACKEND_TIMEOUT", "300"))
@@ -27,7 +27,7 @@ class UdsWorkflowClient:
             session_id: Optional session id (ignored by current UDS API).
         """
         _ = session_id
-        if should_stub_uds_and_sp_api():
+        if should_stub_uds():
             return stub_response_for_workflow("uds")
 
         if not UDS_API_URL:

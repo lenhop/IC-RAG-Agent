@@ -24,7 +24,7 @@ Use **one** of these (they are equivalent):
 | ----------------------- | ------------------------------------------------------------------------------ |
 | `--with-ui`             | Start unified chat (Gradio) on **7862**.                                       |
 | `--route-only`          | Gateway only (+ optional UI); no `uds` / `rag` / `sp_api` processes.           |
-| `--dispatcher-rag-only` | **rag (8002)** + **gateway (8000)** only; UDS/SP-API stubbed in gateway.       |
+| `--dispatcher-rag-only` | **rag (8002)** + **sp_api (8003)** + **gateway (8000)**; **UDS** stubbed in gateway (live SP-API). |
 | `--no-login`            | With `--with-ui`: skip login (dev).                                            |
 | `--wait`                | After start/restart, **fail** if any service does not become healthy (strict). |
 

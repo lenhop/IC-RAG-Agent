@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.llm.embeddings import create_embeddings
+from src.llm.text_generation_backend import resolve_text_generation_backend
 
 from .chroma_retrieve import ChromaRetriever
 from .config import RagRuntimeConfig
@@ -223,6 +224,7 @@ class RagQueryService:
             question,
             chroma_context,
             evidence,
+            text_generation_backend=resolve_text_generation_backend(),
         )
         sources = ChromaRetriever.hits_to_sources(hits)
         return {"answer": answer, "sources": sources}

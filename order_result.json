@@ -1,0 +1,37 @@
+{
+  "ok": true,
+  "order_id": "112-2632701-5204214",
+  "sp_api_response": {
+    "payload": {
+      "BuyerInfo": {},
+      "AmazonOrderId": "112-2632701-5204214",
+      "EarliestShipDate": "2026-03-30T07:00:00Z",
+      "SalesChannel": "Amazon.com",
+      "OrderStatus": "Canceled",
+      "NumberOfItemsShipped": 0,
+      "OrderType": "StandardOrder",
+      "IsPremiumOrder": false,
+      "IsPrime": false,
+      "FulfillmentChannel": "AFN",
+      "NumberOfItemsUnshipped": 0,
+      "HasRegulatedItems": false,
+      "IsReplacementOrder": false,
+      "IsSoldByAB": false,
+      "LatestShipDate": "2026-03-30T07:00:00Z",
+      "ShipServiceLevel": "Standard",
+      "IsISPU": false,
+      "MarketplaceId": "ATVPDKIKX0DER",
+      "PurchaseDate": "2026-03-19T01:31:40Z",
+      "IsAccessPointOrder": false,
+      "SellerOrderId": "112-2632701-5204214",
+      "PaymentMethod": "Other",
+      "IsBusinessOrder": false,
+      "PaymentMethodDetails": [
+        "Standard"
+      ],
+      "IsGlobalExpressEnabled": false,
+      "LastUpdateDate": "2026-03-19T16:36:26Z",
+      "ShipmentServiceLevelCategory": "Standard"
+    }
+  }
+}

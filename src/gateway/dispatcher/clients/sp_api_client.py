@@ -8,7 +8,7 @@ import os
 from typing import Any, Dict, List, Optional
 
 from .http_client import BackendHttpClient
-from .worker_profile import should_stub_uds_and_sp_api, stub_response_for_workflow
+from .worker_profile import should_stub_sp_api, stub_response_for_workflow
 
 SP_API_URL = os.getenv("SP_API_URL", "http://127.0.0.1:8003").rstrip("/")
 
@@ -25,7 +25,7 @@ class SpApiWorkflowClient:
             query: User query text.
             session_id: Optional session id forwarded to SP-API when non-empty.
         """
-        if should_stub_uds_and_sp_api():
+        if should_stub_sp_api():
             return stub_response_for_workflow("sp_api")
 
         if not SP_API_URL:
