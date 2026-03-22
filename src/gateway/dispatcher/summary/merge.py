@@ -39,7 +39,7 @@ def _sp_api_worker_is_authoritative_api_payload(worker_answer: str) -> bool:
     # Prefix added by SpApiReActAgent when getOrder YAML is attached.
     if "Below is the Amazon Selling Partner API" in text:
         return True
-    # Tool output from format_orders_batch_as_yaml always includes sp_api_response per order.
+    # Tool output from SpApiOrderBatchYamlFormatter.format_batch always includes sp_api_response per order.
     lowered = text.lower()
     if "```yaml" in lowered and "sp_api_response" in text:
         return True

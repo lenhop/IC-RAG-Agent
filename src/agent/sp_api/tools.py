@@ -1,23 +1,168 @@
 """
 ReAct tools wrapping read-only SP-API order and listing operations.
+
+Includes batch YAML formatters (merged from former ``order_yaml`` / ``listing_yaml`` modules)
+as class-based facades for downstream use.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from typing import Any, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from ai_toolkit.errors import ValidationError
 from ai_toolkit.tools import BaseTool, ToolParameter
 
 from .listing import get_listings_items_batch
-from .listing_yaml import format_listings_batch_as_yaml
 from .order import get_orders_batch
-from .order_yaml import format_orders_batch_as_yaml
 from .sp_api_client import SPAPIClient, SPAPICredentials
 
 logger = logging.getLogger(__name__)
+
+try:
+    import yaml  # type: ignore[import-untyped]
+except ImportError:  # pragma: no cover - PyYAML is in requirements.txt
+    yaml = None  # type: ignore[assignment]
+
+
+def _sp_api_yaml_json_safe(obj: Any) -> Any:
+    """
+    Recursively normalize values so YAML/JSON serialization never fails on odd types.
+
+    Args:
+        obj: Arbitrary nested structure from httpx/SP-API JSON.
+
+    Returns:
+        Structure using only dict, list, str, int, float, bool, None.
+    """
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, dict):
+        return {str(k): _sp_api_yaml_json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sp_api_yaml_json_safe(v) for v in obj]
+    return str(obj)
+
+
+class SpApiOrderBatchYamlFormatter:
+    """
+    Format SP-API getOrder batch results as human-readable YAML for chat / logs.
+
+    Each successful row uses shape: ``ok``, ``order_id``, ``sp_api_response`` (full JSON).
+    """
+
+    @classmethod
+    def format_batch(cls, results: List[Dict[str, Any]]) -> str:
+        """
+        Build a multi-order YAML document with full SP-API JSON per success row.
+
+        Args:
+            results: Output of ``get_orders_batch`` (``order_id``, ``ok``, ``payload`` or ``error``).
+
+        Returns:
+            UTF-8 YAML string (falls back to indented JSON if PyYAML is unavailable).
+        """
+        orders_out: List[Dict[str, Any]] = []
+        for r in results:
+            oid = str(r.get("order_id") or "").strip()
+            if r.get("ok"):
+                raw = r.get("payload")
+                orders_out.append(
+                    {
+                        "ok": True,
+                        "order_id": oid,
+                        "sp_api_response": _sp_api_yaml_json_safe(raw) if raw is not None else {},
+                    }
+                )
+            else:
+                err_entry: Dict[str, Any] = {
+                    "ok": False,
+                    "order_id": oid,
+                    "error": str(r.get("error") or ""),
+                }
+                if r.get("status_code") is not None:
+                    err_entry["http_status"] = r["status_code"]
+                orders_out.append(err_entry)
+
+        wrapper = {
+            "orders": orders_out,
+            "order_count": len(orders_out),
+        }
+
+        if yaml is not None:
+            try:
+                return yaml.safe_dump(
+                    wrapper,
+                    sort_keys=False,
+                    default_flow_style=False,
+                    allow_unicode=True,
+                    width=1000,
+                )
+            except Exception as exc:
+                logger.warning("YAML dump failed, using JSON fallback: %s", exc)
+
+        return json.dumps(wrapper, indent=2, ensure_ascii=False, default=str)
+
+
+class SpApiListingBatchYamlFormatter:
+    """
+    Format SP-API getListingsItem batch results as human-readable YAML for chat / logs.
+
+    Each successful row uses shape: ``ok``, ``sku``, ``sp_api_response`` (full JSON).
+    """
+
+    @classmethod
+    def format_batch(cls, results: List[Dict[str, Any]]) -> str:
+        """
+        Build a multi-SKU YAML document with full SP-API JSON per success row.
+
+        Args:
+            results: Output of ``get_listings_items_batch`` (``sku``, ``ok``, ``payload`` or ``error``).
+
+        Returns:
+            UTF-8 YAML string (falls back to indented JSON if PyYAML is unavailable).
+        """
+        listings_out: List[Dict[str, Any]] = []
+        for row in results:
+            sku = str(row.get("sku") or "").strip()
+            if row.get("ok"):
+                raw = row.get("payload")
+                listings_out.append(
+                    {
+                        "ok": True,
+                        "sku": sku,
+                        "sp_api_response": _sp_api_yaml_json_safe(raw) if raw is not None else {},
+                    }
+                )
+            else:
+                err_row: Dict[str, Any] = {
+                    "ok": False,
+                    "sku": sku,
+                    "error": str(row.get("error") or ""),
+                }
+                if row.get("status_code") is not None:
+                    err_row["http_status"] = row["status_code"]
+                listings_out.append(err_row)
+
+        wrapper = {
+            "listings": listings_out,
+            "listing_count": len(listings_out),
+        }
+
+        if yaml is not None:
+            try:
+                return yaml.safe_dump(
+                    wrapper,
+                    sort_keys=False,
+                    default_flow_style=False,
+                    allow_unicode=True,
+                    width=1000,
+                )
+            except Exception as exc:
+                logger.warning("YAML dump failed, using JSON fallback: %s", exc)
+
+        return json.dumps(wrapper, indent=2, ensure_ascii=False, default=str)
 
 
 def _coerce_id_list(value: Union[str, List[Any], None]) -> List[str]:
@@ -72,7 +217,7 @@ class SpApiGetOrdersTool(BaseTool):
         results = get_orders_batch(self._client, ids)
         ok_n = sum(1 for r in results if r.get("ok"))
         # Human-readable YAML: full SP-API JSON per order (not only OrderStatus).
-        orders_yaml = format_orders_batch_as_yaml(results)
+        orders_yaml = SpApiOrderBatchYamlFormatter.format_batch(results)
         return {
             "orders_yaml": orders_yaml,
             "results": results,
@@ -129,7 +274,7 @@ class SpApiGetListingsTool(BaseTool):
             credentials=self._credentials,
         )
         ok_n = sum(1 for r in results if r.get("ok"))
-        listings_yaml = format_listings_batch_as_yaml(results)
+        listings_yaml = SpApiListingBatchYamlFormatter.format_batch(results)
         return {
             "listings_yaml": listings_yaml,
             "results": results,

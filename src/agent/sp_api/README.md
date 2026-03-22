@@ -53,9 +53,8 @@ Or use `bin/project_stack.sh start sp_api`, or the full stack via `./bin/ic.sh s
 | `exceptions.py` | Auth and client error types (e.g. `SPAPIAuthError`) |
 | `sp_api_client.py` | LWA access token, per-route rate limits, optional Redis cache, signed GET requests |
 | `order.py` | getOrder helpers (single and batch, dedupe, per-item errors) |
-| `order_yaml.py` | Format full getOrder JSON as readable YAML for chat output |
 | `listing.py` | getListingsItem helpers (single and batch, dedupe, per-item errors) |
-| `tools.py` | ReAct `BaseTool` implementations: `sp_api_get_orders`, `sp_api_get_listings` |
+| `tools.py` | ReAct tools (`sp_api_get_orders`, `sp_api_get_listings`) and batch YAML formatters (`SpApiOrderBatchYamlFormatter`, `SpApiListingBatchYamlFormatter`) |
 | `sp_api_agent.py` | Builds `SpApiReActAgent` (appends full order YAML to answers when needed) |
 | `app.py` | FastAPI application: health and seller query endpoint |
 
