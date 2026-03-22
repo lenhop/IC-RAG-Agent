@@ -1,0 +1,270 @@
+{
+  "saved_at_utc": "2026-03-22T05:07:42.911306+00:00",
+  "skus": [
+    "LJ-CHAPN-102717-02-1"
+  ],
+  "results": [
+    {
+      "sku": "LJ-CHAPN-102717-02-1",
+      "ok": true,
+      "payload": {
+        "sku": "LJ-CHAPN-102717-02-1",
+        "summaries": [
+          {
+            "marketplaceId": "ATVPDKIKX0DER",
+            "asin": "B01MYG3BAG",
+            "productType": "COSTUME_HEADWEAR",
+            "conditionType": "new_new",
+            "status": [
+              "DISCOVERABLE"
+            ],
+            "fnSku": "B01MYG3BAG",
+            "itemName": "Juvale Pirate Hat Tricorn with Feather - 15 x 13 x 3.5 In, Black, Kettle Brim - Pirate Hats for Adults & Revolutionary War Reenactment",
+            "createdDate": "2025-09-19T05:30:54.841Z",
+            "lastUpdatedDate": "2026-01-14T16:15:12.338Z",
+            "mainImage": {
+              "link": "https://m.media-amazon.com/images/I/41B1WwYj0sL.jpg",
+              "height": 500,
+              "width": 500
+            }
+          }
+        ],
+        "relationships": [],
+        "attributes": {
+          "fulfillment_availability": [
+            {
+              "fulfillment_channel_code": "AMAZON_NA"
+            },
+            {
+              "fulfillment_channel_code": "DEFAULT",
+              "quantity": 0
+            }
+          ],
+          "bullet_point": [
+            {
+              "value": "Striking Pirate Attire: Juvale's Adult Tricorn Pirate Hat with Feather elevates any pirate costume with its intricate design and timeless appeal. This black tricorn hat is perfect for both pirate costume men and women outfits, adding a touch of historical flair",
+              "language_tag": "en_US",
+              "marketplace_id": "ATVPDKIKX0DER"
+            },
+            {
+              "value": "Authentic Historical Design: Embrace authenticity in your pirate or musketeer ensemble with this meticulously crafted pirate hat with feather. The decorative brown trim and elegant feather make it a versatile addition to pirate costume accessories for adults",
+              "language_tag": "en_US",
+              "marketplace_id": "ATVPDKIKX0DER"
+            },
+            {
+              "value": "Adjustable and Comfortable Fit: Experience unparalleled comfort with adjustable snap buttons that cater to various head sizes, ensuring a secure fit. This pirate hat black design remains stable throughout any event, making it ideal for adult pirate Halloween costumes",
+              "language_tag": "en_US",
+              "marketplace_id": "ATVPDKIKX0DER"
+            },
+            {
+              "value": "Durability and Versatility: Constructed from long-lasting materials, this tricorn hat maintains its shape through frequent use. Its versatile style makes it suitable for events ranging from renaissance hat gatherings to pirate costume occasions",
+              "language_tag": "en_US",
+              "marketplace_id": "ATVPDKIKX0DER"
+            },
+            {
+              "value": "Perfect Accessory Dimensions: Measuring 15 x 13 x 3.5 inches, this unisex pirate tricorn hat is a standout piece in any pirate costume. Pair it seamlessly with pirate boots or a pirate coat to complete your adventurous pirate apparel ensemble",
+              "language_tag": "en_US",
+              "marketplace_id": "ATVPDKIKX0DER"
+            }
+          ],
+          "product_description": [
+            {
+              "value": "Juvale's Adult Tricorn Pirate Hat with Feather is a refined accessory crafted to complement both pirate and historical costumes. This tricorn hat, suitable for both men and women, is a versatile addition to any wardrobe. The decorative brown trim and striking feather evoke the adventurous spirit of a pirate captain or the sophistication of a musketeer.\n\nAs the cooler months approach, this tricorne hat becomes an ideal accessory for historical reenactments or themed gatherings. It provides a stylish way to embrace character roles during theatrical performances or costume events. Pair it with pirate boots for women or a pirate coat to create a cohesive and impressive ensemble.\n\nDesigned for adults and older children, this pirate hat adult edition ensures a comfortable fit with adjustable snap buttons, accommodating various head sizes. Made from durable felt, the hat retains its shape and style through repeated use, making it a reliable piece in your collection of costume elements.\n\nWith dimensions of 15 x 13 x 3.5 inches, this unisex pirate tricorn hat stands out in any pirate costume. It is perfect for enhancing pirate outfits with a touch of historical flair. Hand washing is recommended to maintain the hat's quality and appearance, ensuring it remains a long-lasting addition to your costume collection.\n\nWhether used for a renaissance hat style or as a pirate cosplay element, this hat provides endless possibilities for creative expression. Suitable for individuals aged 12 years and up, the Juvale tricorn pirate hat is an essential piece for costume enthusiasts seeking to enrich their pirate or renaissance attire with an authentic touch.",
+              "language_tag": "en_US",
+              "marketplace_id": "ATVPDKIKX0DER"
+            }
+          ],
+          "supplier_declared_dg_hz_regulation": [
+            {
+              "value": "not_applicable",
+              "marketplace_id": "ATVPDKIKX0DER"
+            }
+          ],
+          "generic_keyword": [
+            {
+              "value": "pirate hat men tricorne hat mens pirate hat pirate hat adult conquistador costume pirate boots women pirate captain hat tricorn hat black pirate hats for women kids pirate hat womens pirate boots hat feather pirate pistol mens black pirate hat",
+              "language_tag": "en_US",
+              "marketplace_id": "ATVPDKIKX0DER"
+            }
+          ],
+          "list_price": [
+            {
+              "value": 33.99,
+              "currency": "USD",
+              "marketplace_id": "ATVPDKIKX0DER"
+            }
+          ],
+          "batteries_required": [
+            {
+              "value": "false",
+              "marketplace_id": "ATVPDKIKX0DER"
+            }
+          ],
+          "condition_type": [
+            {
+              "value": "new_new",
+              "marketplace_id": "ATVPDKIKX0DER"
+            }
+          ],
+          "merchant_suggested_asin": [
+            {
+              "value": "B01MYG3BAG",
+              "marketplace_id": "ATVPDKIKX0DER"
+            }
+          ],
+          "batteries_included": [
+            {
+              "value": "false",
+              "marketplace_id": "ATVPDKIKX0DER"
+            }
+          ],
+          "other_product_image_locator_8": [
+            {
+              "media_location": "https://m.media-amazon.com/images/I/61RgpbagQjL.jpg",
+              "marketplace_id": "ATVPDKIKX0DER"
+            }
+          ],
+          "other_product_image_locator_7": [
+            {
+              "media_location": "https://m.media-amazon.com/images/I/61WfJoWb-sL.jpg",
+              "marketplace_id": "ATVPDKIKX0DER"
+            }
+          ],
+          "other_product_image_locator_6": [
+            {
+              "media_location": "https://m.media-amazon.com/images/I/71FFHXnrWQL.jpg",
+              "marketplace_id": "ATVPDKIKX0DER"
+            }
+          ],
+          "other_product_image_locator_5": [
+            {
+              "media_location": "https://m.media-amazon.com/images/I/81IQvcnVGJL.jpg",
+              "marketplace_id": "ATVPDKIKX0DER"
+            }
+          ],
+          "other_product_image_locator_4": [
+            {
+              "media_location": "https://m.media-amazon.com/images/I/61dbr5UvZGL.jpg",
+              "marketplace_id": "ATVPDKIKX0DER"
+            }
+          ],
+          "other_product_image_locator_3": [
+            {
+              "media_location": "https://m.media-amazon.com/images/I/71YJZan7eJL.jpg",
+              "marketplace_id": "ATVPDKIKX0DER"
+            }
+          ],
+          "other_product_image_locator_2": [
+            {
+              "media_location": "https://m.media-amazon.com/images/I/719HRBDe3IL.jpg",
+              "marketplace_id": "ATVPDKIKX0DER"
+            }
+          ],
+          "other_product_image_locator_1": [
+            {
+              "media_location": "https://m.media-amazon.com/images/I/71+s6RZ8sRL.jpg",
+              "marketplace_id": "ATVPDKIKX0DER"
+            }
+          ],
+          "main_product_image_locator": [
+            {
+              "media_location": "https://m.media-amazon.com/images/I/61BJ2pWNRDL.jpg",
+              "marketplace_id": "ATVPDKIKX0DER"
+            }
+          ],
+          "purchasable_offer": [
+            {
+              "currency": "USD",
+              "audience": "ALL",
+              "discounted_price": [
+                {
+                  "schedule": [
+                    {
+                      "value_with_tax": 26.99,
+                      "end_at": "2025-01-02",
+                      "start_at": "2025-01-01"
+                    }
+                  ]
+                }
+              ],
+              "our_price": [
+                {
+                  "schedule": [
+                    {
+                      "value_with_tax": 26.99
+                    }
+                  ]
+                }
+              ],
+              "maximum_seller_allowed_price": [
+                {
+                  "schedule": [
+                    {
+                      "value_with_tax": 33.99
+                    }
+                  ]
+                }
+              ],
+              "minimum_seller_allowed_price": [
+                {
+                  "schedule": [
+                    {
+                      "value_with_tax": 16.34
+                    }
+                  ]
+                }
+              ],
+              "marketplace_id": "ATVPDKIKX0DER"
+            },
+            {
+              "currency": "USD",
+              "audience": "B2B",
+              "our_price": [
+                {
+                  "schedule": [
+                    {
+                      "value_with_tax": 26.72
+                    }
+                  ]
+                }
+              ],
+              "quantity_discount_plan": [
+                {
+                  "schedule": [
+                    {
+                      "discount_type": "percent",
+                      "levels": [
+                        {
+                          "lower_bound": 2,
+                          "value": 2.0
+                        },
+                        {
+                          "lower_bound": 4,
+                          "value": 3.0
+                        },
+                        {
+                          "lower_bound": 6,
+                          "value": 4.0
+                        },
+                        {
+                          "lower_bound": 8,
+                          "value": 5.0
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ],
+              "marketplace_id": "ATVPDKIKX0DER"
+            }
+          ]
+        },
+        "fulfillmentAvailability": [
+          {
+            "fulfillmentChannelCode": "AMAZON_NA"
+          }
+        ]
+      }
+    }
+  ]
+}

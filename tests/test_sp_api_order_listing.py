@@ -15,7 +15,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.agent.sp_api.listing import get_listings_items_batch, get_listings_item
+from src.agent.sp_api.listing import (
+    DEFAULT_LISTINGS_INCLUDED_DATA,
+    get_listings_items_batch,
+    get_listings_item,
+)
 from src.agent.sp_api.order import get_order, get_orders_batch
 from src.agent.sp_api.order_yaml import format_orders_batch_as_yaml
 from src.agent.sp_api.sp_api_client import SPAPICredentials
@@ -106,6 +110,8 @@ def test_get_listings_items_batch_uses_seller_from_creds() -> None:
     path = client.get.call_args[0][0]
     assert "SELLER123" in path
     assert "SKU1" in path
+    params = client.get.call_args[1].get("params") or {}
+    assert params.get("includedData") == DEFAULT_LISTINGS_INCLUDED_DATA
 
 
 def test_sp_api_health_endpoint() -> None:

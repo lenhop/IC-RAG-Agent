@@ -14,6 +14,7 @@ from ai_toolkit.errors import ValidationError
 from ai_toolkit.tools import BaseTool, ToolParameter
 
 from .listing import get_listings_items_batch
+from .listing_yaml import format_listings_batch_as_yaml
 from .order import get_orders_batch
 from .order_yaml import format_orders_batch_as_yaml
 from .sp_api_client import SPAPIClient, SPAPICredentials
@@ -23,6 +24,7 @@ logger = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _SP_API_RESULTS_DIR = _PROJECT_ROOT / "tests" / "sp_api_results"
 _SP_API_RESULTS_LATEST = _SP_API_RESULTS_DIR / "latest_get_orders_result.json"
+_SP_API_LISTINGS_RESULTS_LATEST = _SP_API_RESULTS_DIR / "latest_get_listings_result.json"
 
 
 def _persist_get_orders_result(results: List[dict], order_ids: List[str]) -> Optional[Path]:
@@ -52,6 +54,36 @@ def _persist_get_orders_result(results: List[dict], order_ids: List[str]) -> Opt
     except Exception as exc:
         # Persistence must not break user-facing SP-API flow.
         logger.warning("Failed to persist SP-API get_orders result: %s", exc, exc_info=True)
+        return None
+
+
+def _persist_get_listings_result(results: List[dict], skus: List[str]) -> Optional[Path]:
+    """
+    Save raw getListingsItem batch output under tests/ for debugging and comparison.
+
+    Args:
+        results: Raw batch rows from ``get_listings_items_batch``.
+        skus: Input seller SKUs for traceability.
+
+    Returns:
+        Path to the timestamped JSON file when persisted, otherwise None.
+    """
+    try:
+        _SP_API_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        payload = {
+            "saved_at_utc": datetime.now(timezone.utc).isoformat(),
+            "skus": skus,
+            "results": results,
+        }
+        out_file = _SP_API_RESULTS_DIR / f"get_listings_result_{stamp}.json"
+        out_text = json.dumps(payload, indent=2, ensure_ascii=False, default=str)
+        out_file.write_text(out_text, encoding="utf-8")
+        _SP_API_LISTINGS_RESULTS_LATEST.write_text(out_text, encoding="utf-8")
+        return out_file
+    except Exception as exc:
+        # Persistence must not break user-facing SP-API flow.
+        logger.warning("Failed to persist SP-API get_listings result: %s", exc, exc_info=True)
         return None
 
 
@@ -168,11 +200,21 @@ class SpApiGetListingsTool(BaseTool):
             seller_id=sid,
             credentials=self._credentials,
         )
+        saved_file = _persist_get_listings_result(results, sku_list)
         ok_n = sum(1 for r in results if r.get("ok"))
-        return {
+        listings_yaml = format_listings_batch_as_yaml(results)
+        response = {
+            "listings_yaml": listings_yaml,
             "results": results,
-            "summary": f"Retrieved {ok_n} of {len(results)} SKU(s).",
+            "summary": (
+                f"Retrieved {ok_n} of {len(results)} SKU(s). "
+                "Full data is in listings_yaml; pass that block to the user."
+            ),
         }
+        if saved_file is not None:
+            response["saved_result_file"] = str(saved_file)
+            response["saved_result_latest_file"] = str(_SP_API_LISTINGS_RESULTS_LATEST)
+        return response
 
     def _get_parameters(self) -> List[ToolParameter]:
         return [

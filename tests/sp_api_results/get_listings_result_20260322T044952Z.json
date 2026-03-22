@@ -1,0 +1,13 @@
+{
+  "saved_at_utc": "2026-03-22T04:49:52.470900+00:00",
+  "skus": [
+    "LJ-CHGYI-100818-04-1_SNB"
+  ],
+  "results": [
+    {
+      "sku": "LJ-CHGYI-100818-04-1_SNB",
+      "ok": false,
+      "error": "'list' object has no attribute 'items'"
+    }
+  ]
+}

@@ -19,6 +19,12 @@ logger = logging.getLogger(__name__)
 
 LISTINGS_API_PREFIX = "/listings/2021-08-01/items"
 
+# SP-API getListingsItem ``includedData``: comma-separated data sets (see Listings Items API).
+# Default expands beyond ``summaries`` so responses include attributes, fulfillment, relationships.
+DEFAULT_LISTINGS_INCLUDED_DATA = (
+    "summaries,attributes,fulfillmentAvailability,relationships"
+)
+
 
 def _normalize_sku_list(skus: Union[str, Sequence[str], None]) -> List[str]:
     """De-duplicate SKUs while preserving order."""
@@ -40,8 +46,8 @@ def _normalize_sku_list(skus: Union[str, Sequence[str], None]) -> List[str]:
 def _marketplace_params(
     marketplace_ids: Optional[Sequence[str]],
     default_marketplace_id: str,
-) -> List[tuple[str, str]]:
-    """Build query pairs for marketplaceIds (SP-API allows repeated keys)."""
+) -> Dict[str, Any]:
+    """Build query dict for marketplaceIds (single or repeated values)."""
     ids: List[str] = []
     if marketplace_ids:
         for m in marketplace_ids:
@@ -55,7 +61,9 @@ def _marketplace_params(
                 "marketplaceIds is required: set SP_API_MARKETPLACE_ID or pass marketplace_ids"
             )
         ids = [dm]
-    return [("marketplaceIds", mid) for mid in ids]
+    if len(ids) == 1:
+        return {"marketplaceIds": ids[0]}
+    return {"marketplaceIds": ids}
 
 
 def get_listings_item(
@@ -78,6 +86,8 @@ def get_listings_item(
         credentials: Used when ``seller_id`` is omitted to read ``seller_id`` and default marketplace.
         marketplace_ids: Optional marketplace id list; defaults to single marketplace from credentials.
         included_data: Optional getListingsItem ``includedData`` query (comma-separated).
+            When omitted, uses ``DEFAULT_LISTINGS_INCLUDED_DATA`` (summaries, attributes,
+            fulfillmentAvailability, relationships).
         issue_locale: Optional ``issueLocale`` query.
 
     Returns:
@@ -103,16 +113,17 @@ def get_listings_item(
     if credentials is not None:
         default_mp = (credentials.marketplace_id or "").strip()
 
-    pairs = _marketplace_params(marketplace_ids, default_mp)
-    if included_data:
-        pairs = pairs + [("includedData", included_data)]
+    params = _marketplace_params(marketplace_ids, default_mp)
+    # Always send includedData: explicit override or project default for richer payloads.
+    inc = (included_data or "").strip() or DEFAULT_LISTINGS_INCLUDED_DATA
+    params["includedData"] = inc
     if issue_locale:
-        pairs = pairs + [("issueLocale", issue_locale)]
+        params["issueLocale"] = issue_locale
 
     enc_seller = quote(sid, safe="-")
     enc_sku = quote(sk, safe="-_.~")
     path = f"{LISTINGS_API_PREFIX}/{enc_seller}/{enc_sku}"
-    return client.get(path, params=pairs)
+    return client.get(path, params=params)
 
 
 def get_listings_items_batch(
@@ -122,6 +133,7 @@ def get_listings_items_batch(
     seller_id: Optional[str] = None,
     credentials: Optional[SPAPICredentials] = None,
     marketplace_ids: Optional[Sequence[str]] = None,
+    included_data: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Fetch multiple SKUs sequentially (rate-limited by client). Failures are isolated per SKU.
@@ -145,6 +157,7 @@ def get_listings_items_batch(
                 seller_id=seller_id,
                 credentials=credentials,
                 marketplace_ids=marketplace_ids,
+                included_data=included_data,
             )
             results.append({"sku": sk, "ok": True, "payload": data})
         except httpx.HTTPStatusError as exc:

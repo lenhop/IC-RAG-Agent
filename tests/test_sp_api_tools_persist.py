@@ -1,5 +1,5 @@
 """
-Tests for SP-API order tool raw-result persistence under tests directory.
+Tests for SP-API tool raw-result persistence under tests directory.
 """
 
 from __future__ import annotations
@@ -48,5 +48,49 @@ def test_sp_api_get_orders_tool_persists_raw_result(
 
     payload = json.loads(saved_path.read_text(encoding="utf-8"))
     assert payload["order_ids"] == ["111-2886487-4917844"]
+    assert payload["results"] == fake_results
+    assert "saved_at_utc" in payload
+
+
+def test_sp_api_get_listings_tool_persists_raw_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """sp_api_get_listings should save API result JSON and latest pointer file."""
+    from src.agent.sp_api import tools as sp_tools
+
+    results_dir = tmp_path / "sp_api_results"
+    latest_file = results_dir / "latest_get_listings_result.json"
+    monkeypatch.setattr(sp_tools, "_SP_API_RESULTS_DIR", results_dir)
+    monkeypatch.setattr(sp_tools, "_SP_API_LISTINGS_RESULTS_LATEST", latest_file)
+
+    fake_results = [
+        {
+            "sku": "LJ-CHGYI-100818-04-1_SNB",
+            "ok": True,
+            "payload": {"sku": "LJ-CHGYI-100818-04-1_SNB", "status": "ACTIVE"},
+        }
+    ]
+
+    def fake_get_listings_items_batch(_client, _skus, **_kwargs):
+        return fake_results
+
+    monkeypatch.setattr(sp_tools, "get_listings_items_batch", fake_get_listings_items_batch)
+
+    tool = sp_tools.SpApiGetListingsTool(client=object(), credentials=object())  # type: ignore[arg-type]
+    out = tool.execute(skus=["LJ-CHGYI-100818-04-1_SNB"])
+
+    assert "listings_yaml" in out
+    assert "saved_result_file" in out
+    assert "saved_result_latest_file" in out
+    assert "sp_api_response" in out["listings_yaml"]
+
+    saved_path = Path(out["saved_result_file"])
+    latest_path = Path(out["saved_result_latest_file"])
+    assert saved_path.is_file()
+    assert latest_path.is_file()
+
+    payload = json.loads(saved_path.read_text(encoding="utf-8"))
+    assert payload["skus"] == ["LJ-CHGYI-100818-04-1_SNB"]
     assert payload["results"] == fake_results
     assert "saved_at_utc" in payload
