@@ -111,7 +111,7 @@ class SpApiReActAgent(ReActAgent):
         Deterministically call sp_api_get_orders when order IDs are explicit in query.
 
         This avoids model-only answers and guarantees the response is based on Amazon API
-        payloads, which also ensures raw results are persisted by the tool layer.
+        payloads from the tool layer.
 
         Args:
             query: User natural-language query.
