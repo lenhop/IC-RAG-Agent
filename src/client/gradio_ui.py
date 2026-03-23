@@ -31,6 +31,7 @@ except ImportError:
     pass
 
 from .api_client import GatewayClient
+from src.llm.chat_backend_policy import resolve_chat_backend
 
 logger = logging.getLogger(__name__)
 
@@ -467,24 +468,30 @@ REWRITE_ENABLE_DEFAULT = os.environ.get(
 
 def _gateway_rewrite_backend_from_env() -> str:
     """
-    Read GATEWAY_REWRITE_BACKEND from .env (same as gateway GatewayConfig).
+    Effective rewrite-stage chat backend (same precedence as gateway ``chat_backend_policy``).
 
     Returns:
-        "ollama" or "deepseek"; invalid or missing values fall back to "ollama".
+        ``ollama`` or ``deepseek``.
     """
-    raw = (os.environ.get("GATEWAY_REWRITE_BACKEND") or "ollama").strip().lower()
-    return raw if raw in ("ollama", "deepseek") else "ollama"
+    try:
+        return resolve_chat_backend("rewrite")
+    except Exception as exc:
+        logger.warning("rewrite backend from policy failed: %s; using deepseek", exc)
+        return "deepseek"
 
 
 def _gateway_clarification_backend_from_env() -> str:
     """
-    Read GATEWAY_CLARIFICATION_BACKEND from .env (same as gateway clarification module).
+    Effective clarification chat backend (same precedence as gateway ``chat_backend_policy``).
 
     Returns:
-        "ollama" or "deepseek"; invalid or missing values fall back to "ollama".
+        ``ollama`` or ``deepseek``.
     """
-    raw = (os.environ.get("GATEWAY_CLARIFICATION_BACKEND") or "ollama").strip().lower()
-    return raw if raw in ("ollama", "deepseek") else "ollama"
+    try:
+        return resolve_chat_backend("clarification")
+    except Exception as exc:
+        logger.warning("clarification backend from policy failed: %s; using deepseek", exc)
+        return "deepseek"
 
 
 def _display_clarification_backend(api_value: Any) -> str:
@@ -666,9 +673,11 @@ def _normalize_rewrite_backend(value: str) -> str:
         Valid backend value: "ollama" or "deepseek".
     """
     normalized = (value or "").strip().lower()
-    if normalized in ("ollama", "deepseek"):
-        return normalized
-    return "ollama"
+    if normalized in ("ollama", "local", "deepseek", "ds"):
+        if normalized in ("deepseek", "ds"):
+            return "deepseek"
+        return "ollama"
+    return "deepseek"
 
 
 def _amazon_docs_chroma_source_count(result: Dict[str, Any]) -> Optional[int]:

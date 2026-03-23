@@ -34,7 +34,8 @@ Example: `"what is FBA get order 112-123 which table stores fee show me trend"` 
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| **GATEWAY_REWRITE_BACKEND** | ollama | Default backend when the client does not send `rewrite_backend`. Use `ollama` or `deepseek`. |
+| **GATEWAY_CHAT_LLM_BACKEND** | (unset, effective **deepseek**) | Global default for all **chat** stages when the stage-specific variable is unset or invalid: `rewrite`, `clarification`, `intent_detect`, `route`, `text_generation`. Does **not** apply to embedding (`OLLAMA_*`, `INTENT_REGISTRY_EMBED_BACKEND`, `RAG_EMBED_MODEL`). |
+| **GATEWAY_REWRITE_BACKEND** | (unset) | Overrides global for the unified rewrite stage when set to `ollama` or `deepseek`. Aliases: `local` (ollama), `ds` (deepseek). |
 | **OLLAMA_BASE_URL** | http://localhost:11434 | Ollama API base (append /api/generate internally). |
 | **OLLAMA_GENERATE_MODEL** | qwen3:1.7b | Model for generate (rewrite, clarification, intent split). |
 | **OLLAMA_REQUEST_TIMEOUT** | 120 | HTTP timeout seconds for Ollama. |
@@ -49,7 +50,9 @@ Example: `"what is FBA get order 112-123 which table stores fee show me trend"` 
 - **DeepSeek:** `src/llm/call_deepseek.py` — `DeepSeekChat.complete()`.
 - **Ollama:** `src/llm/call_ollama.py` — `OllamaClient.generate()` / `.embed()`. Config is **only** from env (no hardcoded host/model/timeout): set at least one URL key (`OLLAMA_URL`, `OLLAMA_BASE_URL`, or `GATEWAY_REWRITE_OLLAMA_URL`), one model key (`OLLAMA_MODEL` or `GATEWAY_REWRITE_OLLAMA_MODEL`), and one timeout key (`OLLAMA_TIMEOUT` or `GATEWAY_REWRITE_TIMEOUT`). Clarification may still override URL/model/timeout per call.
 
-**Precedence:** If the client sends `rewrite_backend` in the request, it overrides `GATEWAY_REWRITE_BACKEND`.
+**Precedence (chat backends):** Request `rewrite_backend` (when valid) overrides env for the rewrite stage only. Otherwise: stage-specific env (e.g. `GATEWAY_REWRITE_BACKEND`, `GATEWAY_CLARIFICATION_BACKEND`, `GATEWAY_INTENT_DETECT_BACKEND`, `GATEWAY_ROUTE_BACKEND`, `GATEWAY_TEXT_GENERATION_BACKEND`) then `GATEWAY_CHAT_LLM_BACKEND`, then **deepseek**. Invalid values are ignored with a warning. Optional: `GET /api/v1/gateway/llm-env-hints` returns effective per-stage labels (no secrets).
+
+**Text generation:** `GATEWAY_TEXT_GENERATION_BACKEND` follows the same chain; `complete_chat` may still fall back from DeepSeek to Ollama at runtime if DeepSeek is unavailable.
 
 ---
 

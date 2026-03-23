@@ -113,7 +113,7 @@ def rewrite_and_route(
     )
 
 
-def route_with_llm(query: str, backend: str = "ollama") -> tuple[str, float]:
+def route_with_llm(query: str, backend: str = "deepseek") -> tuple[str, float]:
     """LLM routing hook; returns safe default."""
     _ = backend
     return "general", 0.0

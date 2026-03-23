@@ -10,7 +10,7 @@ Use **one** of these (they are equivalent):
 | Script                       | Role                                        |
 | ---------------------------- | ------------------------------------------- |
 | `**./bin/ic.sh`**            | Short name; forwards to `project_stack.sh`. |
-| `**./bin/project_stack.sh**` | Full implementation.                        |
+| `**./bin/project_stack.sh`** | Full implementation.                        |
 
 
 ### Stack commands (all services in a profile)
@@ -20,19 +20,20 @@ Use **one** of these (they are equivalent):
 ```
 
 
-| Option                  | Meaning                                                                        |
-| ----------------------- | ------------------------------------------------------------------------------ |
-| `--with-ui`             | Start unified chat (Gradio) on **7862**.                                       |
-| `--route-only`          | Gateway only (+ optional UI); no `uds` / `rag` / `sp_api` processes.           |
+| Option                  | Meaning                                                                                            |
+| ----------------------- | -------------------------------------------------------------------------------------------------- |
+| `--with-ui`             | Start unified chat (Gradio) on **7862**.                                                           |
+| `--route-only`          | Gateway only (+ optional UI); no `uds` / `rag` / `sp_api` processes.                               |
 | `--dispatcher-rag-only` | **rag (8002)** + **sp_api (8003)** + **gateway (8000)**; **UDS** stubbed in gateway (live SP-API). |
-| `--no-login`            | With `--with-ui`: skip login (dev).                                            |
-| `--wait`                | After start/restart, **fail** if any service does not become healthy (strict). |
+| `--no-login`            | With `--with-ui`: skip login (dev).                                                                |
+| `--wait`                | After start/restart, **fail** if any service does not become healthy (strict).                     |
 
 
 Examples:
 
 ```bash
 ./bin/ic.sh restart --with-ui
+./bin/ic.sh restart --with-ui --no-login --wait
 ./bin/ic.sh restart --dispatcher-rag-only --with-ui --wait --no-login 
 ./bin/ic.sh restart --route-only --with-ui --no-login --wait
 ./bin/ic.sh stop

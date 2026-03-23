@@ -9,7 +9,8 @@ Clarification workflow (unified single-prompt):
   3. Fallback: if LLM returns needs_clarification=true but empty question,
      use a generic fallback question
 
-Backend and all config from env (no defaults); missing values raise ValueError.
+Backend for the clarification LLM call is resolved via ``chat_backend_policy`` (global default
+``deepseek`` when unset). Other clarification settings may still require env as documented.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from ...message import ConversationHistoryHandler
 from ...prompt_loader import load_prompt
 from src.llm.call_deepseek import DeepSeekChat
 from src.llm.call_ollama import OllamaClient
+from src.llm.chat_backend_policy import resolve_chat_backend
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +34,8 @@ class ClarificationEnvValidator:
     """
     Validate and resolve clarification env parameters from os.environ.
 
-    All methods raise ValueError if the env var is missing or invalid.
-    No defaults; every required param must be explicitly set.
+    ``get_backend`` uses unified chat backend policy (no longer requires
+    ``GATEWAY_CLARIFICATION_BACKEND`` to be set). Other helpers may still raise when invalid.
     """
 
     @staticmethod
@@ -44,15 +46,16 @@ class ClarificationEnvValidator:
 
     @staticmethod
     def get_backend() -> str:
-        """Read and validate GATEWAY_CLARIFICATION_BACKEND. Must be 'ollama' or 'deepseek'."""
-        value = (os.getenv("GATEWAY_CLARIFICATION_BACKEND") or "").strip().lower()
-        if not value:
-            logger.error("GATEWAY_CLARIFICATION_BACKEND is not set")
-            raise ValueError("GATEWAY_CLARIFICATION_BACKEND must be set")
-        if value not in ("ollama", "deepseek"):
-            logger.error("GATEWAY_CLARIFICATION_BACKEND unknown: %s", value)
-            raise ValueError(f"Unknown backend {value}; must be 'ollama' or 'deepseek'")
-        return value
+        """
+        Resolve clarification chat backend (ollama or deepseek).
+
+        Precedence: GATEWAY_CLARIFICATION_BACKEND, then GATEWAY_CHAT_LLM_BACKEND, then deepseek.
+        """
+        try:
+            return resolve_chat_backend("clarification")
+        except Exception as exc:
+            logger.warning("get_backend clarification resolve failed: %s; using deepseek", exc)
+            return "deepseek"
 
 
 class QueryAndResponseProcessor:

@@ -26,6 +26,7 @@ from typing import Any, ClassVar, Dict, List, Optional, Tuple
 from ...prompt_loader import load_prompt
 from src.llm.call_deepseek import DeepSeekChat
 from src.llm.call_ollama import OllamaClient
+from src.llm.chat_backend_policy import resolve_chat_backend
 from src.retrieval.keyword_retrieval import KeywordRetrieval, LoadKeywordRule
 from src.retrieval.vector_retrieval import VectorRetrieval
 
@@ -84,7 +85,11 @@ class IntentResult:
 
 def _intent_detect_backend() -> str:
     """LLM backend for parallel intent detection steps (ollama or deepseek)."""
-    return (os.getenv("GATEWAY_INTENT_DETECT_BACKEND") or "ollama").strip().lower()
+    try:
+        return resolve_chat_backend("intent_detect")
+    except Exception as exc:
+        logger.warning("_intent_detect_backend failed: %s; using deepseek", exc)
+        return "deepseek"
 
 
 def _use_keyword() -> bool:

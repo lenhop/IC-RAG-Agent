@@ -14,6 +14,7 @@ import os
 from typing import Any, Optional
 
 from ..schemas import QueryRequest
+from src.llm.chat_backend_policy import resolve_chat_backend
 
 logger = logging.getLogger(__name__)
 
@@ -53,17 +54,21 @@ class GatewayConfig:
     @classmethod
     def resolve_rewrite_backend(cls, request: QueryRequest) -> Optional[str]:
         """Resolve effective rewrite backend used by gateway (unified rewrite always on)."""
-        backend = (request.rewrite_backend or "").strip().lower()
-        if backend:
-            return backend
-        return os.getenv("GATEWAY_REWRITE_BACKEND", "ollama").strip().lower() or None
+        try:
+            return resolve_chat_backend(
+                "rewrite",
+                request_override=request.rewrite_backend,
+            )
+        except Exception as exc:
+            logger.warning("resolve_rewrite_backend failed: %s; using deepseek", exc)
+            return "deepseek"
 
     @classmethod
     def resolve_text_generation_backend(cls) -> str:
         """
         LLM for RAG amazon_business merge, SP-API answer formatting, etc.
 
-        Env: GATEWAY_TEXT_GENERATION_BACKEND=deepseek|ollama (see src/llm/text_generation_backend.py).
+        Env: chat policy for ``text_generation`` (see src/llm/text_generation_backend.py).
         RAG worker (8002) must use the same .env if behavior should match the gateway.
         """
         from src.llm.text_generation_backend import resolve_text_generation_backend

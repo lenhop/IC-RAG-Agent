@@ -19,6 +19,7 @@ from ...prompt_loader import load_prompt
 from ...schemas import QueryRequest
 from src.llm.call_deepseek import DeepSeekChat
 from src.llm.call_ollama import OllamaClient
+from src.llm.chat_backend_policy import resolve_chat_backend
 from src.logger import get_logger_facade
 from src.retrieval.query_process import QueryProcessor, normalize_query
 
@@ -61,11 +62,15 @@ class RouterEnvConfig:
 
     @staticmethod
     def get_rewrite_backend(request_backend: Optional[str]) -> str:
-        """Prefer request rewrite_backend, else GATEWAY_REWRITE_BACKEND (default ollama)."""
-        backend = (request_backend or "").strip().lower()
-        if backend:
-            return backend
-        return (os.getenv("GATEWAY_REWRITE_BACKEND", "ollama") or "ollama").strip().lower()
+        """Prefer request rewrite_backend, else env chain (see chat_backend_policy)."""
+        try:
+            return resolve_chat_backend(
+                "rewrite",
+                request_override=request_backend,
+            )
+        except Exception as exc:
+            logger.warning("get_rewrite_backend failed: %s; using deepseek", exc)
+            return "deepseek"
 
 
 class JsonRewriteParser:
@@ -373,9 +378,11 @@ class _RewriteRouter:
         request: QueryRequest,
     ) -> tuple[str, float, str, str | None, float | None]:
         """LLM workflow selection (unchanged from legacy rewriters)."""
-        backend = (getattr(request, "route_backend", None) or "").strip().lower() or (
-            os.getenv("GATEWAY_ROUTE_BACKEND", "ollama") or "ollama"
-        ).strip().lower()
+        try:
+            backend = resolve_chat_backend("route")
+        except Exception as exc:
+            logger.warning("route_workflow backend resolve failed: %s; using deepseek", exc)
+            backend = "deepseek"
 
         from src.gateway import route_llm as route_pkg
 

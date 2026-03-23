@@ -1,15 +1,14 @@
 """
 Shared text-generation backend for gateway merge, RAG amazon_business merge, and SP-API formatting.
 
-Reads ``GATEWAY_TEXT_GENERATION_BACKEND`` (``deepseek`` | ``ollama``). The RAG service (port 8002)
-must set the same env var as the gateway (8000) if you want consistent behavior across processes.
+Backend label resolution uses ``chat_backend_policy`` (``text_generation`` stage). The RAG service
+(port 8002) must load the same env as the gateway (8000) if you want consistent behavior.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import Literal
 
 logger = logging.getLogger(__name__)
@@ -21,23 +20,22 @@ def resolve_text_generation_backend() -> BackendName:
     """
     Resolve which LLM backs post-retrieval / merge / formatting steps.
 
-    Env:
-        GATEWAY_TEXT_GENERATION_BACKEND: ``deepseek`` or ``ollama`` (case-insensitive).
+    Uses ``src.llm.chat_backend_policy.resolve_chat_backend("text_generation")``:
+    ``GATEWAY_TEXT_GENERATION_BACKEND``, then ``GATEWAY_CHAT_LLM_BACKEND``, then ``deepseek``.
 
-    Default:
-        ``deepseek`` when ``DEEPSEEK_API_KEY`` is non-empty; otherwise ``ollama``.
+    DeepSeek API key fallback for *runtime* failures remains in ``complete_chat`` (switch to
+    Ollama when DeepSeek is selected but unavailable).
 
     Returns:
         ``deepseek`` or ``ollama``.
     """
-    raw = (os.getenv("GATEWAY_TEXT_GENERATION_BACKEND") or "").strip().lower()
-    if raw in ("deepseek", "ds"):
+    try:
+        from src.llm.chat_backend_policy import resolve_chat_backend
+
+        return resolve_chat_backend("text_generation")
+    except Exception as exc:
+        logger.warning("resolve_text_generation_backend failed: %s; using deepseek", exc)
         return "deepseek"
-    if raw in ("ollama", "local"):
-        return "ollama"
-    if (os.getenv("DEEPSEEK_API_KEY") or "").strip():
-        return "deepseek"
-    return "ollama"
 
 
 def complete_chat(

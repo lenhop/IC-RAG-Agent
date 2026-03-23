@@ -66,6 +66,81 @@ Conceptually unchanged: **Route LLM** then **Dispatcher**; memory and logger int
 
 ### 1.4 Workflow
 
+````mermaid
+graph TB
+    subgraph "客户端层"
+        UI[统一聊天UI<br/>Gradio界面]
+    end
+    
+    subgraph "网关层"
+        Gateway[统一网关]
+        RouteLLM[路由LLM<br/>意图分类]
+        Dispatcher[调度器<br/>任务分配]
+    end
+    
+    subgraph "工作代理层"
+        RAG[RAG管道<br/>文档检索与生成]
+        UDS[UDS代理<br/>商业智能]
+        SPAPI[SP-API代理<br/>卖家操作]
+    end
+    
+    subgraph "数据层"
+        Chroma[(ChromaDB<br/>向量数据库)]
+        ClickHouse[(ClickHouse<br/>分析数据库)]
+        Redis[(Redis<br/>缓存)]
+        Amazon[(亚马逊SP-API)]
+    end
+    
+    UI --> Gateway
+    Gateway --> RouteLLM
+    RouteLLM --> Dispatcher
+    Dispatcher --> RAG
+    Dispatcher --> UDS
+    Dispatcher --> SPAPI
+    
+    RAG --> Chroma
+    UDS --> ClickHouse
+    UDS --> Redis
+    SPAPI --> Amazon
+    
+    style UI fill:#e1f5fe
+    style Gateway fill:#f3e5f5
+    style RouteLLM fill:#f1f8e9
+    style Dispatcher fill:#fff3e0
+    style RAG fill:#e8f5e8
+    style UDS fill:#e3f2fd
+    style SPAPI fill:#fce4ec
+    style Chroma fill:#f9fbe7
+    style ClickHouse fill:#e0f2f1
+    style Redis fill:#fff8e1
+    style Amazon fill:#f3e5f5
+````
+
+```mermaid
+flowchart LR
+    A[用户查询] --> B[澄清阶段]
+    B --> C{需要澄清?}
+    C -->|是| D[向客户端发送澄清问题]
+    C -->|否| E[查询重写阶段]
+    
+    E --> F[规范化]
+    E --> G[上下文补全]
+    E --> H[清晰化]
+    E --> I[拆分]
+    
+    F & G & H & I --> J[重写后的查询 + 子问题]
+    
+    J --> K[意图分类阶段]
+    K --> L[通用意图]
+    K --> M[亚马逊业务意图]
+    K --> N[UDS意图]
+    K --> O[SP-API意图]
+    
+    L & M & N & O --> P[路由到相应工作流]
+```
+
+
+
 ```mermaid
 %%{init: {'themeVariables': {'fontSize': '11px'}, 'flowchart': {'curve': 'linear'}}}%%
 flowchart TB
@@ -222,20 +297,38 @@ sequenceDiagram
 
 First step of Route LLM; runs **before** rewriting. Detects ambiguous or incomplete queries and asks the user for missing information instead of guessing.
 
+```mermaid
+flowchart TD
+    A[用户查询] --> B{快速预判层}
+    
+    B --> C[规则1: 明确查询]
+    B --> D[规则2: 简单模糊]
+    B --> E[规则3: 复杂模糊]
+    
+    C --> F[直接通过<br/>耗时: 10ms]
+    D --> G[规则引擎澄清<br/>耗时: 50ms]
+    E --> H[LLM深度澄清<br/>耗时: 500ms]
+    
+    F --> I[进入下一阶段]
+    G --> I
+    H --> I
+    
+    style A fill:#e1f5fe
+    style B fill:#f3e5f5
+    style C fill:#e8f5e8
+    style D fill:#fff3e0
+    style E fill:#fce4ec
+    style F fill:#c8e6c9
+    style G fill:#ffecb3
+    style H fill:#f8bbd0
+```
+
+
+
 **Purpose**
 
 - Avoid rewriter and downstream guessing missing details (bias risk).
 - Get concrete identifiers (Order ID, ASIN, date range, fee type, store) so routing and execution are correct.
-
-**When it runs**
-
-- On every rewrite/query request when clarification is enabled (default: on; configurable).
-- Same backend as rewriting (Ollama or DeepSeek).
-
-**Inputs**
-
-- Current query (raw user message).
-- Optional conversation context: last 3–4 rounds from Redis. If present, do not ask again for info already given.
 
 **Logic**
 
@@ -243,17 +336,6 @@ First step of Route LLM; runs **before** rewriting. Detects ambiguous or incompl
 - Heuristic fast path: when no context, check known ambiguous patterns (e.g. inventory without ASIN/store, order without Order ID, fees without type/period, sales without date). Use fixed question or LLM-generated one.
 - LLM check: when context exists or heuristic does not apply, LLM decides clear vs needs_clarification and returns a short question. Output is structured (needs_clarification, clarification_question).
 - On LLM/backend failure: proceed without clarification (do not block).
-
-**Outputs**
-
-- Clear: needs_clarification false → continue to rewriting and intent classification.
-- Ambiguous: needs_clarification true, clarification_question, pending_query. Client shows question; next user message is merged with pending_query and re-sent.
-
-**What clarification does NOT do**
-
-- Does not rewrite the query.
-- Does not assign workflows or execute tasks.
-- Does not split intents; it only asks for missing info and returns a question.
 
 
 

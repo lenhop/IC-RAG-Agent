@@ -909,6 +909,32 @@ async def health() -> dict[str, Any]:
     return {"status": "ok"}
 
 
+@app.get(
+    "/api/v1/gateway/llm-env-hints",
+    summary="Effective chat LLM backends (no secrets)",
+)
+async def llm_env_hints() -> dict[str, Any]:
+    """
+    Return effective per-stage chat backend labels and whether DeepSeek API key is set.
+
+    Clients (e.g. Gradio) can use this to align UI labels with gateway policy without
+    duplicating env precedence logic. No secret values are exposed.
+    """
+    try:
+        from src.llm.chat_backend_policy import effective_backends_snapshot
+
+        return effective_backends_snapshot()
+    except Exception as exc:
+        logger.exception("llm-env-hints failed: %s", exc)
+        return {
+            "gateway_chat_llm_backend_env": None,
+            "gateway_chat_llm_backend_effective": "deepseek",
+            "per_stage": {},
+            "deepseek_api_key_set": False,
+            "error": str(exc),
+        }
+
+
 @app.get("/api/v1/session/{session_id}")
 async def get_session_history(session_id: str, last_n: int = 10) -> dict[str, Any]:
     """Return last N turns for a session (for UI or debugging)."""
