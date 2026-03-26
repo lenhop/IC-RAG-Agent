@@ -229,6 +229,37 @@ def _format_dispatcher_section_html(
         return ""
 
 
+def _format_answer_section_html(answer: str) -> str:
+    """
+    Render section 5 (Answer) as HTML matching the Dispatcher trace card style.
+
+    The body is appended as-is so Markdown in the gateway answer (e.g. fenced YAML)
+    still renders in Gradio; only the outer wrapper is HTML.
+
+    Args:
+        answer: Final assistant text from ``/query`` (may include Markdown).
+
+    Returns:
+        HTML wrapper string, or empty when answer is blank.
+    """
+    try:
+        body = (answer or "").strip()
+        if not body:
+            return ""
+        return (
+            "<div style=\"border: 1px solid #d1d5db; border-radius: 10px; "
+            "padding: 10px 12px; margin: 8px 0; background-color: #f9fafb;\">"
+            "<h4 style=\"margin: 0 0 8px 0;\">5. Answer</h4>"
+            "<div style=\"margin: 0;\">\n\n"
+            f"{body}\n\n"
+            "</div>"
+            "</div>"
+        )
+    except Exception as exc:
+        logger.warning("Answer section HTML failed (non-fatal): %s", exc)
+        return (answer or "").strip()
+
+
 def _to_single_line(text: str) -> str:
     """Normalize any model text into a single display-safe line."""
     if not text:
@@ -996,14 +1027,17 @@ def _chat_handler(
         debug,
         response_workflow=str(result.get("workflow") or ""),
     )
-    # Final chunk must include Route LLM HTML (1–4); streaming replaces prior assistant text.
-    answer_and_trace = f"{answer}\n" + "\n".join(trace_lines)
+    # Section 5 wraps the assistant answer; Trace block stays separate (unchanged bullets).
+    answer_html = _format_answer_section_html(answer)
+    trace_only = "\n".join(trace_lines)
     final_parts: List[str] = []
     if rewrite_message:
         final_parts.append(rewrite_message)
     if dispatcher_html:
         final_parts.append(dispatcher_html)
-    final_parts.append(answer_and_trace)
+    if answer_html:
+        final_parts.append(answer_html)
+    final_parts.append(trace_only)
     yield "\n\n".join(final_parts)
 
 

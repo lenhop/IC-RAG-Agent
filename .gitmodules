@@ -1,9 +1,39 @@
-[submodule "external/ai-toolkit"]
-	path = external/ai-toolkit
-	url = ../ai-toolkit.git
-[submodule "external/llama.cpp"]
-	path = external/llama.cpp
-	url = https://github.com/ggerganov/llama.cpp
+[submodule "external/AutoPrompt"]
+	path = external/AutoPrompt
+	url = git@github.com:Eladlev/AutoPrompt.git
 [submodule "external/IC-Agent-Skill"]
 	path = external/IC-Agent-Skill
 	url = git@github.com:lenhop/IC-Agent-Skill.git
+[submodule "external/IC-Self-Study"]
+	path = external/IC-Self-Study
+	url = git@github.com:lenhop/IC-Self-Study.git
+[submodule "external/ai-toolkit"]
+	path = external/ai-toolkit
+	url = ../ai-toolkit.git
+[submodule "external/argilla"]
+	path = external/argilla
+	url = git@github.com:argilla-io/argilla.git
+[submodule "external/autoresearch"]
+	path = external/autoresearch
+	url = git@github.com:karpathy/autoresearch.git
+[submodule "external/dspy"]
+	path = external/dspy
+	url = git@github.com:stanfordnlp/dspy.git
+[submodule "external/fastText"]
+	path = external/fastText
+	url = https://github.com/facebookresearch/fastText.git
+[submodule "external/haystack"]
+	path = external/haystack
+	url = git@github.com:deepset-ai/haystack.git
+[submodule "external/llama.cpp"]
+	path = external/llama.cpp
+	url = https://github.com/ggerganov/llama.cpp
+[submodule "external/semantic-router"]
+	path = external/semantic-router
+	url = git@github.com:vllm-project/semantic-router.git
+[submodule "external/semantic-router-aurelio"]
+	path = external/semantic-router-aurelio
+	url = https://github.com/aurelio-labs/semantic-router.git
+[submodule "external/text_classification"]
+	path = external/text_classification
+	url = git@github.com:brightmart/text_classification.git

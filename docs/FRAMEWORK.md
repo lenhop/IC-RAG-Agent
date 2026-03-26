@@ -357,22 +357,6 @@ Second step of Route LLM; runs **after** clarification (when the query is clear)
 - Outputs **JSON only** (`intents`, optional `rewritten_display`). Parsed in `route_llm.rewriting.rewrite_implement`.
 - Does **not** assign workflows; downstream intent classification does.
 
-**When it runs**
-
-- After clarification (or when clarification is skipped). Always part of `/query` and `/rewrite` pipelines when `session_id` is present for memory merge.
-
-**Inputs**
-
-- **Current query:** normalized raw query (trim, collapse whitespace) from the previous step.
-- **Conversation context:** preloaded context (e.g. from clarification) merged with Redis session history; formatted for the LLM.
-
-**Pipeline (high level)**
-
-- Normalize query. If empty, return empty.
-- Load and merge conversation context (preloaded + Redis); build prompt from `rewriting/rewrite_prompt.md`.
-- Call LLM (Ollama or DeepSeek); parse JSON; dedupe `intents`; derive `rewritten_display` if missing.
-- On parse/LLM failure, fallback to a single intent equal to the normalized query.
-
 **Boundary with intent classification**
 
 - **Intent classification** maps each sub-string in `intents` to a workflow (keyword / vector / LLM). It does not perform rewrite or split.

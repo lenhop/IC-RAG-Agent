@@ -58,10 +58,11 @@ specs/                           # At project root
 ├── UDS_API_SPEC.yaml            # OpenAPI spec (YAML)
 
 tasks/
+├── IC_SELF_STUDY.md             # Index: sentence-pattern tools & self-study docs live under external/IC-Self-Study/
 └── [All plans, summaries, reports, and task files]
 ```
 
-**Note:** Plan files, summary files, status reports, and task-related documents are stored in the `tasks/` folder, not in `docs/`. The `docs/` folder contains only user-facing documentation.
+**Note:** Plan files, summary files, status reports, and task-related documents are stored in the `tasks/` folder, not in `docs/`. The `docs/` folder contains only user-facing documentation. **Route LLM 白名单生成与自主学习设计**见 `external/IC-Self-Study/`（入口 `tasks/IC_SELF_STUDY.md`）。
 
 ---
 
