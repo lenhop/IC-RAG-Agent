@@ -23,6 +23,8 @@ from src.llm.chat_backend_policy import resolve_chat_backend
 from src.logger import get_logger_facade
 from src.retrieval.query_process import QueryProcessor, normalize_query
 
+from .rewrite_redis_fastpath import RewriteRedisFastpath
+
 logger = logging.getLogger(__name__)
 
 _gateway_logger = None
@@ -40,16 +42,20 @@ _JSON_SYSTEM_PROMPT = (
 
 @dataclass(frozen=True)
 class UnifiedRewriteResult:
-    """Outcome of the unified rewrite+split stage (single LLM)."""
+    """Outcome of the unified rewrite+split stage (single LLM or Redis fast path)."""
 
     rewritten_display: str
     intents: List[str]
     memory_rounds_used: int
     memory_text_length: int
+    # l1_redis | l2_redis | l3_llm | l3_llm_fallback | None (empty input / unused).
+    rewrite_path: Optional[str] = None
 
 
 class RouterEnvConfig:
-    """Env-backed settings for rewrite memory depth and default backend."""
+    """Env-backed settings for rewrite memory depth, Redis L1/L2 fast path, and default backend."""
+
+    _REWRITE_TRUE = frozenset({"1", "true", "yes", "on"})
 
     @staticmethod
     def get_memory_rounds() -> int:
@@ -71,6 +77,24 @@ class RouterEnvConfig:
         except Exception as exc:
             logger.warning("get_rewrite_backend failed: %s; using deepseek", exc)
             return "deepseek"
+
+    @classmethod
+    def is_rewrite_layer1_enabled(cls) -> bool:
+        """L1: Redis ``clear_intent_sentence:data`` (clear_sentence) exact match after norm."""
+        v = (os.getenv("GATEWAY_REWRITE_LAYER1_ENABLED") or "false").strip().lower()
+        return v in cls._REWRITE_TRUE
+
+    @classmethod
+    def is_rewrite_layer2_enabled(cls) -> bool:
+        """L2: Redis ``regular_patterns:data`` regex match (first hit)."""
+        v = (os.getenv("GATEWAY_REWRITE_LAYER2_ENABLED") or "false").strip().lower()
+        return v in cls._REWRITE_TRUE
+
+    @classmethod
+    def is_rewrite_layer3_force(cls) -> bool:
+        """When true, skip L1/L2 and always run the unified rewrite LLM (L3)."""
+        v = (os.getenv("GATEWAY_REWRITE_LAYER3_FORCE") or "").strip().lower()
+        return v in cls._REWRITE_TRUE
 
 
 class JsonRewriteParser:
@@ -184,12 +208,48 @@ def _fallback_result(
     normalized_query: str,
     memory_rounds_used: int,
     memory_text_length: int,
+    rewrite_path: Optional[str] = "l3_llm_fallback",
 ) -> UnifiedRewriteResult:
     """When LLM fails or JSON is invalid: single intent = normalized query."""
     stripped = (normalized_query or "").strip()
     if not stripped:
-        return UnifiedRewriteResult("", [], memory_rounds_used, memory_text_length)
-    return UnifiedRewriteResult(stripped, [stripped], memory_rounds_used, memory_text_length)
+        return UnifiedRewriteResult("", [], memory_rounds_used, memory_text_length, None)
+    return UnifiedRewriteResult(
+        stripped,
+        [stripped],
+        memory_rounds_used,
+        memory_text_length,
+        rewrite_path,
+    )
+
+
+def _redis_skip_unified_rewrite_result(
+    normalized2: str,
+    memory_rounds_used: int,
+    memory_text_length: int,
+    rewrite_path: str,
+) -> UnifiedRewriteResult:
+    """
+    L1/L2 Redis hit: skip the rewrite LLM but keep UnifiedRewriteResult shape for downstream.
+
+    Uses the same normalized user text as a single intent (no model-driven split).
+    """
+    stripped = (normalized2 or "").strip()
+    if not stripped:
+        return UnifiedRewriteResult("", [], memory_rounds_used, memory_text_length, None)
+    try:
+        display_norm = QueryProcessor.normalize(stripped)
+    except Exception as exc:
+        logger.warning("redis fast path: normalize failed, using stripped query: %s", exc)
+        display_norm = stripped
+    one = (display_norm or "").strip() or stripped
+    return UnifiedRewriteResult(
+        one,
+        [one],
+        memory_rounds_used,
+        memory_text_length,
+        rewrite_path,
+    )
 
 
 class _RewriteRouter:
@@ -277,7 +337,7 @@ class _RewriteRouter:
 
         if not normalized or not normalized.strip():
             logger.debug("run_unified_rewrite: empty query, early exit")
-            return UnifiedRewriteResult("", [], 0, 0)
+            return UnifiedRewriteResult("", [], 0, 0, None)
 
         try:
             normalized2, merged_context, memory_rounds_used, memory_text_length = (
@@ -289,6 +349,66 @@ class _RewriteRouter:
             )
         except ValueError:
             raise
+
+        # --- Rewrite L1 / L2 (Redis) vs L3 (unified prompt + LLM) -----------------
+        # Chain: try L1 clear_sentence; on miss try L2 regular_patterns; else L3.
+        # GATEWAY_REWRITE_LAYER3_FORCE skips Redis and always runs L3 (debug / parity).
+        if not RouterEnvConfig.is_rewrite_layer3_force():
+            if RouterEnvConfig.is_rewrite_layer1_enabled():
+                try:
+                    l1_row = RewriteRedisFastpath.match_clear_sentence(normalized2)
+                except Exception as exc:
+                    logger.warning("rewrite L1 Redis error (falling through): %s", exc)
+                    l1_row = None
+                if l1_row:
+                    fb = _redis_skip_unified_rewrite_result(
+                        normalized2,
+                        memory_rounds_used,
+                        memory_text_length,
+                        "l1_redis",
+                    )
+                    cls._log_done(
+                        request,
+                        fb,
+                        "redis_clear_sentence",
+                        memory_rounds_used,
+                        memory_text_length,
+                    )
+                    logger.info(
+                        "run_unified_rewrite: L1 Redis hit session=%s workflow=%s",
+                        request.session_id,
+                        (l1_row.get("workflow") or "") if isinstance(l1_row, dict) else "",
+                    )
+                    return fb
+
+            if RouterEnvConfig.is_rewrite_layer2_enabled():
+                try:
+                    l2_row = RewriteRedisFastpath.match_first_regular_pattern(normalized2)
+                except Exception as exc:
+                    logger.warning("rewrite L2 Redis error (falling through): %s", exc)
+                    l2_row = None
+                if l2_row:
+                    fb = _redis_skip_unified_rewrite_result(
+                        normalized2,
+                        memory_rounds_used,
+                        memory_text_length,
+                        "l2_redis",
+                    )
+                    cls._log_done(
+                        request,
+                        fb,
+                        "redis_regular_patterns",
+                        memory_rounds_used,
+                        memory_text_length,
+                    )
+                    logger.info(
+                        "run_unified_rewrite: L2 Redis hit session=%s pattern=%s",
+                        request.session_id,
+                        (l2_row.get("_matched_pattern") or "")
+                        if isinstance(l2_row, dict)
+                        else "",
+                    )
+                    return fb
 
         backend = RouterEnvConfig.get_rewrite_backend(request.rewrite_backend)
         logger.info("run_unified_rewrite: backend=%s session=%s", backend, request.session_id)
@@ -332,6 +452,7 @@ class _RewriteRouter:
             intents,
             memory_rounds_used,
             memory_text_length,
+            "l3_llm",
         )
         cls._log_done(request, result, backend, memory_rounds_used, memory_text_length)
         logger.debug("run_unified_rewrite: done, intents=%d", len(intents))
@@ -363,6 +484,7 @@ class _RewriteRouter:
                 latency_ms=None,
                 metadata={
                     "backend": backend,
+                    "rewrite_path": result.rewrite_path,
                     "memory_rounds_used": memory_rounds_used,
                     "memory_text_length": memory_text_length,
                     "intent_count": len(result.intents),

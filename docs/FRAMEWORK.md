@@ -1,7 +1,7 @@
 # IC-RAG-Agent System Framework
 
 **Version:** 2.4.0  
-**Last Updated:** 2026-03-13
+**Last Updated:** 2026-03-26
 
 This document describes the system framework for the IC-RAG-Agent project using Mermaid diagrams.
 
@@ -295,67 +295,109 @@ sequenceDiagram
 
 ### 3.1 Query Clarification
 
-First step of Route LLM; runs **before** rewriting. Detects ambiguous or incomplete queries and asks the user for missing information instead of guessing.
+First step of Route LLM; runs **before** rewriting. Decides whether the user must answer a clarification question or whether the pipeline may continue to unified rewrite. Aligned with `tasks/route_llm_optimization_scheme_new.md` §2 (L1 / L2 / L3).
+
+**Implementation (code)**
+
+| Piece | Location |
+|-------|----------|
+| Entry | `src/gateway/route_llm/clarification/clarification.py` — `check_ambiguity()` |
+| L1 whitelist + L2 signals + shared regex corpora | `src/gateway/keyword_regular_match.py` — `RouteRulesMatcher`, `ClarificationLayer12Gate`, `ClarificationL3SkipEvaluator` |
+| Optional Redis import of same datasets | `external/IC-Self-Study/redis/redis_clear_intent_sentence_ops.py` |
+
+**On-disk rule data (gateway reads CSV by default)**
+
+Directory: `external/IC-Self-Study/data/` unless overridden by `GATEWAY_ROUTE_RULES_DATA_DIR`.
+
+| File | Dataset | Role in clarification |
+|------|---------|------------------------|
+| `amazon_business_intent_sentence.csv` | **clear_sentence** | **L1** — high-confidence whitelist (`sentence`, `workflow`) |
+| `clarification_signals.csv` | **clarification** | **L2** — ambiguous context signals (tiers A/B) and **exclusion** rows |
+| `regular_patterns.csv` | **regular_patterns** | UDS query-shape regexes; loaded in the same module for reuse by rewrite / intent (not required for L1/L2 skip logic) |
+
+**Environment variables**
+
+| Variable | Role |
+|----------|------|
+| `GATEWAY_CLARIFICATION_ENABLED` | Master switch; `false` → skip clarification entirely (`clarification_path: disabled`). |
+| `GATEWAY_CLARIFICATION_BACKEND` | L3 LLM backend (`ollama` / `deepseek`). |
+| `GATEWAY_CLARIFICATION_MEMORY_ROUNDS` | Prior turns passed as context for pronoun / continuity. |
+| `GATEWAY_CLARIFICATION_LAYER1_L2_ENABLED` | Enables **L1+L2** fast path before L3 (doc name `GATEWAY_CLARIFICATION_LAYER1&2_ENABLED`; `&` is invalid in real env keys, hence `_L1_L2_`). |
+| `GATEWAY_CLARIFICATION_LAYER3_FORCE` | Always run L3 LLM; bypasses L1/L2 skip (debug / incident). |
+| `GATEWAY_ROUTE_RULES_DATA_DIR` | Optional path to the folder containing the three CSV files. |
+
+**`clarification_path` (observability on the result dict)**  
+`disabled` | `l1_skip` | `l2_skip` | `l3_llm`
 
 ```mermaid
 flowchart TD
-    A[用户查询] --> B{快速预判层}
-    
-    B --> C[规则1: 明确查询]
-    B --> D[规则2: 简单模糊]
-    B --> E[规则3: 复杂模糊]
-    
-    C --> F[直接通过<br/>耗时: 10ms]
-    D --> G[规则引擎澄清<br/>耗时: 50ms]
-    E --> H[LLM深度澄清<br/>耗时: 500ms]
-    
-    F --> I[进入下一阶段]
-    G --> I
-    H --> I
-    
-    style A fill:#e1f5fe
-    style B fill:#f3e5f5
-    style C fill:#e8f5e8
-    style D fill:#fff3e0
-    style E fill:#fce4ec
-    style F fill:#c8e6c9
-    style G fill:#ffecb3
-    style H fill:#f8bbd0
+    Q[User query + optional history] --> E{GATEWAY_CLARIFICATION_ENABLED?}
+    E -->|false| DIS[Return clear; path disabled]
+    E -->|true| EMP{Empty query?}
+    EMP -->|yes| CLR[Return clear]
+    EMP -->|no| FRC{GATEWAY_CLARIFICATION_LAYER3_FORCE?}
+    FRC -->|true| L3[L3: LLM clarification]
+    FRC -->|false| L12{GATEWAY_CLARIFICATION_LAYER1_L2_ENABLED?}
+    L12 -->|false| L3
+    L12 -->|true| GATE[ClarificationLayer12Gate: L1 clear_sentence + L2 signals per §2.3]
+    GATE -->|safe skip| RW[Return clear; path l1_skip or l2_skip → next: rewrite]
+    GATE -->|need LLM| L3
+    L3 --> OUT[needs_clarification + question or clear; path l3_llm]
 ```
-
-
 
 **Purpose**
 
-- Avoid rewriter and downstream guessing missing details (bias risk).
-- Get concrete identifiers (Order ID, ASIN, date range, fee type, store) so routing and execution are correct.
+- Avoid rewriter and downstream guessing when user intent is genuinely underspecified (bias and wrong-tool risk).
+- Elicit concrete anchors (Order ID, ASIN, date range, fee type, store) when the L3 LLM marks the query ambiguous.
 
-**Logic**
+**Logic (as implemented)**
 
-- Skip for self-contained questions: documentation, policy, compliance, requirements, “what does Amazon say.”
-- Heuristic fast path: when no context, check known ambiguous patterns (e.g. inventory without ASIN/store, order without Order ID, fees without type/period, sales without date). Use fixed question or LLM-generated one.
-- LLM check: when context exists or heuristic does not apply, LLM decides clear vs needs_clarification and returns a short question. Output is structured (needs_clarification, clarification_question).
-- On LLM/backend failure: proceed without clarification (do not block).
+1. If clarification is disabled → do not load rules or call LLM; return clear.
+2. If `GATEWAY_CLARIFICATION_LAYER3_FORCE=true` → always call L3 LLM (single structured prompt: detect ambiguity + optional short question).
+3. Else if `GATEWAY_CLARIFICATION_LAYER1_L2_ENABLED=true` and CSV rules load successfully → apply §2.3: with **conversation history**, evaluate **L2** before trusting **L1**; without history, **L1** then **L2**; **exclusion** rows reduce false L2 triggers. If rules allow, return clear and skip L3 (`l1_skip` / `l2_skip`).
+4. Otherwise → L3 LLM as above. Output shape: `needs_clarification`, `clarification_question` (with generic fallback if the model omits the question).
+5. On LLM/backend failure: treat as clear and proceed (do not block the pipeline).
+
+**Note:** Product copy and prompts may still describe “heuristic” ambiguity; the **executable** fast path is the CSV-driven L1/L2 layer in `keyword_regular_match.py`, not a separate legacy heuristic module in this path.
 
 
 
 ### 3.2 Query Rewriting (unified rewrite + split)
 
-Second step of Route LLM; runs **after** clarification (when the query is clear). One LLM call returns JSON with `rewritten_display` and `intents[]` (see `rewriting/rewrite_prompt.md`).
+Second step of Route LLM; runs **after** clarification (when the query is clear). Produces `rewritten_display` and `intents[]` for intent classification—either via a **Redis fast path** (L1/L2) or the **unified rewrite LLM** (L3).
 
-**Responsibilities (aligned with Rewriting_Responsibility + split rules in the same prompt)**
+**Layer flags (env)**
+
+| Variable | Layer | Behavior |
+|----------|--------|----------|
+| `GATEWAY_REWRITE_LAYER1_ENABLED` | L1 | If true, try Redis hash `clear_intent_sentence:data` (clear_sentence dataset): normalized exact match on the query. **On hit:** skip rewrite LLM; single intent = normalized query; go to intent classification. |
+| `GATEWAY_REWRITE_LAYER2_ENABLED` | L2 | If L1 misses and this is true, try Redis hash `regular_patterns:data`: first matching regex wins. **On hit:** same as L1 (skip LLM). |
+| `GATEWAY_REWRITE_LAYER3_FORCE` | L3 | If true, **always** run the unified rewrite LLM; L1/L2 are skipped (debug / parity with full model). |
+
+**Decision chain**
+
+1. If `GATEWAY_REWRITE_LAYER3_FORCE=true` → L3 only (prompt + LLM).
+2. Else if L1 enabled and Redis matches clear_sentence → **l1_redis** path (no LLM).
+3. Else if L2 enabled and Redis matches regular_patterns → **l2_redis** path (no LLM).
+4. Else → **l3_llm**: one LLM call returns JSON (`intents`, optional `rewritten_display`; see `rewriting/rewrite_prompt.md`). Parsed in `route_llm.rewriting.rewrite_implement`.
+
+Redis URL precedence for the rewrite cache: `GATEWAY_REWRITE_REDIS_URL`, then `GATEWAY_REDIS_URL`, then `REDIS_URL`, else local default. Process-local TTL cache over `HGETALL` is controlled by `GATEWAY_REWRITE_REDIS_CACHE_SECONDS` (default 60). If Redis is down or hashes are empty, L1/L2 miss and L3 runs (when not forced-only).
+
+**Responsibilities (L3 LLM; aligned with Rewriting_Responsibility + split rules in the same prompt)**
 
 - **Normalization:** fix typos, fillers, punctuation; preserve Amazon entities (ASIN, order IDs, dates).
 - **Context completion:** resolve references using conversation history when unambiguous.
 - **Clarity:** colloquial to formal; do not answer the user; do not assign workflows in prose.
 - **Split:** emit one or more self-contained sub-questions in `intents`.
 
-**What the unified rewrite stage does**
+**What the L3 unified rewrite stage does**
 
 - Rewrites the user query with conversation context (same product goals as legacy plain-text rewrite).
 - Splits into one or more **self-contained sub-questions** in the same LLM response.
 - Outputs **JSON only** (`intents`, optional `rewritten_display`). Parsed in `route_llm.rewriting.rewrite_implement`.
 - Does **not** assign workflows; downstream intent classification does.
+
+**L1/L2 note:** Fast path does not call the model; it emits a **single** intent string (normalized query) so the pipeline shape matches the JSON path. Product-level multi-clause split still requires L3.
 
 **Boundary with intent classification**
 
@@ -365,39 +407,66 @@ Second step of Route LLM; runs **after** clarification (when the query is clear)
 
 ### 3.3 Intent Classification
 
-Classify each string in `intents` (from section 3.2) into executable workflows.
+Classify each string in `intents` (from section 3.2) into executable workflows. Each clause is classified **independently** (batched with limited parallelism in `classify_intents_batch`).
+
+**Optional Redis layers (before local keyword / vector / LLM)**
+
+| Variable | Layer | Behavior |
+|----------|--------|----------|
+| `GATEWAY_INTENT_CLASSIFICATION_LAYER1_ENABLED` | L1 | If true, try Redis hash `clear_intent_sentence:data` (clear_sentence): normalized exact match on the **intent clause** text. **On hit:** `workflow` from the Redis row is the classification result (`source`: `redis_clear_sentence`). |
+| `GATEWAY_INTENT_CLASSIFICATION_LAYER2_ENABLED` | L2 | If L1 misses and this is true, try Redis `regular_patterns:data`: first matching regex. **On hit:** use that row's `workflow` (`source`: `redis_regular_patterns`). |
+| `GATEWAY_INTENT_CLASSIFICATION_LAYER3_FORCE` | L3 prep | If true, **skip** L1/L2 Redis only; then run the legacy stack below (keyword → vector → LLM). |
+
+**Per-clause decision chain**
+
+1. If `GATEWAY_INTENT_CLASSIFICATION_LAYER3_FORCE=true` → no Redis L1/L2.
+2. Else if L1 enabled and Redis matches clear_sentence → return row `workflow` (high confidence).
+3. Else if L2 enabled and Redis matches regular_patterns → return row `workflow` (high confidence).
+4. Else **L3 (legacy stack):** **serial** short-circuit: keyword rules (`classification_data`) → vector retrieval (intent_registry Chroma) → parallel LLM prompts (sp_api / uds / amazon_docs) only if keyword and vector both miss.
+
+Redis connection and `HGETALL` TTL cache are shared with rewrite fast path (`rewriting/rewrite_redis_fastpath.py`): URL precedence `GATEWAY_REWRITE_REDIS_URL`, `GATEWAY_REDIS_URL`, `REDIS_URL`, local default; optional `GATEWAY_REWRITE_REDIS_CACHE_SECONDS`.
 
 ```mermaid
 flowchart TD
-    A[Input: intents from unified rewrite] --> B[Batch classify per clause]
-    B --> C[Intent Clause List with workflow]
-    C --> D{For each clause}
-    D --> E1[Keyword Retrieval<br/>Rule-based]
-    D --> E2[Vector Retrieval<br/>Embedding: all-minilm]
-    E1 --> F{Result Check}
-    E2 --> F
-    F -->|same and not hybrid| G[Use consistent result]
-    F -->|different or hybrid| H[Fallback Resolver]
-    G --> I[Final per-intent workflow]
-    H --> I
-    I --> J[Aggregate workflows + intent details]
-    J --> K[Planner/Dispatcher execution]
+    A[Input: intents from 3.2] --> B[Batch classify per clause]
+    B --> C{GATEWAY_INTENT_CLASSIFICATION_LAYER3_FORCE?}
+    C -->|true| L3[Legacy: keyword then vector then LLM]
+    C -->|false| D{L1 enabled and Redis clear_sentence hit?}
+    D -->|yes| R1[workflow from Redis row]
+    D -->|no| E{L2 enabled and Redis regular_patterns hit?}
+    E -->|yes| R2[workflow from Redis row]
+    E -->|no| L3
+    L3 --> F[Intent clause + workflow + source]
+    R1 --> F
+    R2 --> F
+    F --> G[Aggregate + Planner/Dispatcher]
 ```
 
-**Workflow steps**
+**Legacy L3 internals (serial keyword → vector → LLM)**
+
+`ClassificationImplementMethod.detect` stops at the first hit: keyword match returns immediately; else vector match; else `ClassificationIntentVectorStore.llm_detect` runs **three** workflow-specific prompts in parallel and takes the first affirmative JSON match (else `general`). Keyword and vector layers use `KeywordRetrieval` scoring / hybrid labels where applicable; see `implement_methods.py` for details.
+
+```mermaid
+flowchart TD
+    A[Intent clause text] --> K[Keyword rules<br/>classification_data]
+    K -->|hit| OUT[Return workflow]
+    K -->|miss| V[Vector retrieval<br/>intent_registry Chroma]
+    V -->|hit| OUT
+    V -->|miss| L[Parallel LLM detect<br/>sp_api / uds / amazon_docs]
+    L --> OUT
+```
+
+**Workflow steps (full pipeline summary)**
 
 1. Receive `intents` list from the unified rewrite stage (3.2).
-2. For each clause, run dual retrieval in parallel: keyword (rule-based) and vector (all-minilm + Chroma).
-3. Compare keyword vs vector; if same and neither is `hybrid`, use that result.
-4. If different or either is `hybrid`, run fallback resolver.
-5. Fallback priority: keyword (if not hybrid) → vector (if not hybrid) → `general`.
-6. Aggregate all final workflows into a deduplicated list plus per-intent details.
-7. Pass to Planner/Dispatcher for plan build, task execution, and result merge.
+2. For each clause: optional Redis L1 → L2 as above; else serial keyword → vector → LLM (`ClassificationImplementMethod.detect` in `implement_methods.py`).
+3. Aggregate all final workflows into a deduplicated list plus per-intent details.
+4. Pass to Planner/Dispatcher for plan build, task execution, and result merge.
 
-**Fallback examples**
+**Resolver-style examples (when both keyword and vector contribute scores — conceptual)**
 
-| Keyword | Vector | Final |
-|---------|--------|-------|
+| Keyword | Vector | Typical resolution |
+|---------|--------|--------------------|
 | uds | uds | uds |
 | uds | sp_api | uds |
 | hybrid | sp_api | sp_api |

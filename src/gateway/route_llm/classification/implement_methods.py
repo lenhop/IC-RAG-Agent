@@ -104,6 +104,40 @@ def _use_vector() -> bool:
     return val in ("true", "1", "yes")
 
 
+# Env truth set for optional Redis layers (aligned with rewrite L1/L2 flags).
+_INTENT_REDIS_LAYER_TRUE = frozenset({"1", "true", "yes", "on"})
+
+
+def _intent_classification_layer1_enabled() -> bool:
+    """
+    L1: match intent clause against Redis ``clear_intent_sentence:data`` (clear_sentence).
+
+    On hit, classification workflow is the row's ``workflow`` field (no keyword/vector/LLM).
+    """
+    v = (os.getenv("GATEWAY_INTENT_CLASSIFICATION_LAYER1_ENABLED") or "false").strip().lower()
+    return v in _INTENT_REDIS_LAYER_TRUE
+
+
+def _intent_classification_layer2_enabled() -> bool:
+    """
+    L2: first regex hit on Redis ``regular_patterns:data``.
+
+    On hit, workflow comes from the matched row's ``workflow`` field.
+    """
+    v = (os.getenv("GATEWAY_INTENT_CLASSIFICATION_LAYER2_ENABLED") or "false").strip().lower()
+    return v in _INTENT_REDIS_LAYER_TRUE
+
+
+def _intent_classification_layer3_force() -> bool:
+    """
+    When true, skip Redis L1/L2 and use the legacy stack only: keyword, then vector, then LLM.
+
+    Does not disable keyword/vector; only bypasses Redis IC-Self-Study hashes.
+    """
+    v = (os.getenv("GATEWAY_INTENT_CLASSIFICATION_LAYER3_FORCE") or "").strip().lower()
+    return v in _INTENT_REDIS_LAYER_TRUE
+
+
 def _vector_top_k() -> int:
     """
     Chroma n_results for intent vector classification (env MAX_RETRIEVAL_DOCS).
@@ -449,10 +483,11 @@ class ClassificationKeywordRuleStore:
 
 class ClassificationImplementMethod:
     """
-    Unified intent classification: keyword, then vector, then LLM (serial short-circuit).
+    Unified intent classification with optional Redis L1/L2, then keyword, vector, LLM.
 
-    If keyword matches, vector and LLM are skipped. If vector matches, LLM is skipped.
-    If all miss through LLM, workflow general (generic knowledge).
+    Redis layers (when enabled and not L3-forced) run first: clear_sentence, then
+    regular_patterns, using the same TTL cache as ``rewriting.rewrite_redis_fastpath``.
+    Otherwise: keyword, then vector, then parallel LLM detection (serial short-circuit).
     """
 
     def keyword_classification_method(
@@ -524,9 +559,10 @@ class ClassificationImplementMethod:
         self, query: str, conversation_context: Optional[str] = None
     ) -> IntentResult:
         """
-        Serial short-circuit: keyword -> vector -> LLM.
+        Optional Redis L1/L2, then serial short-circuit: keyword -> vector -> LLM.
 
-        Stops at first hit; LLM only runs if keyword and vector do not match.
+        ``GATEWAY_INTENT_CLASSIFICATION_LAYER3_FORCE`` skips Redis and preserves the
+        pre-existing keyword/vector/LLM order.
         """
         if not query or not query.strip():
             return IntentResult(
@@ -537,6 +573,50 @@ class ClassificationImplementMethod:
             )
 
         stripped = query.strip()
+
+        # --- Redis L1 / L2 (IC-Self-Study import) vs L3 (keyword + vector + LLM) ------------
+        if not _intent_classification_layer3_force():
+            from ..rewriting.rewrite_redis_fastpath import RewriteRedisFastpath
+
+            if _intent_classification_layer1_enabled():
+                try:
+                    clear_row = RewriteRedisFastpath.match_clear_sentence(stripped)
+                except Exception as exc:
+                    logger.warning("intent L1 Redis match error (continuing): %s", exc)
+                    clear_row = None
+                if isinstance(clear_row, dict):
+                    wf = (clear_row.get("workflow") or "").strip()
+                    if wf:
+                        result = IntentResult(
+                            intent_name=wf,
+                            workflow=wf,
+                            confidence="high",
+                            source="redis_clear_sentence",
+                        )
+                        ClassificationIntentVectorStore._log_detection_result(
+                            stripped, result
+                        )
+                        return result
+
+            if _intent_classification_layer2_enabled():
+                try:
+                    reg_row = RewriteRedisFastpath.match_first_regular_pattern(stripped)
+                except Exception as exc:
+                    logger.warning("intent L2 Redis match error (continuing): %s", exc)
+                    reg_row = None
+                if isinstance(reg_row, dict):
+                    wf = (reg_row.get("workflow") or "").strip()
+                    if wf:
+                        result = IntentResult(
+                            intent_name=wf,
+                            workflow=wf,
+                            confidence="high",
+                            source="redis_regular_patterns",
+                        )
+                        ClassificationIntentVectorStore._log_detection_result(
+                            stripped, result
+                        )
+                        return result
 
         if _use_keyword():
             kw = self.keyword_classification_method(stripped, conversation_context)

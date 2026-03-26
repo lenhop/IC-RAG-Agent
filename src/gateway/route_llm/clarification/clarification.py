@@ -21,6 +21,7 @@ import os
 import re
 from typing import Any, Optional
 
+from ...keyword_regular_match import ClarificationLayer12Gate
 from ...message import ConversationHistoryHandler
 from ...prompt_loader import load_prompt
 from src.llm.call_deepseek import DeepSeekChat
@@ -191,10 +192,12 @@ def check_ambiguity(
     """
     [入口] 澄清流程主入口。判断用户查询是否需澄清。
 
-    Flow (unified single-prompt):
+    Flow:
+      0. ``GATEWAY_CLARIFICATION_ENABLED=false`` -> 返回 ``clarification_path=disabled``，不调 LLM
       1. 空查询 -> 直接返回 needs_clarification=False
-      2. 调用 LLM (clarification_prompt) 做歧义检测 + 生成澄清问题
-      3. 若 needs_clarification=true 且 question 为空，用 generic fallback
+      2. ``ClarificationLayer12Gate``（``keyword_regular_match``）: L1/L2 规则可跳过 L3 时直接返回
+      3. 否则调用 LLM (clarification_prompt) 歧义检测 + 澄清问题
+      4. 若 needs_clarification=true 且 question 为空，用 generic fallback
 
     Args:
         query: Raw user query text.
@@ -214,17 +217,41 @@ def check_ambiguity(
         RuntimeError: On LLM/network failures (connection, timeout, HTTP error,
             invalid response, missing openai client).
     """
+    # [Step 0] 澄清总开关关闭：不加载规则、不调 LLM
+    if not ClarificationEnvValidator.is_enabled():
+        logger.debug("check_ambiguity: GATEWAY_CLARIFICATION_ENABLED=false")
+        return {
+            "needs_clarification": False,
+            "clarification_backend": None,
+            "clarification_path": "disabled",
+        }
+
     # [Step 1] 空查询直接返回
     if not query or not query.strip():
         logger.debug("check_ambiguity: empty query, skip")
         return {"needs_clarification": False, "clarification_backend": None}
 
-    logger.info("check_ambiguity: calling LLM for query_len=%d", len(query.strip()))
-    text, used_backend = _ClarificationLLM.call(query.strip(), conversation_context)
+    qstrip = query.strip()
+    has_hist = bool(conversation_context and conversation_context.strip())
+
+    # [Step 1b] L1+L2 规则门（keyword_regular_match.ClarificationLayer12Gate）→ 可跳过 L3 LLM
+    fast_path_result = ClarificationLayer12Gate.try_resolve_without_l3(
+        qstrip,
+        has_conversation_history=has_hist,
+    )
+    if fast_path_result is not None:
+        return fast_path_result
+
+    logger.info("check_ambiguity: calling LLM for query_len=%d", len(qstrip))
+    text, used_backend = _ClarificationLLM.call(qstrip, conversation_context)
 
     if not text or not text.strip():
         logger.warning("check_ambiguity: LLM returned empty, backend=%s", used_backend)
-        return {"needs_clarification": False, "clarification_backend": used_backend}
+        return {
+            "needs_clarification": False,
+            "clarification_backend": used_backend,
+            "clarification_path": "l3_llm",
+        }
 
     # [Step 2] 解析 LLM 返回的 JSON
     raw = QueryAndResponseProcessor.strip_markdown_fences(text)
@@ -245,13 +272,21 @@ def check_ambiguity(
     if not isinstance(parsed, dict):
         logger.warning("check_ambiguity: invalid or non-dict LLM response, backend=%s", used_backend)
         # Could not parse valid JSON object, treat as not needing clarification.
-        return {"needs_clarification": False, "clarification_backend": used_backend}
+        return {
+            "needs_clarification": False,
+            "clarification_backend": used_backend,
+            "clarification_path": "l3_llm",
+        }
 
     # Extract whether clarification is needed (must be truthy). If not present or false, skip clarification.
     needs = parsed.get("needs_clarification")
     if not needs:
         logger.debug("check_ambiguity: needs_clarification=false, backend=%s", used_backend)
-        return {"needs_clarification": False, "clarification_backend": used_backend}
+        return {
+            "needs_clarification": False,
+            "clarification_backend": used_backend,
+            "clarification_path": "l3_llm",
+        }
 
     # Try to get the clarification question. If missing or blank, use generic fallback.
     question = parsed.get("clarification_question")
@@ -265,6 +300,7 @@ def check_ambiguity(
         "needs_clarification": True,
         "clarification_question": question.strip(),
         "clarification_backend": used_backend,
+        "clarification_path": "l3_llm",
     }
 
 

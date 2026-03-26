@@ -9,7 +9,8 @@ Architecture (强制):
   下游（dispatcher, api 等）通过本包入口访问；禁止依赖 implement_methods 内部私有符号。
 
 Workflow (per Intent-Classification-Workflow diagram):
-  Sub-queries from unified rewrite stage → per-intent: keyword → vector → LLM → Merge → Dispatcher
+  Sub-queries from unified rewrite stage → per-intent: optional Redis L1/L2 (clear_sentence,
+  regular_patterns) → keyword → vector → LLM → Merge → Dispatcher
 
 Internal (in this module, not exported):
   _IntentValidator — 必填字段校验与追问
@@ -151,7 +152,7 @@ def classify_intent(
     query: str,
     conversation_context: Optional[str] = None,
 ) -> IntentResult:
-    """对单条查询执行 keyword → vector → LLM 串行短路分类。"""
+    """对单条查询分类：可选 Redis L1/L2，再 keyword → vector → LLM 串行短路。"""
     return ClassificationImplementMethod().detect(
         query, conversation_context=conversation_context
     )

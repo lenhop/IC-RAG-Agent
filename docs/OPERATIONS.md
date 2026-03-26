@@ -1,7 +1,7 @@
 # UDS Agent Operations Manual
 
 **Version:** 1.0.0  
-**Last Updated:** 2026-03-06
+**Last Updated:** 2026-03-26
 
 ---
 
@@ -444,6 +444,60 @@ Route LLM is an LLM-based query classifier that routes incoming queries to one o
 **Module:** `src/gateway/route_llm.py`  
 **Integration:** `src/gateway/router.py` → `route_workflow()`
 
+### 3.1 Query Clarification
+
+Query clarification runs **before** unified rewrite and intent classification. It decides whether the user’s text is ambiguous enough to warrant an explicit clarification question, or whether the pipeline can proceed.
+
+**Pipeline order (gateway Route LLM):** clarification → rewriting → intent classification → dispatcher.
+
+**Implementation**
+
+| Item | Location / notes |
+|------|------------------|
+| Entry point | `check_ambiguity()` in `src/gateway/route_llm/clarification/clarification.py` |
+| L1 / L2 rules + CSV matching | `src/gateway/keyword_regular_match.py` — `RouteRulesMatcher`, `ClarificationLayer12Gate`, `ClarificationL3SkipEvaluator` |
+| Design reference | `tasks/route_llm_optimization_scheme_new.md` §2 (L1 whitelist, L2 signals, L3 LLM) |
+
+**Rule data (on disk)**
+
+Default directory: `external/IC-Self-Study/data/` (override with `GATEWAY_ROUTE_RULES_DATA_DIR`).
+
+| File | Role |
+|------|------|
+| `amazon_business_intent_sentence.csv` | **clear_sentence** — L1 whitelist (`sentence`, `workflow`) |
+| `clarification_signals.csv` | L2 ambiguous signals (tiers A/B) and **exclusion** rows |
+| `regular_patterns.csv` | UDS-oriented regex templates (order/listing); shared for reuse by later stages |
+
+The same corpora can be loaded into Redis via `external/IC-Self-Study/redis/redis_clear_intent_sentence_ops.py` (`import --all`); the gateway clarification fast path reads **CSV from disk** by default.
+
+**Environment variables**
+
+| Variable | Typical | Description |
+|----------|---------|-------------|
+| `GATEWAY_CLARIFICATION_ENABLED` | `true` | Master switch. When `false`, clarification is skipped entirely (no rule load, no LLM); responses include `clarification_path: disabled`. |
+| `GATEWAY_CLARIFICATION_BACKEND` | `deepseek` / `ollama` | Backend for **L3** LLM clarification when rules do not short-circuit. |
+| `GATEWAY_CLARIFICATION_MEMORY_ROUNDS` | `3` | How many prior turns are passed as context for pronoun / continuity checks. |
+| `GATEWAY_CLARIFICATION_LAYER1_L2_ENABLED` | `false` | **L1+L2 fast path** (documentation name: `GATEWAY_CLARIFICATION_LAYER1&2_ENABLED` — `&` cannot be used in real env keys). When `true`, evaluate whitelist + clarification signals before calling L3; may return `l1_skip` or `l2_skip` and **skip** the clarification LLM. |
+| `GATEWAY_CLARIFICATION_LAYER3_FORCE` | `false` | When `true`, **always** run L3 LLM; ignores L1/L2 skip. Use for debugging or incident response. |
+| `GATEWAY_ROUTE_RULES_DATA_DIR` | *(unset)* | Optional absolute or repo-relative path to the folder containing the three CSV files above. |
+
+**`clarification_path` (observability)**
+
+Returned on the clarification result dict when present:
+
+| Value | Meaning |
+|-------|---------|
+| `disabled` | `GATEWAY_CLARIFICATION_ENABLED=false` |
+| `l1_skip` | L1 whitelist hit; L3 not called (only when L1+L2 enabled and §2.3 allows skip) |
+| `l2_skip` | No L2 forcing signal on cold path (or equivalent §2.3 branch); L3 not called |
+| `l3_llm` | L3 LLM ran (or was attempted) |
+
+**Operational notes**
+
+- Roll out **`GATEWAY_CLARIFICATION_LAYER1_L2_ENABLED=true`** only after golden tests; mis-tuned rules can skip clarification when users still need disambiguation.
+- For suspected false negatives on the fast path, temporarily set **`GATEWAY_CLARIFICATION_LAYER3_FORCE=true`** and restart the gateway; remember to turn it off (adds latency and cost).
+- Ensure the CSV directory exists on the gateway host or set **`GATEWAY_ROUTE_RULES_DATA_DIR`**; if files are missing, the matcher fails open and clarification falls back to L3 LLM.
+
 ### Environment Variables
 
 | Variable | Default | Description |
@@ -668,6 +722,7 @@ export GATEWAY_ROUTE_LLM_CONF_THRESHOLD=0.5
 
 ## Documentation Links
 
+- [Route LLM optimization (revised)](../tasks/route_llm_optimization_scheme_new.md) - Clarification L1/L2/L3, rewrite, rollout
 - [Query Rewriting Guide](guides/QUERY_REWRITING.md) - Query rewriting env vars, UI, and backend switching
 - [User Guide](guides/UDS_USER_GUIDE.md) - How to use UDS Agent
 - [Developer Guide](guides/UDS_DEVELOPER_GUIDE.md) - Architecture, development
@@ -678,5 +733,5 @@ export GATEWAY_ROUTE_LLM_CONF_THRESHOLD=0.5
 ---
 
 **Operations Manual Version:** 1.1.0  
-**Last Updated:** 2026-03-06  
+**Last Updated:** 2026-03-26  
 **Status:** Production Ready
