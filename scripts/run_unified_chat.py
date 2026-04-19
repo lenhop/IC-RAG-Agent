@@ -33,7 +33,13 @@ except ImportError:
 # Config from env
 GATEWAY_API_URL = os.getenv("GATEWAY_API_URL", "").rstrip("/")
 GATEWAY_MOCK = os.getenv("GATEWAY_MOCK", "").lower() in ("true", "1", "yes")
-CLIENT_GRADIO_PORT = int(os.getenv("CLIENT_GRADIO_PORT", "7862"))
+# Prefer UNIFIED_CHAT_GRADIO_PORT (stack/ic.sh) then CLIENT_GRADIO_PORT.
+_raw_port = (
+    os.getenv("UNIFIED_CHAT_GRADIO_PORT")
+    or os.getenv("CLIENT_GRADIO_PORT")
+    or "7862"
+)
+CLIENT_GRADIO_PORT = int(_raw_port)
 
 # Import and launch UI
 from src.client.gradio_ui import launch

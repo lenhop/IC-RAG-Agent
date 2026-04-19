@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 
-from src.uds.intent_classifier import IntentResult, IntentDomain
+from .intent_classifier import IntentResult, IntentDomain
 
 
 @dataclass

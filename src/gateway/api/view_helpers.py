@@ -125,6 +125,19 @@ class PlanHelper:
         return fallback
 
     @classmethod
+    def merge_task_answers_with_meta(
+        cls,
+        plan: RewritePlan,
+        task_results: List[TaskExecutionResult],
+    ) -> tuple[str, dict[str, Any]]:
+        """
+        Merge task outputs into one answer and return gateway ``answer_merge`` debug dict.
+
+        See ``ResultAggregator.merge_with_meta`` for dict keys (modes, backends).
+        """
+        return ResultAggregator.merge_with_meta(plan, task_results)
+
+    @classmethod
     def merge_task_answers(
         cls, plan: RewritePlan, task_results: List[TaskExecutionResult],
     ) -> str:
@@ -134,7 +147,8 @@ class PlanHelper:
         When ``GATEWAY_SUMMARY_LLM_ENABLED`` and ``DEEPSEEK_API_KEY`` are set,
         multi-task merges use DeepSeek with fallback to rule merge on failure.
         """
-        return ResultAggregator.merge(plan, task_results)
+        text, _meta = cls.merge_task_answers_with_meta(plan, task_results)
+        return text
 
 
 # ---------------------------------------------------------------------------

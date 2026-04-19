@@ -8,7 +8,12 @@ import os
 from typing import Any, Dict, Optional
 
 from .http_client import BackendHttpClient
-from .worker_profile import should_stub_uds, stub_response_for_workflow
+from .worker_profile import (
+    is_uds_agent_disabled,
+    should_stub_uds,
+    stub_response_for_workflow,
+    uds_agent_disabled_stub_payload,
+)
 
 UDS_API_URL = os.getenv("UDS_API_URL", "http://127.0.0.1:8001").rstrip("/")
 UDS_BACKEND_TIMEOUT = int(os.getenv("GATEWAY_UDS_BACKEND_TIMEOUT", "300"))
@@ -27,6 +32,9 @@ class UdsWorkflowClient:
             session_id: Optional session id (ignored by current UDS API).
         """
         _ = session_id
+        # Agent not implemented: still allow Route LLM to classify uds; skip HTTP to UDS_API_URL.
+        if is_uds_agent_disabled():
+            return uds_agent_disabled_stub_payload()
         if should_stub_uds():
             return stub_response_for_workflow("uds")
 

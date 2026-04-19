@@ -229,7 +229,10 @@ def _format_dispatcher_section_html(
         return ""
 
 
-def _format_answer_section_html(answer: str) -> str:
+def _format_answer_section_html(
+    answer: str,
+    answer_merge: Optional[Dict[str, Any]] = None,
+) -> str:
     """
     Render section 5 (Answer) as HTML matching the Dispatcher trace card style.
 
@@ -238,6 +241,7 @@ def _format_answer_section_html(answer: str) -> str:
 
     Args:
         answer: Final assistant text from ``/query`` (may include Markdown).
+        answer_merge: Optional ``debug.answer_merge`` from gateway (merge mode + backends).
 
     Returns:
         HTML wrapper string, or empty when answer is blank.
@@ -246,10 +250,59 @@ def _format_answer_section_html(answer: str) -> str:
         body = (answer or "").strip()
         if not body:
             return ""
+
+        backend_lines: List[str] = []
+        am = answer_merge if isinstance(answer_merge, dict) else {}
+        if am:
+            eff = (am.get("text_generation_backend_effective") or "").strip()
+            if eff:
+                backend_lines.append(
+                    f"<li><strong>text_generation (effective):</strong> "
+                    f"{html.escape(eff)} (GATEWAY_TEXT_GENERATION_BACKEND chain)</li>"
+                )
+            mode = (am.get("answer_merge_mode") or "").strip()
+            if mode:
+                backend_lines.append(
+                    f"<li><strong>merge mode:</strong> {html.escape(mode)}</li>"
+                )
+            if am.get("format_llm_applied"):
+                fb = (am.get("format_llm_backend") or "").strip()
+                if fb:
+                    backend_lines.append(
+                        f"<li><strong>format LLM backend:</strong> {html.escape(fb)}</li>"
+                    )
+            if am.get("summary_llm_applied"):
+                sb = (am.get("summary_llm_backend") or "").strip()
+                if sb:
+                    backend_lines.append(
+                        f"<li><strong>summary merge backend:</strong> {html.escape(sb)}</li>"
+                    )
+            wfs = am.get("worker_workflows")
+            if isinstance(wfs, list) and wfs:
+                backend_lines.append(
+                    "<li><strong>worker workflow(s):</strong> "
+                    f"{html.escape(', '.join(str(x) for x in wfs))}</li>"
+                )
+            det = (am.get("detail") or "").strip()
+            if det:
+                backend_lines.append(
+                    f"<li><strong>note:</strong> {html.escape(det[:500])}</li>"
+                )
+
+        meta_html = ""
+        if backend_lines:
+            meta_html = (
+                "<ul style=\"margin: 0 0 10px 0; padding-left: 20px; font-size: 0.92em; "
+                "color: #374151;\">"
+                + "".join(backend_lines)
+                + "</ul>"
+            )
+
         return (
             "<div style=\"border: 1px solid #d1d5db; border-radius: 10px; "
             "padding: 10px 12px; margin: 8px 0; background-color: #f9fafb;\">"
             "<h4 style=\"margin: 0 0 8px 0;\">5. Answer</h4>"
+            f"{meta_html}"
             "<div style=\"margin: 0;\">\n\n"
             f"{body}\n\n"
             "</div>"
@@ -1028,7 +1081,10 @@ def _chat_handler(
         response_workflow=str(result.get("workflow") or ""),
     )
     # Section 5 wraps the assistant answer; Trace block stays separate (unchanged bullets).
-    answer_html = _format_answer_section_html(answer)
+    answer_html = _format_answer_section_html(
+        answer,
+        answer_merge=debug.get("answer_merge"),
+    )
     trace_only = "\n".join(trace_lines)
     final_parts: List[str] = []
     if rewrite_message:
@@ -1070,10 +1126,6 @@ CHAT_DIALOG_CSS = """
 #ic_signout_row { justify-content: flex-end !important; padding: 0 4px !important; margin-bottom: 4px !important; }
 #ic_signout_row button { max-width: 120px !important; }
 """
-
-# Keep JS hook as no-op to preserve launch signature without forcing scroll.
-CHAT_AUTOSCROLL_JS = ""
-
 
 def create_demo() -> gr.Blocks:
     """
@@ -1300,7 +1352,8 @@ def launch(server_name: str = "0.0.0.0", server_port: Optional[int] = None) -> N
     print(f"Starting IC-RAG-Agent Chat at http://localhost:{port} (bind {server_name})")
     print(f"Gateway: {GATEWAY_API_URL or '(mock mode)'}")
     print(f"UI client build: {UNIFIED_CHAT_CLIENT_BUILD} (if chat shows old 'Rewrite-only test mode', restart UI)")
-    demo.launch(server_name=server_name, server_port=port, share=False, js=CHAT_AUTOSCROLL_JS)
+    # Gradio 4.x+ removed ``launch(..., js=...)`` (was unused here).
+    demo.launch(server_name=server_name, server_port=port, share=False)
 
 
 def main() -> None:

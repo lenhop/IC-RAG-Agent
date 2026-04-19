@@ -9,6 +9,10 @@ Profiles:
 When stubbing, handlers return a **successful** envelope ``{"answer", "sources"}`` so
 ``DispatcherExecutor`` marks tasks ``completed`` and ``rule_merge`` includes the text.
 (Errors would yield ``failed`` and be dropped from merged answers.)
+
+``GATEWAY_UDS_AGENT_DISABLED`` (separate from worker profile): Route LLM may still
+classify ``uds``, but the gateway never calls ``UDS_API_URL`` and returns a short
+placeholder (default ``UDS available``) until the UDS agent is implemented.
 """
 
 from __future__ import annotations
@@ -29,6 +33,9 @@ STUB_SP_API_ANSWER = (
     "卖家运营（SP-API）能力尚未在本环境开放；当前仅提供 RAG 问答（通用知识 / Amazon 文档等）。"
     "如需订单、库存等操作，请稍后再试或联系管理员。"
 )
+
+# When GATEWAY_UDS_AGENT_DISABLED is set: minimal placeholder (override via GATEWAY_UDS_STUB_MESSAGE).
+UDS_AGENT_DISABLED_DEFAULT_ANSWER = "UDS available"
 
 
 def _env_truthy(name: str) -> bool:
@@ -74,16 +81,50 @@ def is_rag_sp_api_worker_profile() -> bool:
     )
 
 
+def is_uds_agent_disabled() -> bool:
+    """
+    When True, UDS workflow tasks never hit ``UDS_API_URL`` (agent not implemented).
+
+    Env:
+        ``GATEWAY_UDS_AGENT_DISABLED``: ``1`` / ``true`` / ``yes`` / ``on`` → stub with
+        ``uds_agent_disabled_stub_payload`` (default answer ``UDS available``). Unset or
+        ``false`` / ``0`` / ``no`` / ``off`` → follow normal path (real UDS HTTP unless
+        worker profile stubs UDS).
+
+    Optional:
+        ``GATEWAY_UDS_STUB_MESSAGE``: user-visible stub text (default ``UDS available``).
+    """
+    raw = (os.getenv("GATEWAY_UDS_AGENT_DISABLED") or "").strip()
+    if not raw:
+        return False
+    lowered = raw.lower()
+    if lowered in ("0", "false", "no", "off"):
+        return False
+    return _env_truthy("GATEWAY_UDS_AGENT_DISABLED")
+
+
+def uds_agent_disabled_stub_payload() -> Dict[str, Any]:
+    """Completed-task shape for disabled UDS agent (Route LLM may still route to ``uds``)."""
+    raw = (os.getenv("GATEWAY_UDS_STUB_MESSAGE") or UDS_AGENT_DISABLED_DEFAULT_ANSWER).strip()
+    text = raw or UDS_AGENT_DISABLED_DEFAULT_ANSWER
+    logger.info("UDS agent disabled (GATEWAY_UDS_AGENT_DISABLED); returning stub answer")
+    return {"answer": text, "sources": []}
+
+
 def should_stub_uds() -> bool:
     """
-    Return True if UDS HTTP calls should be stubbed.
+    Return True if UDS HTTP calls should be stubbed (worker profile / combined stub flag).
 
     Stub UDS when:
         - ``GATEWAY_STUB_UDS_SP_API`` is truthy (stubs both workers), or
         - ``GATEWAY_WORKER_PROFILE`` is ``rag_only`` / ``rag_sp_api`` (or aliases).
 
+    Note:
+        ``GATEWAY_UDS_AGENT_DISABLED`` is handled separately in ``uds_client`` so the
+        placeholder text can stay minimal (``UDS available``).
+
     Returns:
-        Whether to short-circuit the UDS client.
+        Whether to short-circuit the UDS client with ``stub_response_for_workflow``.
     """
     if _env_truthy("GATEWAY_STUB_UDS_SP_API"):
         return True

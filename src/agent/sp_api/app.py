@@ -1,7 +1,8 @@
 """
 SP-API Seller Agent — FastAPI service for gateway POST /api/v1/seller/query.
 
-Read-only ReAct agent over Orders v0 getOrder and Listings 2021-08-01 getListingsItem.
+Read-only ReAct agent over Orders v0 getOrder, Catalog Items v2022-04-01 getCatalogItem (ASIN),
+and Listings 2021-08-01 getListingsItem (seller SKU).
 """
 
 from __future__ import annotations
@@ -28,6 +29,12 @@ try:
     load_dotenv(_REPO_ROOT / ".env")
 except ImportError:
     pass
+
+# Ollama Python client raises this when the HTTP API returns non-2xx (e.g. 502 from proxy/daemon).
+try:
+    from ollama import ResponseError as OllamaResponseError
+except ImportError:
+    OllamaResponseError = None  # type: ignore[misc, assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +80,29 @@ def _test_mode() -> bool:
     return os.getenv("SP_API_TEST_MODE", "").strip().lower() in ("true", "1", "yes")
 
 
+def _ollama_base_url() -> str:
+    """
+    Base URL for LangChain OllamaLLM (same convention as ``OLLAMA_BASE_URL`` in ``call_ollama``).
+
+    Returns:
+        Stripped URL without trailing slash, e.g. http://127.0.0.1:11434
+    """
+    raw = (os.getenv("OLLAMA_BASE_URL") or "http://127.0.0.1:11434").strip().rstrip("/")
+    return raw
+
+
+def _make_ollama_llm(model: str) -> Any:
+    """Build OllamaLLM with explicit ``base_url`` so SP-API matches project Ollama config."""
+    from langchain_ollama import OllamaLLM
+
+    return OllamaLLM(
+        model=model,
+        base_url=_ollama_base_url(),
+        temperature=0.1,
+        num_predict=2048,
+    )
+
+
 def _create_sp_api_llm() -> Any:
     """
     LLM for ReAct: SP_API_LLM_PROVIDER overrides UDS_LLM_PROVIDER; default ollama.
@@ -91,13 +121,7 @@ def _create_sp_api_llm() -> Any:
             or os.getenv("UDS_OLLAMA_MODEL")
             or "qwen3:1.7b"
         )
-        from langchain_ollama import OllamaLLM
-
-        return OllamaLLM(
-            model=model,
-            temperature=0.1,
-            num_predict=2048,
-        )
+        return _make_ollama_llm(model)
 
     model = (
         os.getenv("SP_API_LLM_MODEL")
@@ -116,10 +140,8 @@ def _create_sp_api_llm() -> Any:
             provider,
             required_api_key,
         )
-        from langchain_ollama import OllamaLLM
-
         fallback = os.getenv("SP_API_LLM_FALLBACK_MODEL", "qwen3:1.7b")
-        return OllamaLLM(model=fallback, temperature=0.1, num_predict=2048)
+        return _make_ollama_llm(fallback)
 
     try:
         from ai_toolkit.models import ModelManager
@@ -132,9 +154,7 @@ def _create_sp_api_llm() -> Any:
             max_tokens=2048,
         )
     except ImportError:
-        from langchain_ollama import OllamaLLM
-
-        return OllamaLLM(model=model, temperature=0.1, num_predict=2048)
+        return _make_ollama_llm(str(model))
 
 
 def _get_stack() -> Any:
@@ -191,5 +211,17 @@ async def seller_query(body: SellerQueryRequest) -> Dict[str, Any]:
         logger.warning("SP-API config error: %s", exc)
         return {"error": str(exc), "error_type": "ValueError"}
     except Exception as exc:
+        # LangChain -> ollama client: HTTP 502/503 often means daemon down or bad reverse proxy.
+        if OllamaResponseError is not None and isinstance(exc, OllamaResponseError):
+            logger.exception("seller/query Ollama HTTP error: %s", exc)
+            return {
+                "error": (
+                    "Ollama LLM request failed (HTTP error from Ollama, e.g. 502). "
+                    "Check: `ollama serve` is running; OLLAMA_BASE_URL matches that server; "
+                    "model is pulled (`ollama pull` for SP_API_LLM_MODEL / UDS_LLM_MODEL). "
+                    f"Detail: {exc}"
+                ),
+                "error_type": "OllamaResponseError",
+            }
         logger.exception("seller/query failed: %s", exc)
         return {"error": str(exc), "error_type": type(exc).__name__}

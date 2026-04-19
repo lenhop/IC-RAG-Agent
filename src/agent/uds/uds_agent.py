@@ -12,15 +12,12 @@ Extends ReActAgent with UDS-specific capabilities including:
 import json
 import os
 from typing import Dict, Any, List, Optional
-from src.uds.cache import UDSCache  # for type hints
+
 from src.agent.react_agent import ReActAgent
-from src.uds.uds_client import UDSClient
-from src.uds.config import UDSConfig
-from src.uds.intent_classifier import UDSIntentClassifier, IntentResult, IntentDomain
-from src.uds.task_planner import UDSTaskPlanner, TaskPlan
-from src.uds.result_formatter import UDSResultFormatter
-from src.uds.tools import UDSToolRegistry
-from src.uds.error_handler import (
+
+from .cache import UDSCache  # for type hints
+from .config import UDSConfig
+from .error_handler import (
     UDSError,
     DatabaseError,
     ToolExecutionError,
@@ -29,8 +26,13 @@ from src.uds.error_handler import (
     handle_database_error,
     handle_tool_execution_error,
     handle_llm_error,
-    handle_api_error
+    handle_api_error,
 )
+from .intent_classifier import UDSIntentClassifier, IntentResult, IntentDomain
+from .result_formatter import UDSResultFormatter
+from .task_planner import UDSTaskPlanner, TaskPlan
+from .tools import UDSToolRegistry
+from .uds_client import UDSClient
 
 
 class UDSAgent(ReActAgent):

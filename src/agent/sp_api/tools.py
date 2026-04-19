@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Union
 from ai_toolkit.errors import ValidationError
 from ai_toolkit.tools import BaseTool, ToolParameter
 
+from .catalog import get_catalog_items_batch
 from .listing import get_listings_items_batch
 from .order import get_orders_batch
 from .sp_api_client import SPAPIClient, SPAPICredentials
@@ -165,6 +166,66 @@ class SpApiListingBatchYamlFormatter:
         return json.dumps(wrapper, indent=2, ensure_ascii=False, default=str)
 
 
+class SpApiCatalogBatchYamlFormatter:
+    """
+    Format SP-API getCatalogItem (v2022-04-01) batch results as YAML.
+
+    Each successful row uses ``ok``, ``asin``, ``sp_api_response`` (full JSON from Amazon).
+    """
+
+    @classmethod
+    def format_batch(cls, results: List[Dict[str, Any]]) -> str:
+        """
+        Build a multi-ASIN YAML document with full catalog JSON per success row.
+
+        Args:
+            results: Output of ``get_catalog_items_batch``.
+
+        Returns:
+            UTF-8 YAML string (falls back to indented JSON if PyYAML is unavailable).
+        """
+        items_out: List[Dict[str, Any]] = []
+        for row in results:
+            asin = str(row.get("asin") or "").strip().upper()
+            if row.get("ok"):
+                raw = row.get("payload")
+                items_out.append(
+                    {
+                        "ok": True,
+                        "asin": asin,
+                        "sp_api_response": _sp_api_yaml_json_safe(raw) if raw is not None else {},
+                    }
+                )
+            else:
+                err_row: Dict[str, Any] = {
+                    "ok": False,
+                    "asin": asin,
+                    "error": str(row.get("error") or ""),
+                }
+                if row.get("status_code") is not None:
+                    err_row["http_status"] = row["status_code"]
+                items_out.append(err_row)
+
+        wrapper = {
+            "catalog_items": items_out,
+            "asin_count": len(items_out),
+        }
+
+        if yaml is not None:
+            try:
+                return yaml.safe_dump(
+                    wrapper,
+                    sort_keys=False,
+                    default_flow_style=False,
+                    allow_unicode=True,
+                    width=1000,
+                )
+            except Exception as exc:
+                logger.warning("YAML dump failed, using JSON fallback: %s", exc)
+
+        return json.dumps(wrapper, indent=2, ensure_ascii=False, default=str)
+
+
 def _coerce_id_list(value: Union[str, List[Any], None]) -> List[str]:
     """Accept JSON array, comma-separated string, or single string."""
     if value is None:
@@ -297,5 +358,60 @@ class SpApiGetListingsTool(BaseTool):
                 type="string",
                 description="Optional selling partner ID; defaults to SP_API_SELLER_ID from environment",
                 required=False,
+            ),
+        ]
+
+
+class SpApiGetCatalogItemsTool(BaseTool):
+    """
+    Retrieve Amazon catalog item details by ASIN via Catalog Items API v2022-04-01 getCatalogItem.
+    """
+
+    def __init__(self, client: SPAPIClient, credentials: SPAPICredentials) -> None:
+        super().__init__(
+            name="sp_api_get_catalog_items",
+            description=(
+                "Fetch catalog item details for one or more ASINs from Amazon SP-API "
+                "(getCatalogItem). Returns full API JSON under sp_api_response in catalog_items_yaml. "
+                "Pass asins as a JSON array, e.g. [\"B012345678\"]."
+            ),
+        )
+        self._client = client
+        self._credentials = credentials
+
+    def validate_parameters(self, asins: Any = None, **kwargs: Any) -> None:
+        ids = _coerce_id_list(asins)
+        if not ids:
+            raise ValidationError(
+                message="asins is required (non-empty list or comma-separated string)",
+                field_name="asins",
+            )
+
+    def execute(self, asins: Any = None, **kwargs: Any) -> dict:
+        self.validate_parameters(asins=asins, **kwargs)
+        asin_list = _coerce_id_list(asins)
+        results = get_catalog_items_batch(
+            self._client,
+            asin_list,
+            credentials=self._credentials,
+        )
+        ok_n = sum(1 for r in results if r.get("ok"))
+        catalog_yaml = SpApiCatalogBatchYamlFormatter.format_batch(results)
+        return {
+            "catalog_items_yaml": catalog_yaml,
+            "results": results,
+            "summary": (
+                f"Retrieved {ok_n} of {len(results)} ASIN(s). "
+                "Full data is in catalog_items_yaml; pass that block to the user."
+            ),
+        }
+
+    def _get_parameters(self) -> List[ToolParameter]:
+        return [
+            ToolParameter(
+                name="asins",
+                type="array",
+                description='Amazon ASIN(s): JSON array of strings, e.g. ["B07T5SD4M9"]',
+                required=True,
             ),
         ]

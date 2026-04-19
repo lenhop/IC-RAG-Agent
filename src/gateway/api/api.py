@@ -736,7 +736,9 @@ class QueryPipeline:
             # 8. Dispatcher: execute + merge
             dispatch_start = time.perf_counter()
             task_results = DispatcherExecutor.execute_plan(execution_plan, request)
-            merged_answer = PlanHelper.merge_task_answers(execution_plan, task_results)
+            merged_answer, answer_merge_debug = PlanHelper.merge_task_answers_with_meta(
+                execution_plan, task_results
+            )
             workflow = PlanHelper.derive_workflow(
                 execution_plan,
                 task_results,
@@ -784,6 +786,7 @@ class QueryPipeline:
                 **dict(debug_trace),
                 "plan_build_ms": plan_elapsed_ms,
                 "dispatch_execute_ms": dispatch_elapsed_ms,
+                "answer_merge": answer_merge_debug,
             }
 
             # 9a. All tasks failed

@@ -14,7 +14,7 @@ import sys
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.uds.config import UDSConfig
+from src.agent.uds.config import UDSConfig
 
 
 def main() -> int:

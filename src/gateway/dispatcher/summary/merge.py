@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import List
+from typing import Any, Dict, List, Tuple
 
 from ...api.config import GatewayConfig
 from ...schemas import RewritePlan, TaskExecutionResult
@@ -70,33 +70,45 @@ class ResultAggregator:
         return True
 
     @classmethod
-    def merge(
+    def merge(cls, plan: RewritePlan, task_results: List[TaskExecutionResult]) -> str:
+        """Merge task answers; see ``merge_with_meta`` for observability dict."""
+        text, _meta = cls.merge_with_meta(plan, task_results)
+        return text
+
+    @classmethod
+    def merge_with_meta(
         cls,
         plan: RewritePlan,
         task_results: List[TaskExecutionResult],
-    ) -> str:
+    ) -> Tuple[str, Dict[str, Any]]:
         """
-        Merge task answers using LLM when enabled, else rule-based merge.
+        Merge task answers and return (text, debug dict for UI).
 
-        Args:
-            plan: Execution plan.
-            task_results: Results from DispatcherExecutor.
-
-        Returns:
-            Merged answer string (may be empty when no successful content).
-
-        Raises:
-            ValueError: If plan or task_results is None.
+        The debug dict includes ``text_generation_backend_effective`` (from
+        ``GATEWAY_TEXT_GENERATION_BACKEND`` chain) and ``answer_merge_mode`` describing
+        which path produced the final string.
         """
         if plan is None:
             raise ValueError("plan must not be None")
         if task_results is None:
             raise ValueError("task_results must not be None")
 
+        tg_effective = GatewayConfig.resolve_text_generation_backend()
+        meta: Dict[str, Any] = {
+            "text_generation_backend_effective": tg_effective,
+            "answer_merge_mode": "rule_merge",
+            "format_llm_applied": False,
+            "summary_llm_applied": False,
+        }
+
         completed = [
             r for r in task_results
             if r.status == "completed" and (r.answer or "").strip()
         ]
+        if completed:
+            meta["worker_workflows"] = [
+                (r.workflow or "").strip() or "unknown" for r in completed
+            ]
 
         # Single-task sp_api: optional strict formatting LLM (GATEWAY_TEXT_GENERATION_BACKEND).
         if (
@@ -108,32 +120,66 @@ class ResultAggregator:
                 logger.info(
                     "SP-API worker answer is authoritative API YAML; skipping format LLM"
                 )
-                return RuleMergeFacade.merge_task_answers(plan, task_results)
+                text = RuleMergeFacade.merge_task_answers(plan, task_results)
+                meta["answer_merge_mode"] = "sp_api_yaml_pass_through"
+                meta["detail"] = (
+                    "Tool-built API YAML detected; format LLM skipped (policy)."
+                )
+                return text, meta
             try:
                 from .sp_api_format_llm import format_sp_api_worker_answer
 
-                return format_sp_api_worker_answer(
+                backend = GatewayConfig.resolve_text_generation_backend()
+                text = format_sp_api_worker_answer(
                     completed[0].answer,
                     user_sub_query=(completed[0].query or "").strip(),
-                    backend=GatewayConfig.resolve_text_generation_backend(),
+                    backend=backend,
                 )
+                meta["answer_merge_mode"] = "sp_api_format_llm"
+                meta["format_llm_applied"] = True
+                meta["format_llm_backend"] = backend
+                meta["detail"] = (
+                    f"SP-API worker answer formatted with text_generation backend: {backend}."
+                )
+                return text, meta
             except Exception as exc:
                 logger.warning(
                     "SP-API format LLM failed, using raw worker answer: %s",
                     exc,
                     exc_info=True,
                 )
-                return RuleMergeFacade.merge_task_answers(plan, task_results)
+                text = RuleMergeFacade.merge_task_answers(plan, task_results)
+                meta["answer_merge_mode"] = "sp_api_format_llm_failed_rule_fallback"
+                meta["detail"] = f"Format LLM failed; raw worker answer. ({exc})"
+                return text, meta
 
         if len(completed) <= 1 or not cls.summary_llm_enabled():
-            return RuleMergeFacade.merge_task_answers(plan, task_results)
+            text = RuleMergeFacade.merge_task_answers(plan, task_results)
+            if len(completed) == 1:
+                wf = (completed[0].workflow or "").strip().lower() or "unknown"
+                meta["answer_merge_mode"] = f"worker_output_{wf}"
+                if wf == "sp_api" and not GatewayConfig.sp_api_format_llm_enabled():
+                    meta["detail"] = (
+                        "GATEWAY_SP_API_FORMAT_LLM_ENABLED is off; raw worker answer."
+                    )
+            else:
+                meta["answer_merge_mode"] = "rule_merge"
+            return text, meta
 
         try:
-            return SummaryLlmFacade.summarize_with_deepseek(plan, task_results)
+            text = SummaryLlmFacade.summarize_with_deepseek(plan, task_results)
+            meta["answer_merge_mode"] = "multi_task_summary_deepseek"
+            meta["summary_llm_applied"] = True
+            meta["summary_llm_backend"] = "deepseek"
+            meta["detail"] = "Multi-task merge via DeepSeek (GATEWAY_SUMMARY_LLM_ENABLED)."
+            return text, meta
         except Exception as exc:
             logger.warning(
                 "LLM summary merge failed, falling back to rule merge: %s",
                 exc,
                 exc_info=True,
             )
-            return RuleMergeFacade.merge_task_answers(plan, task_results)
+            text = RuleMergeFacade.merge_task_answers(plan, task_results)
+            meta["answer_merge_mode"] = "multi_task_summary_failed_rule_fallback"
+            meta["detail"] = str(exc)
+            return text, meta

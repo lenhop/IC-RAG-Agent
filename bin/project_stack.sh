@@ -184,7 +184,7 @@ service_start_cmd() {
       fi
       ;;
     uds)
-      echo "UDS_LLM_PROVIDER=${UDS_LLM_PROVIDER:-ollama} ${PYTHON_BIN} -m uvicorn src.uds.api:app --host 0.0.0.0 --port 8001"
+      echo "UDS_LLM_PROVIDER=${UDS_LLM_PROVIDER:-ollama} ${PYTHON_BIN} -m uvicorn src.agent.uds.api:app --host 0.0.0.0 --port 8001"
       ;;
     rag)
       # RAG HTTP service (Agent RAG: DeepSeek + Chroma). Port 8002 avoids gateway 8000.
