@@ -3,6 +3,7 @@ SP-API Client — LWA OAuth2 + rate limiting + Redis cache.
 """
 import hashlib
 import json
+import logging
 import os
 import threading
 import time
@@ -12,6 +13,67 @@ from typing import Any, Dict, Optional
 import httpx
 
 from .exceptions import SPAPIAuthError
+
+logger = logging.getLogger(__name__)
+
+
+def _sp_api_operation_kind(path: str) -> str:
+    """
+    Map request path to a short label for logs (order / listing / catalog / other).
+
+    Args:
+        path: URL path beginning with ``/`` (e.g. ``/orders/v0/orders/...``).
+
+    Returns:
+        One of: ``order``, ``listing``, ``catalog``, ``other``.
+    """
+    p = (path or "").lower()
+    if "/orders/" in p or p.startswith("/orders"):
+        return "order"
+    if "/listings/" in p or p.startswith("/listings"):
+        return "listing"
+    if "/catalog/" in p or p.startswith("/catalog"):
+        return "catalog"
+    return "other"
+
+
+def _http_max_retries() -> int:
+    """How many times to retry a single GET on transient network/SSL errors (env override)."""
+    raw = (os.environ.get("SP_API_HTTP_RETRIES") or "3").strip()
+    try:
+        n = int(raw)
+    except ValueError:
+        return 3
+    return max(1, min(n, 10))
+
+
+def _is_transient_httpx_error(exc: BaseException) -> bool:
+    """
+    True if the failure may succeed on retry (TLS blips, EOF, timeouts).
+
+    SP-API occasionally triggers SSL UNEXPECTED_EOF_WHILE_READING; short backoff
+    retries usually clear it without user action.
+    """
+    if isinstance(exc, httpx.TimeoutException):
+        return True
+    # Transport-layer: ConnectError (incl. SSL), ReadError, RemoteProtocolError, etc.
+    if isinstance(exc, httpx.TransportError):
+        return True
+    return False
+
+
+def _params_for_sp_api_log(params: Optional[Dict]) -> str:
+    """Serialize query params for logs (truncated)."""
+    if not params:
+        return "{}"
+    try:
+        text = json.dumps(params, ensure_ascii=False, default=str, sort_keys=True)
+    except Exception:
+        text = repr(params)
+    max_len = 8000
+    if len(text) > max_len:
+        return text[: max_len - 3] + "..."
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +127,7 @@ class SPAPICredentials:
             )
 
         seller_primary = (os.environ.get("SP_API_SELLER_ID") or "").strip()
-        seller_fallback = (os.environ.get("SNB_NA_SELLER_ID") or "").strip()
+        seller_fallback = (os.environ.get("JUVO_NA_SELLER_ID") or "").strip()
         seller_id = seller_primary or seller_fallback
 
         return cls(
@@ -140,6 +202,7 @@ class SPAPIClient:
         self._access_token: Optional[str] = None
         self._token_expiry: float = 0.0
         self._rate_limiters: Dict[str, _RateLimiter] = {}
+        # SP-API: transient SSL EOF / connection resets are common; retries handled in get().
         self._http = httpx.Client(timeout=30.0)
         # Base URL without trailing slash; override with SP_API_ENDPOINT for EU/FE etc.
         raw_base = (os.environ.get("SP_API_ENDPOINT") or "").strip().rstrip("/")
@@ -237,23 +300,99 @@ class SPAPIClient:
 
     def get(self, path: str, params: Optional[Dict] = None) -> Dict[str, Any]:
         """Authenticated GET — checks cache first, then calls SP-API."""
+        op = _sp_api_operation_kind(path)
+        params_log = _params_for_sp_api_log(params)
         cache_key = self._cache_key(path, params)
         cached = self._cache_get(cache_key)
         if cached is not None:
+            logger.info(
+                "sp_api_cache_hit operation=%s path=%s params=%s",
+                op,
+                path,
+                params_log,
+            )
             return cached
 
         self._get_rate_limiter(path).acquire()
         headers = self._get_auth_header()
         headers["x-amz-access-token"] = self._access_token or ""
 
-        resp = self._http.get(
-            self._sp_api_base + path,
-            params=params,
-            headers=headers,
+        # Build the same request URL httpx will use (for sp_api.log diagnostics).
+        try:
+            preview = self._http.build_request(
+                "GET",
+                self._sp_api_base + path,
+                params=params,
+                headers=headers,
+            )
+            request_url = str(preview.url)
+        except Exception as exc:
+            request_url = f"{self._sp_api_base}{path}"
+            logger.warning("sp_api_build_request_url_failed: %s; fallback_url=%s", exc, request_url)
+
+        logger.info(
+            "sp_api_request operation=%s path=%s params=%s request_url=%s",
+            op,
+            path,
+            params_log,
+            request_url,
         )
+
+        max_attempts = _http_max_retries()
+        last_exc: Optional[BaseException] = None
+        resp: Optional[httpx.Response] = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                resp = self._http.get(
+                    self._sp_api_base + path,
+                    params=params,
+                    headers=headers,
+                )
+                last_exc = None
+                break
+            except Exception as exc:
+                last_exc = exc
+                if not _is_transient_httpx_error(exc) or attempt >= max_attempts:
+                    logger.warning(
+                        "sp_api_get_failed operation=%s attempt=%d/%d path=%s err=%s",
+                        op,
+                        attempt,
+                        max_attempts,
+                        path,
+                        exc,
+                    )
+                    raise
+                backoff = min(0.5 * (2 ** (attempt - 1)), 8.0)
+                logger.warning(
+                    "sp_api_transient_error operation=%s attempt=%d/%d path=%s err=%s; "
+                    "retry_in_s=%.1f",
+                    op,
+                    attempt,
+                    max_attempts,
+                    path,
+                    exc,
+                    backoff,
+                )
+                time.sleep(backoff)
+
+        if resp is None:
+            assert last_exc is not None
+            raise last_exc
+
         try:
             resp.raise_for_status()
         except Exception as e:
+            err_url = str(resp.request.url) if resp.request is not None else request_url
+            logger.warning(
+                "sp_api_http_error operation=%s path=%s params=%s request_url=%s "
+                "status=%s response_snippet=%s",
+                op,
+                path,
+                params_log,
+                err_url,
+                resp.status_code,
+                (resp.text or "")[:1500],
+            )
             # Fix #4: wrap HTTP errors in a consistent exception
             status = getattr(getattr(e, "response", None), "status_code", None)
             raise httpx.HTTPStatusError(
@@ -261,6 +400,13 @@ class SPAPIClient:
                 request=resp.request,
                 response=resp,
             ) from e
+        logger.info(
+            "sp_api_response_ok operation=%s path=%s http_status=%s request_url=%s",
+            op,
+            path,
+            resp.status_code,
+            str(resp.request.url) if resp.request is not None else request_url,
+        )
         data = resp.json()
         self._cache_set(cache_key, data)
         return data

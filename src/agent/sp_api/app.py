@@ -38,6 +38,33 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
+def _configure_sp_api_package_logging() -> None:
+    """
+    Emit INFO logs from ``src.agent.sp_api.*`` (e.g. SP-API HTTP lines) to stderr.
+
+    ``project_stack.sh`` redirects process stderr to ``logs/runtime/sp_api.log``.
+    """
+    try:
+        lvl_name = (os.getenv("SP_API_LOG_LEVEL") or "INFO").strip().upper()
+        pkg_level = getattr(logging, lvl_name, logging.INFO)
+    except Exception:
+        pkg_level = logging.INFO
+    pkg = logging.getLogger("src.agent.sp_api")
+    pkg.setLevel(pkg_level)
+    if pkg.handlers:
+        return
+    handler = logging.StreamHandler()
+    handler.setLevel(pkg_level)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    )
+    pkg.addHandler(handler)
+    pkg.propagate = False
+
+
+_configure_sp_api_package_logging()
+
 app = FastAPI(
     title="SP-API Seller Agent",
     description="ReAct agent with Amazon SP-API read-only tools (orders, listings).",
@@ -105,13 +132,13 @@ def _make_ollama_llm(model: str) -> Any:
 
 def _create_sp_api_llm() -> Any:
     """
-    LLM for ReAct: SP_API_LLM_PROVIDER overrides UDS_LLM_PROVIDER; default ollama.
+    LLM for ReAct: SP_API_LLM_PROVIDER overrides UDS_LLM_PROVIDER; default deepseek.
 
     Returns:
         LangChain-compatible model or callable.
     """
     provider = (
-        os.getenv("SP_API_LLM_PROVIDER") or os.getenv("UDS_LLM_PROVIDER") or "ollama"
+        os.getenv("SP_API_LLM_PROVIDER") or os.getenv("UDS_LLM_PROVIDER") or "deepseek"
     ).lower()
 
     if provider == "ollama":

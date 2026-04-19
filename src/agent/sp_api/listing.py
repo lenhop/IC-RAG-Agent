@@ -19,6 +19,26 @@ logger = logging.getLogger(__name__)
 
 LISTINGS_API_PREFIX = "/listings/2021-08-01/items"
 
+
+def _listings_account_hint(http_body: str) -> str:
+    """
+    Return a short operator hint when Amazon rejects the path seller id (HTTP 400).
+
+    Args:
+        http_body: Raw error response body from SP-API.
+
+    Returns:
+        Extra hint string, or empty when not applicable.
+    """
+    b = (http_body or "").lower()
+    if "accountid" in b and "invalid" in b:
+        return (
+            " [Hint: path sellerId must match the selling partner authorized for "
+            "SP_API_REFRESH_TOKEN — set SP_API_SELLER_ID to that seller's id, same "
+            "Seller Central account as the LWA app authorization.]"
+        )
+    return ""
+
 # SP-API getListingsItem ``includedData``: comma-separated data sets (see Listings Items API).
 # Default expands beyond ``summaries`` so responses include attributes, fulfillment, relationships.
 DEFAULT_LISTINGS_INCLUDED_DATA = (
@@ -169,10 +189,11 @@ def get_listings_items_batch(
             except Exception:
                 body = ""
             logger.warning("get_listings_item failed sku=%s status=%s", sk, status)
+            hint = _listings_account_hint(body)
             row: Dict[str, Any] = {
                 "sku": sk,
                 "ok": False,
-                "error": f"HTTP {status}: {body}",
+                "error": f"HTTP {status}: {body}{hint}",
             }
             if status is not None:
                 row["status_code"] = status
